@@ -41,7 +41,16 @@
       "Bash(venv/bin/python -m py_compile analyzer.py main.py memory.py notifier.py telegram_listener.py macro.py config.py)",
       "Bash(venv/bin/python -)",
       "Bash(python -c \"import ast; [ast.parse\\(open\\(f\\).read\\(\\)\\) for f in ['core/prompts.py','core/portfolio.py','core/events.py','core/analyzer.py','telegram_listener.py']]; print\\('OK'\\)\")",
-      "Bash(./venv/bin/python -c \"from core import analyze_portfolio, risk_halt_status, edge_ok; import telegram_listener; print\\('imports OK'\\)\")"
+      "Bash(./venv/bin/python -c \"from core import analyze_portfolio, risk_halt_status, edge_ok; import telegram_listener; print\\('imports OK'\\)\")",
+      "Bash(python -c \"import ast; [ast.parse\\(open\\(f\\).read\\(\\)\\) for f in ['config.py','main.py','telegram_listener.py','core/portfolio.py','core/analyzer.py','core/__init__.py']]; print\\('OK'\\)\")",
+      "Bash(./venv/bin/python -c \"import ast; [ast.parse\\(open\\(f\\).read\\(\\)\\) for f in ['config.py','main.py','telegram_listener.py','core/portfolio.py','core/analyzer.py','core/__init__.py']]; print\\('OK'\\)\")",
+      "Bash(./venv/bin/python -c \"import main; print\\('OK'\\); print\\(main._is_actionable\\('PASS: INL.DE | Keine Divergenz'\\)\\); print\\(main._is_actionable\\('HALTEN'\\)\\); print\\(main._is_actionable\\('ENTRY: NVD.DE @ 171'\\)\\); print\\(main._is_actionable\\('EXIT: TL0.DE'\\)\\)\")",
+      "Bash(./venv/bin/python -c \"import main, core.events, core.market_data; print\\('OK'\\)\")",
+      "Bash(./venv/bin/python -c ' *)",
+      "Bash(./venv/bin/python -c \"import main; print\\('OK'\\)\")",
+      "Bash(./venv/bin/python -c \"import core.analyzer; print\\('OK'\\)\")",
+      "Bash(./venv/bin/python -c \"import main; print\\('OK'\\); print\\('weekend_window func exists:', hasattr\\(main, 'is_weekend_news_window'\\)\\)\")",
+      "Bash(git -C /Users/malteollmann/trading-advisor status)"
     ]
   }
 }

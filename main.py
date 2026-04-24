@@ -21,6 +21,7 @@ from core import (
     save_portfolio,
     get_earnings_warnings,
     check_news_events,
+    kill_switch_active,
 )
 from memory import log_trade, MEMPALACE_AVAILABLE
 from notifier import send_notification, send_daily_summary, send_alert
@@ -33,6 +34,19 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("trading_advisor")
+
+
+_ACTIONABLE_PREFIXES = ("ENTRY", "EXIT", "BUY", "SELL", "KAUFEN", "VERKAUFEN", "CLOSE")
+
+
+def _is_actionable(analysis: str) -> bool:
+    """True only if Claude's verdict requires user action. PASS/HALTEN → False (no notify)."""
+    if not analysis:
+        return False
+    first = analysis.strip().split("\n", 1)[0].strip().upper().lstrip("*• `")
+    if first.startswith("PASS") or first.startswith("HALTEN") or first.startswith("HOLD"):
+        return False
+    return any(first.startswith(p) for p in _ACTIONABLE_PREFIXES)
 
 
 def _morning_prep_done_today() -> bool:
@@ -89,6 +103,14 @@ def is_xetra_open_check_time() -> bool:
         now.hour == config.XETRA_OPEN_HOUR
         and config.XETRA_OPEN_MINUTE <= now.minute < config.XETRA_OPEN_MINUTE + 10
     )
+
+
+def is_weekend_news_window() -> bool:
+    """Sunday 18:00-22:00 CET — pre-Monday geo-news catch-up window.
+    Catches weekend events (Iran strike, OPEC surprise) early enough to queue
+    a Monday-open entry. Single scan per hour is enough."""
+    now = datetime.now()
+    return now.weekday() == 6 and 18 <= now.hour < 22
 
 
 def is_us_open_check_time() -> bool:
@@ -190,6 +212,9 @@ def run_event_check():
     """Check for events and trigger analysis if needed."""
     if not is_market_hours():
         return
+    if kill_switch_active(load_portfolio()):
+        logger.debug("Event check skipped: kill-switch active")
+        return
 
     try:
         events = detect_events()
@@ -224,11 +249,13 @@ def run_event_check():
             logger.info("Event analysis skipped: %s", analysis)
         elif "(keine Text-Analyse)" in analysis:
             logger.info("Event: tool-only call, Telegram already sent by tool handler")
-        else:
+        elif _is_actionable(analysis):
             alert_msg = f"🚨 *WATCH LEVEL HIT*\n" + "\n".join(f"• {d}" for d in event_descriptions)
             send_notification(alert_msg)
             send_daily_summary(analysis)
             logger.info("✅ Event verdict sent: %s", analysis.split('\n')[0][:80])
+        else:
+            logger.info("Event non-actionable, suppressed: %s", analysis.split('\n')[0][:80])
 
     except Exception:
         logger.exception("Event check failed")
@@ -302,7 +329,8 @@ _Watch closely_"""
                 send_notification(message)
         
         # Price alerts → Claude analysis → only notify if actionable (BUY/SELL)
-        price_alerts = check_price_alerts()
+        # Skipped under kill-switch (no new entries; SL/TP loop above keeps running).
+        price_alerts = [] if kill_switch_active(load_portfolio()) else check_price_alerts()
 
         if price_alerts:
             descriptions = []
@@ -322,16 +350,22 @@ _Watch closely_"""
                 logger.info("Price alert analysis skipped: %s", analysis)
             elif "(keine Text-Analyse)" in analysis:
                 logger.info("Price alert: tool-only call, Telegram already sent by tool handler")
-            else:
+            elif _is_actionable(analysis):
                 send_notification(f"💹 *PREIS-ALERT*\n\n{event_context}\n\n{analysis}")
                 logger.info("✅ Price alert verdict sent: %s", analysis.split('\n')[0][:80])
+            else:
+                logger.info("Price alert non-actionable, suppressed: %s", analysis.split('\n')[0][:80])
     except Exception:
         logger.exception("Price check failed")
 
 
 def run_news_check():
-    """Scan for new actionable headlines. Geo news forces analysis; stock news respects cooldown."""
-    if not is_market_hours():
+    """Scan for new actionable headlines. Geo news forces analysis; stock news respects cooldown.
+    Runs during market hours + Sunday 18-22 CET (weekend geo-news catch-up)."""
+    if not (is_market_hours() or is_weekend_news_window()):
+        return
+    if kill_switch_active(load_portfolio()):
+        logger.debug("News check skipped: kill-switch active")
         return
 
     try:
@@ -342,29 +376,35 @@ def run_news_check():
         geo = [e for e in news_events if e["type"] == "NEWS_GEO"]
         stocks = [e for e in news_events if e["type"] == "NEWS_STOCK"]
 
-        # Geopolitical: fire immediately, bypass cooldown — time-sensitive
+        # Geopolitical: bypass cooldown but notify only on actionable verdict
         for event in geo:
             comms = ", ".join(event["triggered_commodities"])
             headline = event["headline"]
             logger.info("📰 GEO NEWS → %s: %s", comms, headline)
-            send_notification(f"📰 *GEO NEWS ALERT*\n\n_{headline}_\n\n🎯 Relevante Titel: `{comms}`")
             ctx = f"GEO NEWS: {headline} | Commodity-Play: {comms}"
             analysis = analyze_portfolio(mode="event", event_context=ctx, force=True)
-            analysis_upper = analysis.upper()
-            if any(kw in analysis_upper for kw in ("KAUFEN", "BUY", "ENTRY")):
+            if _is_actionable(analysis):
+                send_notification(
+                    f"📰 *GEO NEWS ALERT*\n\n_{headline}_\n\n🎯 Relevante Titel: `{comms}`"
+                )
                 send_daily_summary(analysis)
+            else:
+                logger.info("GEO news non-actionable, suppressed: %s", (analysis or "").split('\n')[0][:80])
 
-        # Stock news: respect cooldown, batch into one analysis
+        # Stock news: always route to Claude. Output filter (_is_actionable) suppresses
+        # PASS/HALTEN so user only sees ENTRY/EXIT. Dropping news at input cost real
+        # signal (e.g. INL.DE earnings +20% without active watch-level).
         if stocks:
             headlines = " | ".join(e["headline"] for e in stocks[:3])
             tickers = list({e["source_ticker"] for e in stocks})
             logger.info("📰 STOCK NEWS (%d): %s", len(stocks), headlines[:120])
             ctx = f"NEWS: {headlines}"
             analysis = analyze_portfolio(mode="event", event_context=ctx)
-            analysis_upper = analysis.upper()
-            if any(kw in analysis_upper for kw in ("KAUFEN", "BUY", "ENTRY", "SELL", "VERKAUFEN")):
+            if _is_actionable(analysis):
                 send_notification(f"📰 *NEWS ALERT* — {', '.join(tickers)}\n\n_{headlines}_")
                 send_daily_summary(analysis)
+            else:
+                logger.info("Stock news non-actionable, suppressed: %s", (analysis or "").split('\n')[0][:80])
 
     except Exception:
         logger.exception("News check failed")
@@ -394,6 +434,7 @@ def main():
         config.XETRA_OPEN_HOUR, config.XETRA_OPEN_MINUTE,
         config.US_OPEN_HOUR, config.US_OPEN_MINUTE,
     )
+    logger.info("Weekend News Scan: Sonntag 18-22 CET (geo-news catch-up)")
     logger.info("=" * 50)
 
     # Background Telegram listener for /confirm, /close, /positions, /cancel
@@ -423,6 +464,9 @@ def main():
             if is_market_hours():
                 run_price_check()
                 run_event_check()
+                run_news_check()
+            elif is_weekend_news_window():
+                # Sunday evening: news-only scan, no price/event checks (markets closed)
                 run_news_check()
 
             last_check = now

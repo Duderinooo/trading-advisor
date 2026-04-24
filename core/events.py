@@ -170,13 +170,27 @@ def detect_events() -> list[dict]:
 
         distance_pct = abs(current_price - trigger_price) / trigger_price * 100
         if distance_pct <= config.BREAKOUT_TRIGGER_PERCENT:
+            vwap_dev = data.get("vwap_dev_atr")
+            extreme = isinstance(vwap_dev, (int, float)) and abs(vwap_dev) >= 3.0
+            if extreme:
+                logger.warning(
+                    "Watch-hit %s @ %.2f DROPPED: VWAP-dev %.2f×ATR (extreme spike, likely exhaustion)",
+                    ticker, current_price, vwap_dev,
+                )
+                continue
+            anomaly = isinstance(vwap_dev, (int, float)) and abs(vwap_dev) >= 2.0
+            event_note = level.get("note", "")
+            if anomaly:
+                event_note = (event_note + f" ⚠️ VWAP-dev {vwap_dev:+.2f}×ATR (flash-spike warn)").strip()
             events.append({
                 "type": "WATCH_LEVEL_HIT",
                 "ticker": ticker,
                 "level_type": level_type,
                 "trigger_price": trigger_price,
                 "current_price": current_price,
-                "note": level.get("note", ""),
+                "note": event_note,
+                "vwap_dev_atr": vwap_dev,
+                "anomaly": anomaly,
                 "priority": "HIGH",
             })
 

@@ -91,6 +91,30 @@ def analyze_portfolio(mode: str = "standard", event_context: str = None, force: 
     market_data = get_market_data(tradeable)
     market_ctx = get_market_data(market_tickers)
 
+    # Liquidity pre-filter: drop illiquid/wide-spread tickers before Claude.
+    # Keep open-trade tickers always (must be visible for exit decisions).
+    _kept = {}
+    _dropped_illiquid = []
+    for _t, _d in market_data.items():
+        if not isinstance(_d, dict) or _d.get("error"):
+            _kept[_t] = _d
+            continue
+        if _t in open_trade_tickers:
+            _kept[_t] = _d
+            continue
+        vr = _d.get("volume_ratio")
+        sp = _d.get("spread_pct")
+        if vr is not None and vr < config.MIN_VOLUME_RATIO:
+            _dropped_illiquid.append(f"{_t}(vol_ratio={vr})")
+            continue
+        if sp is not None and sp > config.MAX_SPREAD_PERCENT:
+            _dropped_illiquid.append(f"{_t}(spread={sp}%)")
+            continue
+        _kept[_t] = _d
+    if _dropped_illiquid:
+        logger.info("Liquidity gate dropped: %s", ", ".join(_dropped_illiquid))
+    market_data = _kept
+
     regime = market_regime(market_ctx)
     cash = portfolio.get("cash_eur", config.BUDGET_EUR)
     atr_sizes = {
@@ -135,6 +159,27 @@ def analyze_portfolio(mode: str = "standard", event_context: str = None, force: 
         history_context = build_history_context(
             ticker=primary_ticker,
             query=event_context if mode == "event" else None,
+        )
+
+    # Always-on mistake summary: class distribution over last 20 losses.
+    # Teaches Claude which failure modes dominate recent history.
+    _closed = portfolio.get("closed_trades", [])
+    _losses = [t for t in _closed if (t.get("pnl_pct") or 0) <= 0][-20:]
+    mistake_summary = ""
+    if _losses:
+        by_class: dict[str, int] = {}
+        by_tag: dict[str, int] = {}
+        for t in _losses:
+            cls = t.get("mistake_class") or "untagged"
+            tag = t.get("mistake_tag") or "untagged"
+            by_class[cls] = by_class.get(cls, 0) + 1
+            by_tag[tag] = by_tag.get(tag, 0) + 1
+        top_cls = sorted(by_class.items(), key=lambda x: -x[1])
+        top_tag = sorted(by_tag.items(), key=lambda x: -x[1])[:5]
+        mistake_summary = (
+            f"Letzte {len(_losses)} Losses nach Klasse: "
+            + ", ".join(f"{c}={n}" for c, n in top_cls)
+            + " | Top-Tags: " + ", ".join(f"{t}={n}" for t, n in top_tag)
         )
 
     # --- Trim market_ctx to essentials (saves ~80% of those tokens) ---
@@ -230,6 +275,15 @@ _(Empfohlene Größe = Risiko ÷ 1.5×ATR%. Nie mehr als €{cash * config.MAX_P
     if history_context:
         analysis_request += f"\n\n## Relevante History (aus MemPalace)\n{history_context}\n"
 
+    if mistake_summary:
+        analysis_request += (
+            f"\n\n## LAST-20 MISTAKES (Taxonomie)\n{mistake_summary}\n"
+            "_Klassen: prediction (These falsch), timing (zu früh/spät/whipsaw), "
+            "execution (slippage/sl_too_tight), external (news_shock/regime_shift). "
+            "Wenn eine Klasse dominiert: aktiv gegensteuern (z.B. timing-heavy → "
+            "Entry-Trigger strenger; execution-heavy → Spread/Vol-Gate strenger)._\n"
+        )
+
     # Portfolio heat (sizing-critical)
     if mode in ("morning", "opening"):
         heat = compute_portfolio_heat(portfolio)
@@ -269,12 +323,15 @@ _(Empfohlene Größe = Risiko ÷ 1.5×ATR%. Nie mehr als €{cash * config.MAX_P
     if mode == "morning":
         stats = compute_hit_stats(portfolio.get("closed_trades", []))
         if stats:
+            if stats.get("class_suggestion"):
+                logger.warning("Self-calibration: %s", stats["class_suggestion"])
             analysis_request += (
                 f"\n\n## HIT-RATE (eigene History)\n{format_hit_stats(stats)}\n"
                 "_Nutze zur Conviction-Kalibrierung. Brier-Line zeigt ob deine p_win-Schätzung "
                 "kalibriert ist (0=perfekt, 0.25=random). KORREKTUR-Zeile: wenn aktiv, zieh den "
                 "Wert von deiner nächsten p_win-Schätzung ab (Trade nur wenn p_win nach Haircut "
-                "noch über 0.55 liegt)._\n"
+                "noch über 0.55 liegt). SELBST-KALIBRIERUNG-Zeile: konkrete Parameter-Anpassung "
+                "aus Mistake-Klassen ableiten._\n"
             )
 
     # Earnings calendar (morning only)
@@ -441,6 +498,16 @@ _(Empfohlene Größe = Risiko ÷ 1.5×ATR%. Nie mehr als €{cash * config.MAX_P
             _notify(f"⛔ *ENTRY BLOCKIERT* ({entry_recommendation.get('ticker','?')})\n{reason}")
             entry_recommendation = None
 
+    if entry_recommendation and config.RISK_OFF_BLOCKS_LONGS and regime.startswith("RISK_OFF"):
+        direction = str(entry_recommendation.get("direction") or "LONG").upper()
+        if direction == "LONG":
+            logger.warning("Entry BLOCKED by regime gate: RISK_OFF + LONG")
+            _notify(
+                f"⛔ *ENTRY BLOCKIERT* ({entry_recommendation.get('ticker','?')})\n"
+                f"Regime={regime} → keine neuen Longs (conservative bias)."
+            )
+            entry_recommendation = None
+
     if entry_recommendation:
         _ok, _edge = edge_ok(
             entry_recommendation.get("p_win"),
@@ -477,15 +544,32 @@ _(Empfohlene Größe = Risiko ÷ 1.5×ATR%. Nie mehr als €{cash * config.MAX_P
         _trail = rec.get("trailing_stop_pct")
         _tp_str = " / ".join(f"€{t:.2f}" for t in (_tp if isinstance(_tp, list) else [_tp]))
         _trail_line = f"\nTrailing: {_trail}%" if _trail else ""
+        # Shares preview + capital share — user needs to see size, not just euros
+        _capital = float(_pf_snapshot.get("total_capital_eur", config.BUDGET_EUR) or config.BUDGET_EUR)
+        _cash = float(_pf_snapshot.get("cash_eur", 0) or 0)
+        _shares_raw = _size / _entry if _entry > 0 else 0.0
+        # Whole shares when ≥1 (TR round-down to int); Bruchstücke only unter 1 Stk.
+        if _shares_raw >= 1:
+            _shares_prev = float(int(_shares_raw))
+            _shares_str = f"{int(_shares_prev)} Stk"
+        else:
+            _shares_prev = round(_shares_raw, 2)
+            _shares_str = f"{_shares_prev:.2f} Stk (Bruchstück)"
+        _actual_size = round(_shares_prev * _entry, 2)
+        _pct_cap = (_actual_size / _capital * 100) if _capital > 0 else 0.0
+        _risk_eur = (_entry - _sl) * _shares_prev if _entry > _sl > 0 else 0.0
+        _risk_pct = (_risk_eur / _capital * 100) if _capital > 0 else 0.0
         # Anchor message for reply-based /confirm. User replies `/confirm 3` on this post.
         message_id = _notify(
             f"🎯 *ENTRY EMPFEHLUNG: {_ticker}*\n\n"
             f"Entry: €{_entry:.2f} | SL: €{_sl:.2f}\n"
             f"TP: {_tp_str}\n"
-            f"Size: €{_size:.0f} | Conviction: {_conv}/5\n"
+            f"Kauf: {_shares_str} à €{_entry:.2f} = €{_actual_size:.2f} "
+            f"({_pct_cap:.1f}% Kapital, Cash €{_cash:.0f})\n"
+            f"Risk bei SL: €{_risk_eur:.2f} ({_risk_pct:.2f}% Kapital) | Conv: {_conv}/5\n"
             f"Hold: {_hmin}-{_hmax} Tage{_trail_line}\n\n"
             f"💡 _{_thesis}_\n\n"
-            f"_Reply `/confirm <stück>` oder `/confirm <stück> @<preis>` zur Ausführung._"
+            f"_Reply `/confirm` (auto={_shares_str}) oder `/confirm <stück> @<preis>` für override._"
         )
         if message_id:
             rec["message_id"] = message_id

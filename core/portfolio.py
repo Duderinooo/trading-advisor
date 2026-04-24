@@ -254,6 +254,47 @@ def compute_hit_stats(closed_trades: list[dict]) -> dict | None:
             "haircut": haircut,
         }
 
+    # --- Mistake-class distribution + actionable suggestion (last 20 losses) ---
+    recent_losses = [t for t in closed_trades if (t.get("pnl_pct") or 0) <= 0][-20:]
+    mistake_classes: dict[str, int] = {}
+    for t in recent_losses:
+        cls = t.get("mistake_class") or "untagged"
+        mistake_classes[cls] = mistake_classes.get(cls, 0) + 1
+
+    class_suggestion: str | None = None
+    if recent_losses and len(recent_losses) >= 5:
+        n_losses = len(recent_losses)
+        # Ignore 'untagged' for dominance check (user may not have tagged yet).
+        tagged = {c: n for c, n in mistake_classes.items() if c != "untagged"}
+        if tagged:
+            top_cls, top_n = max(tagged.items(), key=lambda x: x[1])
+            share = top_n / n_losses
+            if share >= 0.40:
+                if top_cls == "execution":
+                    class_suggestion = (
+                        f"{top_cls} dominiert ({top_n}/{n_losses}={share:.0%}): "
+                        f"MAX_SPREAD_PERCENT halbieren, Slippage-Limit strenger, "
+                        f"keine Entries bei volume_ratio<0.8."
+                    )
+                elif top_cls == "timing":
+                    class_suggestion = (
+                        f"{top_cls} dominiert ({top_n}/{n_losses}={share:.0%}): "
+                        f"Entry-Trigger strenger (Bestätigung auf 15m-Close statt Intraday), "
+                        f"Breakout-Distance >1.0% statt 0.5%."
+                    )
+                elif top_cls == "prediction":
+                    class_suggestion = (
+                        f"{top_cls} dominiert ({top_n}/{n_losses}={share:.0%}): "
+                        f"Conviction-Gate erhöhen (min 4/5 statt 3/5), "
+                        f"p_win-Schwelle +0.05 (These muss stärker sein)."
+                    )
+                elif top_cls == "external":
+                    class_suggestion = (
+                        f"{top_cls} dominiert ({top_n}/{n_losses}={share:.0%}): "
+                        f"Event-Kalender strikter (keine Entries 48h vor High-Impact), "
+                        f"Position Size halbieren bei VIX>20."
+                    )
+
     return {
         "total": total,
         "win_rate": round(len(wins) / total * 100, 1),
@@ -264,6 +305,8 @@ def compute_hit_stats(closed_trades: list[dict]) -> dict | None:
         "by_conviction": conv_stats,
         "recent_streak": streak,
         "calibration": calibration,
+        "mistake_classes": mistake_classes,
+        "class_suggestion": class_suggestion,
     }
 
 
@@ -298,6 +341,8 @@ def format_hit_stats(stats: dict) -> str:
                 f"(Bias >5% — sei strenger)"
             )
         lines.append(line)
+    if stats.get("class_suggestion"):
+        lines.append(f"🎯 SELBST-KALIBRIERUNG: {stats['class_suggestion']}")
     return "\n".join(lines)
 
 

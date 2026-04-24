@@ -113,7 +113,16 @@ def _compute_indicators(daily_hist, intraday_hist) -> dict:
             typical = (intraday_hist["High"] + intraday_hist["Low"] + intraday_hist["Close"]) / 3
             vol = intraday_hist["Volume"]
             vwap = (typical * vol).cumsum() / vol.cumsum().replace(0, 1e-9)
-            out["vwap"] = round(float(vwap.iloc[-1]), 2)
+            vwap_val = float(vwap.iloc[-1])
+            out["vwap"] = round(vwap_val, 2)
+            # Deviation from VWAP in ATR units — >2 = flash-spike / exhaustion zone
+            _atr = out.get("atr14")
+            try:
+                _cur = float(intraday_hist["Close"].iloc[-1])
+                if _atr and _atr > 0:
+                    out["vwap_dev_atr"] = round((_cur - vwap_val) / _atr, 2)
+            except Exception:
+                pass
 
             today_open = float(intraday_hist["Open"].iloc[0])
             today_close = float(intraday_hist["Close"].iloc[-1])

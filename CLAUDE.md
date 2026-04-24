@@ -1,0 +1,74 @@
+# Trading Advisor — AI Agent Guide
+
+Bot for a single user who executes **every** recommendation 1:1 on Trade Republic (TR). No self-directed trading. Bot = sole filter, so conservative bias is the default everywhere.
+
+## Runtime shape
+
+- `main.py` — event loop (morning prep, opening checks, price + event + news polling every 15 min)
+- `telegram_listener.py` — background thread, user commands (`/confirm`, `/close`, `/panic`, …)
+- `core/` — pure logic (market data, portfolio I/O, Claude orchestration, event detection)
+- `memory.py` — MemPalace wrapper for trade/analysis history (optional; gracefully degrades)
+- `portfolio.json` — single source of truth for open/closed trades, cash, watch levels, kill-switch
+
+All writers acquire `core.portfolio.portfolio_lock` (`RLock`). Both the main loop and the Telegram thread mutate state — never skip the lock.
+
+## Critical invariants
+
+1. **Every `/confirm` requires a stop-loss** (`telegram_listener.confirm_handler`). Rec without SL → rejected. Full-trust bias: no SL = no trade.
+2. **Risk-halt gates every new entry**: kill-switch, daily loss cap, drawdown cap, portfolio heat, edge (`p·b − (1−p) ≥ MIN_EXPECTED_EDGE`), RISK_OFF + LONG. All live in `core/analyzer.py` before `rec` is persisted.
+3. **Position sizing = `min(ATR-risk, fractional-Kelly, hard cap)`** (`core/portfolio.suggest_position_size`). Do not add capacity above `MAX_POSITION_SIZE_PERCENT`.
+4. **TR supports Bruchstücke (fractional shares)**: `shares` is `float`, rounded to 4 decimals. Do not cast to `int`.
+5. **Actionable-only Telegram**: event/price/news verdicts are sent only if `_is_actionable(analysis)` (prefix ENTRY/EXIT/BUY/SELL/KAUFEN/VERKAUFEN/CLOSE). PASS/HALTEN/HOLD are logged and dropped to avoid noise.
+   - **Filter at output, not input.** Do NOT drop news/events before they reach Claude "to save cost" — Claude must see all stock/geo news to decide if an entry exists. A dropped news cycle missed Intel earnings +20% previously. The output-level `_is_actionable` check already suppresses PASS/HALTEN noise.
+6. **Kill-switch** blocks new entries and event/news Claude calls, but leaves SL/TP monitoring running. Never let `run_price_check` skip SL checks under the kill-switch — open positions must still auto-exit.
+
+## Execution-quality gates (guide-aligned, order matters)
+
+Located in `core/analyzer.analyze_portfolio`, applied in this order on a `recommend_entry` tool call:
+
+1. `risk_halt_status` (kill-switch, daily loss, drawdown, heat)
+2. Regime gate (`RISK_OFF_BLOCKS_LONGS`)
+3. Edge gate (`edge_ok`)
+
+Liquidity gate runs earlier, before data even reaches Claude: tickers with `volume_ratio < MIN_VOLUME_RATIO` or `spread_pct > MAX_SPREAD_PERCENT` are dropped from `market_data` — open trades are kept regardless so they remain visible for exit decisions.
+
+Slippage gate runs on `/confirm @price`: if `|filled − rec|/rec > MAX_ENTRY_SLIPPAGE_PERCENT`, confirm is rejected and user must re-quote.
+
+VWAP-anomaly gate runs in `core.events.detect_events`: watch-level hits with `|vwap_dev_atr| ≥ 3.0` are dropped (no Claude call). Between 2.0 and 3.0, the event is tagged with a flash-spike warning.
+
+## Learning loop
+
+- `/close TICKER @price #tag` — `#tag` ∈ `config.MISTAKE_TAGS` (8 tags → 4 guide classes: prediction / timing / execution / external). Stored on the closed trade as `mistake_tag` + `mistake_class`. Losses without a tag → `mistake_class = "untagged"` and user is reminded.
+- `compute_hit_stats` produces `class_suggestion` when any tagged class reaches ≥40% of the last ≥5 losses. The suggestion is a concrete parameter change (tighten spread, raise conviction gate, etc.), logged and injected into the morning prompt.
+- Brier-based `calibration.haircut` corrects Claude's `p_win` estimate when rolling bias ≥5%.
+- Every analysis (all modes, all tickers) receives the last-20-loss class distribution via `mistake_summary`.
+
+## Adding features — rules
+
+- **No new abstraction without three concrete call sites.** This is a single-user bot; generality pays no rent here.
+- **Don't add fallback paths that can't happen.** E.g. `load_portfolio` always returns a dict — no `None` guards.
+- **Config changes must come with a one-line comment** explaining the trigger (past incident, guide section, etc.). Future-you needs the *why*.
+- **Never bypass `portfolio_lock`** on write paths. Reads are fine without, writes are not.
+- **Prefer extending existing files.** `core/` submodules already slice the surface; new files must justify themselves.
+- **Token-budget the prompts.** Any new context added to `core/analyzer.analysis_request` must be cache-stable (don't embed timestamps or random IDs that bust the cache).
+
+## Claude models in use
+
+- `CLAUDE_MODEL_MORNING = "claude-sonnet-4-6"` — once per trading day, senior reasoning
+- `CLAUDE_MODEL_EVENT = "claude-haiku-4-5"` — all other modes (opening, event, standard)
+
+Do **not** call Opus from this bot — per-call cost doesn't justify it at €1k capital.
+
+## Files not to touch without reason
+
+- `portfolio.json` — mutate only via `save_portfolio` under the lock
+- `entities.json`, `.palace/` — MemPalace internals
+- `run.sh`, `venv/` — deployment-specific
+
+## Test surface
+
+No test suite. Verify changes with:
+```
+./venv/bin/python -c "import main, telegram_listener; from core import *; print('OK')"
+```
+For logic changes, write a small inline assertion block (see how `compute_hit_stats` was smoke-tested) rather than introducing pytest.
