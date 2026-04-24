@@ -1,0 +1,29 @@
+# Environment and secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# MemPalace data (local, wird auf neuem Rechner neu erstellt)
+.palace/
+
+# API usage tracking (local state)
+.api_usage.json
+
+# Private portfolio holdings (should stay out of git)
+portfolio.json
+.portfolio_*.json
+
+# Logs
+*.log
+trading.log
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
