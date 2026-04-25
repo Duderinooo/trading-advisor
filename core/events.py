@@ -448,6 +448,45 @@ def _apply_trailing_stop(trade: dict, current_price: float) -> bool:
     return False
 
 
+def _close_partial(trade: dict, shares_to_sell: float, exit_price: float, reason: str, portfolio: dict) -> dict:
+    """Sell `shares_to_sell` shares of an open trade at exit_price. Reduces trade.shares
+    on remainder. Records the partial sell as its own closed_trades entry with
+    `partial=True`. Frees cash. Does NOT touch SL/TP — caller handles (e.g. BE-shift).
+    Returns the closed-partial dict (for alert metadata)."""
+    entry = float(trade.get("entry_price", 0) or 0)
+    pnl_eur = (exit_price - entry) * shares_to_sell if entry else 0.0
+    pnl_pct = ((exit_price - entry) / entry * 100) if entry else 0.0
+
+    partial = dict(trade)
+    partial.update({
+        "shares": round(shares_to_sell, 4),
+        "exit_price": exit_price,
+        "exit_reason": reason,
+        "exit_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "pnl_eur": round(pnl_eur, 2),
+        "pnl_pct": round(pnl_pct, 2),
+        "status": "closed_partial",
+        "partial": True,
+    })
+    # Brier on partial: only score if this is the FIRST close (TP1 hit). Re-scoring on
+    # later partials would double-count. Mark via 'partial_seq' counter.
+    seq = (trade.get("partial_seq") or 0) + 1
+    trade["partial_seq"] = seq
+    p_win = trade.get("p_win")
+    if seq == 1 and isinstance(p_win, (int, float)) and 0.0 <= p_win <= 1.0:
+        outcome = 1 if pnl_pct > 0 else 0
+        partial["brier"] = round((p_win - outcome) ** 2, 4)
+        partial["outcome"] = outcome
+
+    portfolio.setdefault("closed_trades", []).append(partial)
+    portfolio["cash_eur"] = portfolio.get("cash_eur", 0) + (exit_price * shares_to_sell)
+
+    remaining = round(float(trade.get("shares", 0) or 0) - shares_to_sell, 4)
+    trade["shares"] = max(remaining, 0.0)
+    trade["size_eur"] = round(trade["shares"] * entry, 2) if entry else 0.0
+    return partial
+
+
 def _close_trade(trade: dict, exit_price: float, reason: str, portfolio: dict):
     """Move a trade from open_trades to closed_trades with exit metadata.
     Credits cash assuming user executes on TR (SL/TP is mirrored by the broker)."""
@@ -530,6 +569,31 @@ def check_stop_loss_take_profit() -> list[dict]:
 
             entry = trade.get("entry_price", 0)
 
+            # Time-Stop: stale trade auto-close. Frees heat for fresh setups.
+            # Skip if trade already had a partial TP-hit (those locked in profit, let runner work).
+            time_stop_days = trade.get("time_stop_days") or config.TIME_STOP_DAYS
+            entry_date_str = trade.get("entry_date") or ""
+            partial_count = trade.get("partial_seq") or 0
+            if time_stop_days and entry_date_str and partial_count == 0:
+                try:
+                    entry_dt = datetime.strptime(entry_date_str, "%Y-%m-%d %H:%M")
+                    held_days = (datetime.now() - entry_dt).days
+                    if held_days >= time_stop_days:
+                        pnl_pct = ((current_price - entry) / entry * 100) if entry else 0
+                        alerts.append({
+                            "type": "TIME_STOP_HIT",
+                            "ticker": ticker,
+                            "entry": entry,
+                            "current_price": current_price,
+                            "held_days": held_days,
+                            "pnl_pct": pnl_pct,
+                        })
+                        _close_trade(trade, current_price, "TIME_STOP", portfolio)
+                        portfolio_dirty = True
+                        continue
+                except ValueError:
+                    pass
+
             if _apply_trailing_stop(trade, current_price):
                 portfolio_dirty = True
                 alerts.append({
@@ -560,20 +624,37 @@ def check_stop_loss_take_profit() -> list[dict]:
                 pnl_pct = ((current_price - entry) / entry * 100) if entry else 0
                 had_more_tps = isinstance(trade.get("take_profit"), list) and len(trade["take_profit"]) > 1
 
-                _pop_first_take_profit(trade)
-                portfolio_dirty = True
-
-                alerts.append({
-                    "type": "TAKE_PROFIT_HIT",
-                    "ticker": ticker,
-                    "entry": entry,
-                    "take_profit": take_profit,
-                    "current_price": current_price,
-                    "pnl_pct": pnl_pct,
-                    "partial": had_more_tps,
-                })
-
                 if had_more_tps:
+                    # Partial close: lock PARTIAL_TP_FRACTION × shares at TP1.
+                    # Remainder runs with BE-SL + trailing. Locks ≥0.5R win even if runner stops out.
+                    shares_total = float(trade.get("shares", 0) or 0)
+                    shares_to_sell = round(shares_total * config.PARTIAL_TP_FRACTION, 4)
+                    if shares_to_sell > 0 and shares_to_sell < shares_total:
+                        _close_partial(trade, shares_to_sell, current_price, "TAKE_PROFIT_PARTIAL", portfolio)
+                        alerts.append({
+                            "type": "PARTIAL_TP_HIT",
+                            "ticker": ticker,
+                            "entry": entry,
+                            "take_profit": take_profit,
+                            "current_price": current_price,
+                            "pnl_pct": pnl_pct,
+                            "shares_sold": shares_to_sell,
+                            "shares_remaining": trade["shares"],
+                        })
+                    else:
+                        # Edge: fractional share too small to split — treat as full TP-target reached.
+                        alerts.append({
+                            "type": "TAKE_PROFIT_HIT",
+                            "ticker": ticker,
+                            "entry": entry,
+                            "take_profit": take_profit,
+                            "current_price": current_price,
+                            "pnl_pct": pnl_pct,
+                            "partial": False,
+                        })
+                    _pop_first_take_profit(trade)
+                    portfolio_dirty = True
+
                     if entry and (trade.get("stop_loss") is None or trade["stop_loss"] < entry):
                         trade["stop_loss"] = entry
                         alerts.append({
@@ -581,9 +662,6 @@ def check_stop_loss_take_profit() -> list[dict]:
                             "ticker": ticker,
                             "new_stop": entry,
                         })
-                    # Runner-protection: activate trailing if not already set.
-                    # Why: after TP1, break-even alone gives runner-gain back on pullback.
-                    # 1.5×ATR% trail locks profit while letting trend extend.
                     if not trade.get("trailing_stop_pct"):
                         atr_pct = data.get("atr14_pct")
                         if isinstance(atr_pct, (int, float)) and atr_pct > 0:
@@ -595,9 +673,22 @@ def check_stop_loss_take_profit() -> list[dict]:
                                 "trail_pct": trail_pct,
                                 "atr_pct": atr_pct,
                             })
-                    surviving_trades.append(trade)
+                    if trade.get("shares", 0) > 0:
+                        surviving_trades.append(trade)
                 else:
+                    # Final TP — close full remainder.
+                    alerts.append({
+                        "type": "TAKE_PROFIT_HIT",
+                        "ticker": ticker,
+                        "entry": entry,
+                        "take_profit": take_profit,
+                        "current_price": current_price,
+                        "pnl_pct": pnl_pct,
+                        "partial": False,
+                    })
+                    _pop_first_take_profit(trade)
                     _close_trade(trade, current_price, "TAKE_PROFIT", portfolio)
+                    portfolio_dirty = True
                 continue
 
             if stop_loss and current_price <= stop_loss * 1.01:

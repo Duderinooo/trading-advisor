@@ -62,6 +62,10 @@ MIN_MINUTES_BETWEEN_FORCED_ANALYSES = 15
 # Earnings Auto-Close Schwelle (Tage bis Earnings)
 EARNINGS_CLOSE_DAYS = 1
 
+# Earnings Hard-Block für neue Entries: T-N bis T+0 (Earnings-Day) blockiert.
+# Statistik: Gap-Risiko bei Earnings ist Coin-Flip → kein systematischer Edge.
+EARNINGS_ENTRY_BLOCK_DAYS = 2
+
 # Dividenden: Ex-Div Pre-Warning Fenster (Tage). Mechanischer Preis-Drop ≈ Ausschüttung
 # kann SL triggern, daher Morning-Brief warnt + schlägt SL-Adjust vor wenn drop ≥ 50% SL-Distance.
 DIVIDEND_WARN_DAYS = 7
@@ -157,6 +161,38 @@ NO_ENTRY_WINDOWS = [
 # Liquidity pre-filter (gate tickers before Claude sees them)
 MIN_VOLUME_RATIO = 0.3            # current_vol/avg_vol; dead tape if below
 MAX_SPREAD_PERCENT = 0.75         # (ask-bid)/price*100; wide spread = bad fill risk
+
+# Breakout-Volume-Confirmation: setup_type=breakout_resistance braucht Volumen-Bestätigung.
+# Ohne Volumen = Fake-Breakout, hohe Whipsaw-Rate.
+MIN_BREAKOUT_VOLUME_RATIO = 1.3   # heute_volume / avg_volume
+
+# Relative-Strength Gate: für LONG-Entries muss Ticker ≥ Index in den letzten 20 Tagen
+# performen. Filter gegen Lagger im Aufwärtstrend. Override bei mean_reversion-Setups.
+MIN_RS_20D_VS_INDEX_PCT = -1.0    # ticker_perf_20d − spy_perf_20d ≥ −1pp (kleine Toleranz)
+RS_INDEX_TICKER = "SPY5.DE"
+
+# Time-Stop: Position nach N Handelstagen ohne TP1-Hit auto-closen.
+# Tote Trades binden Heat → Kapital-Effizienz.
+TIME_STOP_DAYS = 10
+
+# Partial-TP-Execution: bei TP1-Hit X% der Position schließen, Rest mit BE-SL + Trailing weiterlaufen.
+# Wandelt Loser in BE-Trades nach 1R-Gewinnsicherung → Win-Rate-Bias.
+PARTIAL_TP_FRACTION = 0.5         # 50% bei TP1 raus, 50% läuft weiter
+AUTO_SPLIT_SINGLE_TP_AT_1R = True # Wenn nur 1 TP empfohlen: TP1 bei 1R einfügen, Original wird TP2
+
+# Drawdown-Soft-Scaling: zwischen SOFT und HALT Stufe Risk-per-Trade halbieren.
+# Behavioral Edge: kein Revenge-Trade nach Drawdown.
+DRAWDOWN_SOFT_PERCENT = 4.0       # ab 4% Drawdown: Size *= 0.5 bis Equity neues High
+
+# Korrelations-Gate: blockt Cluster-Risk auch quer durch Sektoren.
+# 60d daily-return correlation zu existing holdings ≥ MAX_CORRELATION → Block.
+CORRELATION_LOOKBACK_DAYS = 60
+MAX_CORRELATION = 0.7
+MAX_CORRELATED_HOLDINGS = 1       # max 1 hochkorrelierte Position erlaubt; ab 2 → Block
+
+# Confluence-Score: deterministisches Setup-Quality-Scoring.
+# Surface in Prompt, Sizing-konditional. Min-Score für Entry.
+MIN_CONFLUENCE_SCORE = 5          # von 10 möglichen — darunter PASS
 
 # Regime gate — RISK_OFF blocks new LONG entries (conservative full-trust bias)
 RISK_OFF_BLOCKS_LONGS = True

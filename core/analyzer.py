@@ -32,9 +32,12 @@ from core.portfolio import (
     compute_sector_exposure, format_sector_exposure,
     compute_equity_stats, format_equity_stats,
     risk_halt_status, maintain_drawdown_state, edge_ok,
+    compute_confluence, format_confluence,
+    compute_correlations, dd_scaling_factor,
 )
 from core.market_data import (
     get_market_data, get_earnings_warnings, fetch_news, market_regime,
+    get_returns,
 )
 
 load_dotenv()
@@ -341,6 +344,26 @@ _(Empfohlene Größe = Risiko ÷ 1.5×ATR%. Nie mehr als €{cash * config.MAX_P
                 "Wert von deiner nächsten p_win-Schätzung ab (Trade nur wenn p_win nach Haircut "
                 "noch über 0.55 liegt). SELBST-KALIBRIERUNG-Zeile: konkrete Parameter-Anpassung "
                 "aus Mistake-Klassen ableiten._\n"
+            )
+
+    # Confluence scores per tradeable ticker (deterministic setup quality 0-10)
+    if mode in ("morning", "opening", "event"):
+        conf_lines = []
+        for _t, _d in market_data.items():
+            if not isinstance(_d, dict) or _d.get("error"):
+                continue
+            if _t in config.MARKET_INDICATORS or _t in config.COMMODITIES:
+                continue
+            _c = compute_confluence(_d, regime)
+            if _c["score"] >= 4:  # only surface non-trivial scores
+                hits = [k for k, v in _c["items"].items() if v]
+                conf_lines.append(f"  {_t}: {_c['score']}/10 — {', '.join(hits)}")
+        if conf_lines:
+            analysis_request += (
+                f"\n\n## CONFLUENCE-SCORES (deterministisch, score≥{config.MIN_CONFLUENCE_SCORE}=tradeable)\n"
+                + "\n".join(conf_lines) + "\n"
+                "_10 Items: wk_trend_up, MA-Stack, RSI healthy, MACD bullish, Volumen, Spread tight, "
+                "RS vs Index ≥0, Analyst bullish, Regime RISK_ON. Score ≥7 = full Size, 5-6 = halbe Size, <5 = PASS._\n"
             )
 
     # Earnings calendar (morning only)
@@ -660,6 +683,153 @@ _(Empfohlene Größe = Risiko ÷ 1.5×ATR%. Nie mehr als €{cash * config.MAX_P
                 f"Weekly-Trend DOWN — kein Long gegen primären Trend."
             )
             entry_recommendation = None
+
+    if entry_recommendation:
+        # Earnings hard-block: T-N bis T+0 (Earnings-Day). Gap-Risiko ist Coin-Flip,
+        # kein systematischer Edge. Override: Setup-Type=earnings_drift (Post-Earnings-Drift T+1+).
+        _t = (entry_recommendation.get("ticker") or "").upper()
+        _setup = (entry_recommendation.get("setup_type") or "").lower()
+        if _setup != "earnings_drift":
+            _ew = get_earnings_warnings([_t], days_ahead=config.EARNINGS_ENTRY_BLOCK_DAYS)
+            if _ew:
+                _w = _ew[0]
+                logger.warning(
+                    "Entry BLOCKED by earnings gate: %s in %d Tag(en) (%s)",
+                    _t, _w["days_until"], _w["earnings_date"],
+                )
+                _notify(
+                    f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
+                    f"Earnings in {_w['days_until']} Tag(en) ({_w['earnings_date']}). "
+                    f"Gap-Risiko zu hoch — auf Post-Earnings-Drift warten."
+                )
+                entry_recommendation = None
+
+    if entry_recommendation:
+        # Relative-Strength Gate: kein LONG auf Lagger im Aufwärtstrend.
+        # Override für mean_reversion / reversal_oversold / gap_fill (RS-negativ ist These dort).
+        _t = (entry_recommendation.get("ticker") or "").upper()
+        _setup = (entry_recommendation.get("setup_type") or "").lower()
+        _rs = (market_data.get(_t) or {}).get("rs_20d_vs_index_pct")
+        _rs_override_setups = {"mean_reversion", "reversal_oversold", "gap_fill"}
+        if isinstance(_rs, (int, float)) and _setup not in _rs_override_setups:
+            if _rs < config.MIN_RS_20D_VS_INDEX_PCT:
+                logger.warning(
+                    "Entry BLOCKED by RS gate: %s rs_20d=%+.2fpp < %.2fpp (setup=%s)",
+                    _t, _rs, config.MIN_RS_20D_VS_INDEX_PCT, _setup,
+                )
+                _notify(
+                    f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
+                    f"Relative-Strength {_rs:+.1f}pp vs Index < {config.MIN_RS_20D_VS_INDEX_PCT}pp. "
+                    f"Lagger im Aufwärtstrend — kein Long. Override: setup_type=mean_reversion/reversal_oversold/gap_fill."
+                )
+                entry_recommendation = None
+
+    if entry_recommendation:
+        # Volume-Confirmation für Breakouts: Fake-Breakouts vermeiden.
+        _t = (entry_recommendation.get("ticker") or "").upper()
+        _setup = (entry_recommendation.get("setup_type") or "").lower()
+        if _setup == "breakout_resistance":
+            _vr = (market_data.get(_t) or {}).get("volume_ratio")
+            if isinstance(_vr, (int, float)) and _vr < config.MIN_BREAKOUT_VOLUME_RATIO:
+                logger.warning(
+                    "Entry BLOCKED by volume gate: %s breakout vol_ratio=%.2f < %.2f",
+                    _t, _vr, config.MIN_BREAKOUT_VOLUME_RATIO,
+                )
+                _notify(
+                    f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
+                    f"Breakout-Setup ohne Volumen-Bestätigung (vol_ratio {_vr:.2f} < {config.MIN_BREAKOUT_VOLUME_RATIO}). "
+                    f"Fake-Breakout-Risk."
+                )
+                entry_recommendation = None
+
+    if entry_recommendation:
+        # Confluence-Score Gate: deterministisches Setup-Quality. Score < MIN → PASS.
+        # Mean-reversion setups bekommen niedrigeren Threshold (Antithese zur Trend-Confluence).
+        _t = (entry_recommendation.get("ticker") or "").upper()
+        _setup = (entry_recommendation.get("setup_type") or "").lower()
+        _snap = market_data.get(_t)
+        _conf = compute_confluence(_snap, regime) if _snap else {"score": 0, "items": {}, "missing": ["no_data"]}
+        _min_conf = config.MIN_CONFLUENCE_SCORE
+        if _setup in ("mean_reversion", "reversal_oversold", "gap_fill"):
+            _min_conf = max(3, config.MIN_CONFLUENCE_SCORE - 2)
+        if _conf["score"] < _min_conf:
+            logger.warning(
+                "Entry BLOCKED by confluence gate: %s score=%d < %d (setup=%s, missing: %s)",
+                _t, _conf["score"], _min_conf, _setup, ", ".join(_conf.get("missing") or []),
+            )
+            _notify(
+                f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
+                f"Confluence-Score {_conf['score']}/10 < {_min_conf} (setup={_setup}). "
+                f"Fehlend: {', '.join(_conf.get('missing') or [])}"
+            )
+            entry_recommendation = None
+        else:
+            entry_recommendation["confluence_score"] = _conf["score"]
+            entry_recommendation["confluence_items"] = _conf["items"]
+
+    if entry_recommendation:
+        # Korrelations-Gate: cluster-risk auch quer durch Sektoren.
+        # Wenn ≥MAX_CORRELATED_HOLDINGS bestehende Positionen Korrelation ≥MAX_CORRELATION → Block.
+        _t = (entry_recommendation.get("ticker") or "").upper()
+        _holdings = [tr.get("ticker") for tr in _pf_snapshot.get("open_trades", []) if tr.get("ticker")]
+        _holdings = [h for h in _holdings if h and h.upper() != _t]
+        if _holdings:
+            try:
+                _returns = get_returns([_t] + _holdings, days=config.CORRELATION_LOOKBACK_DAYS)
+                _corrs = compute_correlations(_returns, _t)
+                _high = {h: c for h, c in _corrs.items() if c >= config.MAX_CORRELATION}
+                if len(_high) > config.MAX_CORRELATED_HOLDINGS:
+                    logger.warning(
+                        "Entry BLOCKED by correlation gate: %s vs %s (corrs %s)",
+                        _t, list(_high.keys()), _high,
+                    )
+                    _notify(
+                        f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
+                        f"Korrelation ≥{config.MAX_CORRELATION} mit {len(_high)} bestehenden Positionen: "
+                        + ", ".join(f"{h}={c:.2f}" for h, c in _high.items())
+                        + f". Cluster-Risk über Sektor-Cap hinaus."
+                    )
+                    entry_recommendation = None
+                elif _corrs:
+                    entry_recommendation["correlations"] = _corrs
+            except Exception as e:
+                logger.warning("Correlation check failed for %s: %s", _t, e)
+
+    if entry_recommendation:
+        # Drawdown-Soft-Scaling: zwischen DD_SOFT und DD_HALT halbe Size.
+        # Behavioral edge: kein Revenge-Trade nach Drawdown.
+        _scale = dd_scaling_factor(_pf_snapshot)
+        if _scale < 1.0:
+            _orig = float(entry_recommendation.get("size_eur") or 0)
+            if _orig > 0:
+                entry_recommendation["size_eur"] = round(_orig * _scale, 2)
+                entry_recommendation["dd_soft_scale"] = {
+                    "factor": _scale, "original_size_eur": _orig,
+                }
+                logger.warning(
+                    "DD-soft scaling: size €%.2f → €%.2f (factor=%.2f)",
+                    _orig, entry_recommendation["size_eur"], _scale,
+                )
+
+    if entry_recommendation:
+        # Auto-split single TP: wenn nur ein TP → TP1 bei 1R einfügen für Partial-Scale-Out.
+        # 1R = entry + (entry-stop). Ermöglicht 50%-Partial @ TP1 + Runner zu TP2 (Original).
+        if config.AUTO_SPLIT_SINGLE_TP_AT_1R:
+            _tp = entry_recommendation.get("take_profit")
+            _entry = float(entry_recommendation.get("entry_price") or 0)
+            _sl = float(entry_recommendation.get("stop_loss") or 0)
+            _risk = _entry - _sl if (_entry > _sl > 0) else 0
+            _tp_list = _tp if isinstance(_tp, list) else ([_tp] if _tp else [])
+            if len(_tp_list) == 1 and _risk > 0:
+                _tp1 = round(_entry + _risk, 2)
+                _tp2 = float(_tp_list[0])
+                if _tp1 < _tp2:
+                    entry_recommendation["take_profit"] = [_tp1, _tp2]
+                    entry_recommendation["auto_split_tp"] = True
+                    logger.info(
+                        "Auto-split TP for partial scale-out: %s TP1=%.2f (1R) + TP2=%.2f (orig)",
+                        entry_recommendation.get("ticker"), _tp1, _tp2,
+                    )
 
     if entry_recommendation:
         rec = {

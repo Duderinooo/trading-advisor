@@ -135,6 +135,14 @@ def _compute_indicators(daily_hist, intraday_hist) -> dict:
             out["intraday_high"] = round(float(intraday_hist["High"].max()), 2)
             out["intraday_low"] = round(float(intraday_hist["Low"].min()), 2)
 
+        # 20d return (used for relative-strength gate vs index).
+        if len(daily_hist) >= 21:
+            close = daily_hist["Close"]
+            px_20d_ago = float(close.iloc[-21])
+            px_now = float(close.iloc[-1])
+            if px_20d_ago > 0:
+                out["perf_20d_pct"] = round((px_now - px_20d_ago) / px_20d_ago * 100, 2)
+
     except (KeyError, ValueError, IndexError) as e:
         logger.debug("Indicator calc failed: %s", e)
 
@@ -229,12 +237,63 @@ def get_market_data(tickers: list[str], ttl_seconds: int = None) -> dict:
             logger.warning("Failed to fetch %s: %s", ticker, e)
             data[ticker] = {"error": str(e)}
 
+    # Post-process: relative strength vs index (20d perf delta).
+    # Index ticker fetched on-demand if not in batch.
+    _annotate_relative_strength(data)
     return data
+
+
+def _annotate_relative_strength(data: dict):
+    """Add `rs_20d_vs_index_pct` to each snapshot (ticker_perf − index_perf, in pp).
+    Index fetched on-demand if not present in batch (cached so cheap)."""
+    index_ticker = config.RS_INDEX_TICKER
+    index_snap = data.get(index_ticker)
+    if not isinstance(index_snap, dict) or index_snap.get("error"):
+        # Pull index separately (will hit cache if recently fetched elsewhere).
+        cached = _market_cache.get(index_ticker)
+        if cached and (_time.time() - cached[1]) < config.MARKET_DATA_CACHE_TTL_SECONDS:
+            index_snap = cached[0]
+        else:
+            try:
+                index_snap = _fetch_ticker(index_ticker)
+                _market_cache[index_ticker] = (index_snap, _time.time())
+            except Exception:
+                return
+    index_perf = index_snap.get("perf_20d_pct") if isinstance(index_snap, dict) else None
+    if not isinstance(index_perf, (int, float)):
+        return
+    for ticker, snap in data.items():
+        if not isinstance(snap, dict) or snap.get("error"):
+            continue
+        if ticker == index_ticker:
+            continue
+        ticker_perf = snap.get("perf_20d_pct")
+        if isinstance(ticker_perf, (int, float)):
+            snap["rs_20d_vs_index_pct"] = round(ticker_perf - index_perf, 2)
 
 
 def invalidate_market_cache():
     """Force next get_market_data call to re-fetch from yfinance."""
     _market_cache.clear()
+
+
+# ---------- Returns (for correlation / RS calculations) ----------
+
+def get_returns(tickers: list[str], days: int = 60):
+    """Per-ticker daily-return series (pandas) over last `days`. Used for correlation gate.
+    Returns dict[ticker -> pd.Series]. Missing/short series omitted silently."""
+    out = {}
+    for t in tickers:
+        try:
+            hist = yf.Ticker(t).history(period=f"{days + 10}d")
+            if len(hist) < 20:
+                continue
+            returns = hist["Close"].pct_change().dropna().tail(days)
+            if len(returns) >= 20:
+                out[t] = returns
+        except Exception:
+            logger.debug("Returns fetch failed for %s", t)
+    return out
 
 
 # ---------- Earnings ----------

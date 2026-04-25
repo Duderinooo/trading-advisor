@@ -28,13 +28,31 @@ Located in `core/analyzer.analyze_portfolio`, applied in this order on a `recomm
 
 1. `risk_halt_status` (kill-switch, daily loss, drawdown, heat)
 2. Regime gate (`RISK_OFF_BLOCKS_LONGS`)
-3. Edge gate (`edge_ok`)
+3. No-entry-zone (auction/EOD windows)
+4. SL-distance sanity (0.8×ATR ≤ dist ≤ 3.0×ATR)
+5. Edge gate (`edge_ok`, with Brier-haircut)
+6. Sector cluster cap (`MAX_POSITIONS_PER_SECTOR`)
+7. VIX size-dampening (modifier, not blocker)
+8. Weekly-trend (no LONG vs `wk_trend=DOWN`)
+9. Earnings hard-block (T-`EARNINGS_ENTRY_BLOCK_DAYS` to T+0; override: `setup_type=earnings_drift`)
+10. Relative-Strength gate (`rs_20d_vs_index_pct ≥ MIN_RS_20D_VS_INDEX_PCT`; override: mean_reversion / reversal_oversold / gap_fill)
+11. Volume-Confirm for `setup_type=breakout_resistance` (vol_ratio ≥ `MIN_BREAKOUT_VOLUME_RATIO`)
+12. Confluence-Score gate (deterministic 0-10 score ≥ `MIN_CONFLUENCE_SCORE`; relaxed by 2 for mean-reversion family)
+13. Correlation gate (≥`MAX_CORRELATED_HOLDINGS+1` holdings with corr ≥ `MAX_CORRELATION` over `CORRELATION_LOOKBACK_DAYS`)
+14. DD-soft scaling (modifier: size *= 0.5 between SOFT and HALT thresholds)
+15. Auto-split TP at 1R (modifier: single-TP recs get 1R-TP1 prepended for partial scale-out)
 
 Liquidity gate runs earlier, before data even reaches Claude: tickers with `volume_ratio < MIN_VOLUME_RATIO` or `spread_pct > MAX_SPREAD_PERCENT` are dropped from `market_data` — open trades are kept regardless so they remain visible for exit decisions.
 
 Slippage gate runs on `/confirm @price`: if `|filled − rec|/rec > MAX_ENTRY_SLIPPAGE_PERCENT`, confirm is rejected and user must re-quote.
 
 VWAP-anomaly gate runs in `core.events.detect_events`: watch-level hits with `|vwap_dev_atr| ≥ 3.0` are dropped (no Claude call). Between 2.0 and 3.0, the event is tagged with a flash-spike warning.
+
+## Trade-state automation (events.py SL/TP loop)
+
+- **Time-Stop**: positions held ≥ `TIME_STOP_DAYS` without a partial TP1 hit auto-close (`TIME_STOP_HIT` alert). Skipped once `partial_seq ≥ 1` (locked-in profit, let runner work).
+- **Partial TP**: TP1 hit on a multi-TP rec sells `PARTIAL_TP_FRACTION × shares` (default 50%), records the partial as a separate `closed_trades` entry with `partial=True`, then moves SL to break-even and activates 1.5×ATR trailing on remainder. Final TP closes full remainder.
+- **Brier scoring on partials**: scored only on `partial_seq=1` (first close); later partials carry no `brier`/`outcome` to avoid double-counting.
 
 ## Learning loop
 

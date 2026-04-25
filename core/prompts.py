@@ -44,6 +44,21 @@ CONVICTION (immer angeben):
 - 3-4/5: Setup OK, Makro neutral — kleinere Size
 - ≤2/5: Nicht traden, passen
 
+CONFLUENCE-SCORE (deterministisch, im Prompt mitgeliefert):
+- 0-10 basierend auf objektiven Bedingungen (wk_trend, MA-Stack, RSI, MACD, Volumen, Spread, RS-vs-Index, Analyst, Regime).
+- Score ≥7 = robustes Setup, full Size. Score 5-6 = halbe Size. Score <5 = PASS.
+- Conviction MUSS zum Confluence-Score passen: bei Score≤4 keine Conv≥4 vergeben.
+
+SETUP-TYPE (Pflicht im recommend_entry):
+- pullback_ma20 / pullback_ma50: Rücksetzer auf gleitenden Durchschnitt im Aufwärtstrend
+- breakout_resistance: Ausbruch über Widerstand mit Volumen (≥1.3× avg pflicht)
+- reversal_oversold: RSI<30 + bullish divergence/hammer auf wichtigem Support
+- flag_continuation: Bull-Flag nach Trend-Move
+- support_bounce: Bounce an etabliertem Support (MA50/200, Trendlinie)
+- mean_reversion: Statistische Rückkehr zu MA/VWAP nach Übertreibung (RS-Gate Override-fähig)
+- gap_fill: Gap-Trade mit Mean-Reversion-These
+- earnings_drift: Post-Earnings-Drift nach starkem Beat (T+1 bis T+5)
+
 WAHRSCHEINLICHKEIT (p_win) — PFLICHT im recommend_entry Tool:
 - p_win = realistische Wahrscheinlichkeit, dass Trade im Gewinn schließt (pnl_pct > 0) bevor SL greift
 - Zahl zwischen 0.00 und 1.00 (keine Conviction-Kategorie, sondern echter Kalibrierungs-Wert)
@@ -214,8 +229,26 @@ RECOMMEND_ENTRY_TOOL = {
             "hold_days_max": {"type": "integer"},
             "thesis": {"type": "string", "description": "1-Satz Setup-These (max 100 Zeichen)"},
             "trailing_stop_pct": {"type": "number", "description": "Trailing-Stop % (optional)"},
+            "setup_type": {
+                "type": "string",
+                "enum": [
+                    "pullback_ma20", "pullback_ma50",
+                    "breakout_resistance",
+                    "reversal_oversold",
+                    "flag_continuation",
+                    "support_bounce",
+                    "mean_reversion",
+                    "gap_fill",
+                    "earnings_drift",
+                ],
+                "description": (
+                    "Setup-Klasse für Per-Type Hit-Rate-Tracking. "
+                    "Wähle den dominanten Typ — keine Mehrfach-Tags."
+                ),
+            },
         },
-        "required": ["ticker", "entry_price", "stop_loss", "take_profit", "size_eur", "conviction", "p_win", "thesis"],
+        "required": ["ticker", "entry_price", "stop_loss", "take_profit", "size_eur",
+                     "conviction", "p_win", "thesis", "setup_type"],
         "additionalProperties": False,
     },
     # Cache the full tools block (both tool defs) alongside system prompt.

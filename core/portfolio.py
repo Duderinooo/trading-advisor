@@ -245,6 +245,15 @@ def risk_halt_status(portfolio: dict) -> dict:
     }
 
 
+def dd_scaling_factor(portfolio: dict) -> float:
+    """Soft drawdown scaling: between SOFT and HALT thresholds, halve risk-per-trade.
+    Hard halt handled separately via risk_halt_status. Returns 1.0 (full size) or 0.5 (halved)."""
+    _eq, _peak, dd_pct = _equity_curve(portfolio)
+    if dd_pct >= config.DRAWDOWN_SOFT_PERCENT and dd_pct < config.DRAWDOWN_HALT_PERCENT:
+        return 0.5
+    return 1.0
+
+
 def edge_ok(p_win: float | None, entry: float, stop: float, take_profit) -> tuple[bool, float]:
     """Check positive-expectancy gate. Returns (ok, edge). edge = p·b − (1−p) where b = reward/risk."""
     if not isinstance(p_win, (int, float)) or not (0 < p_win < 1):
@@ -257,6 +266,85 @@ def edge_ok(p_win: float | None, entry: float, stop: float, take_profit) -> tupl
     b = (tp - entry) / (entry - stop)
     edge = p_win * b - (1 - p_win)
     return edge >= config.MIN_EXPECTED_EDGE, edge
+
+
+# ---------- Confluence scoring ----------
+
+def compute_confluence(snap: dict, regime: str) -> dict:
+    """Deterministic 0-10 confluence score for a LONG entry.
+    Each item = 1 point. Aggregated score replaces gut-feel conviction.
+    Returns {'score': int, 'items': dict[name, bool], 'missing': list[str]}.
+    """
+    if not isinstance(snap, dict) or snap.get("error") or not snap.get("price"):
+        return {"score": 0, "items": {}, "missing": ["no_data"]}
+
+    price = snap.get("price")
+    ma20 = snap.get("ma20")
+    ma50 = snap.get("ma50")
+    rsi = snap.get("rsi14")
+    macd = snap.get("macd")
+    macd_sig = snap.get("macd_signal")
+    vol_ratio = snap.get("volume_ratio")
+    spread = snap.get("spread_pct")
+    wk_trend = snap.get("wk_trend")
+    rs = snap.get("rs_20d_vs_index_pct")
+    rec_key = snap.get("analyst_rec_key")
+    upside = snap.get("analyst_upside_pct")
+
+    items: dict[str, bool] = {}
+    items["wk_trend_up"] = (wk_trend == "UP")
+    items["price_gt_ma50"] = bool(price and ma50 and price > ma50)
+    items["price_gt_ma20"] = bool(price and ma20 and price > ma20)
+    items["rsi_healthy"] = isinstance(rsi, (int, float)) and 40 <= rsi <= 70
+    items["macd_bullish"] = isinstance(macd, (int, float)) and isinstance(macd_sig, (int, float)) and macd > macd_sig
+    items["volume_ok"] = isinstance(vol_ratio, (int, float)) and vol_ratio >= 1.0
+    items["spread_tight"] = isinstance(spread, (int, float)) and spread <= config.MAX_SPREAD_PERCENT / 2
+    items["rs_positive"] = isinstance(rs, (int, float)) and rs >= 0
+    items["analyst_bullish"] = (rec_key in ("strong_buy", "buy")) or (
+        isinstance(upside, (int, float)) and upside >= 5
+    )
+    items["regime_risk_on"] = regime.startswith("RISK_ON") if isinstance(regime, str) else False
+
+    score = sum(1 for v in items.values() if v)
+    missing = [k for k, v in items.items() if not v]
+    return {"score": score, "items": items, "missing": missing}
+
+
+def format_confluence(c: dict) -> str:
+    if not c or "score" not in c:
+        return ""
+    score = c["score"]
+    items = c.get("items") or {}
+    hit = [k for k, v in items.items() if v]
+    miss = [k for k, v in items.items() if not v]
+    return (
+        f"Confluence {score}/10 — ✓ "
+        + (", ".join(hit) if hit else "—")
+        + (f" | ✗ {', '.join(miss)}" if miss else "")
+    )
+
+
+# ---------- Correlation gate ----------
+
+def compute_correlations(returns_by_ticker: dict, candidate: str) -> dict[str, float]:
+    """Pairwise correlation of `candidate` daily returns vs each other ticker.
+    `returns_by_ticker` is dict[ticker -> pandas.Series of daily pct_change()].
+    Returns dict[other_ticker -> corr_float]. Missing/short series omitted.
+    """
+    cand = returns_by_ticker.get(candidate)
+    if cand is None or len(cand.dropna()) < 20:
+        return {}
+    out = {}
+    for t, series in returns_by_ticker.items():
+        if t == candidate or series is None or len(series.dropna()) < 20:
+            continue
+        try:
+            c = float(cand.corr(series))
+            if c == c:  # not NaN
+                out[t] = round(c, 2)
+        except Exception:
+            continue
+    return out
 
 
 # ---------- Hit-rate stats ----------
@@ -364,6 +452,82 @@ def compute_hit_stats(closed_trades: list[dict]) -> dict | None:
                         f"Position Size halbieren bei VIX>20."
                     )
 
+    # --- Per-setup-type breakdown (which entry patterns work) ---
+    by_setup: dict[str, dict] = {}
+    for t in closed_trades:
+        st = t.get("setup_type") or "untagged"
+        by_setup.setdefault(st, {"wins": 0, "total": 0, "pnl_pct_sum": 0.0})
+        by_setup[st]["total"] += 1
+        if (t.get("pnl_pct") or 0) > 0:
+            by_setup[st]["wins"] += 1
+        by_setup[st]["pnl_pct_sum"] += (t.get("pnl_pct") or 0)
+    for st, s in by_setup.items():
+        s["rate"] = round(s["wins"] / s["total"] * 100, 1) if s["total"] else 0
+        s["avg_pnl_pct"] = round(s["pnl_pct_sum"] / s["total"], 2) if s["total"] else 0
+        del s["pnl_pct_sum"]
+
+    # --- Time-of-day / day-of-week bias on entry timestamp ---
+    by_dow: dict[str, dict] = {}
+    by_hour_bucket: dict[str, dict] = {}
+    for t in closed_trades:
+        ed = t.get("entry_date") or ""
+        try:
+            dt = datetime.strptime(ed, "%Y-%m-%d %H:%M")
+        except Exception:
+            continue
+        dow = dt.strftime("%a")
+        by_dow.setdefault(dow, {"wins": 0, "total": 0})
+        by_dow[dow]["total"] += 1
+        if (t.get("pnl_pct") or 0) > 0:
+            by_dow[dow]["wins"] += 1
+
+        # Hour buckets: open(09-10), morning(10-12), midday(12-15), us_open(15-17), late(17-22).
+        h = dt.hour
+        if 9 <= h < 10:
+            bucket = "open"
+        elif 10 <= h < 12:
+            bucket = "morning"
+        elif 12 <= h < 15:
+            bucket = "midday"
+        elif 15 <= h < 17:
+            bucket = "us_open"
+        else:
+            bucket = "late"
+        by_hour_bucket.setdefault(bucket, {"wins": 0, "total": 0})
+        by_hour_bucket[bucket]["total"] += 1
+        if (t.get("pnl_pct") or 0) > 0:
+            by_hour_bucket[bucket]["wins"] += 1
+
+    for bucket_dict in (by_dow, by_hour_bucket):
+        for k, s in bucket_dict.items():
+            s["rate"] = round(s["wins"] / s["total"] * 100, 1) if s["total"] else 0
+
+    # --- Hold-duration buckets (entry → exit days) ---
+    by_hold: dict[str, dict] = {}
+    for t in closed_trades:
+        ed = t.get("entry_date") or ""
+        xd = t.get("exit_date") or ""
+        try:
+            d_in = datetime.strptime(ed, "%Y-%m-%d %H:%M")
+            d_out = datetime.strptime(xd, "%Y-%m-%d %H:%M")
+            held_days = max(0, (d_out - d_in).days)
+        except Exception:
+            continue
+        if held_days <= 1:
+            bucket = "0-1d"
+        elif held_days <= 3:
+            bucket = "2-3d"
+        elif held_days <= 7:
+            bucket = "4-7d"
+        else:
+            bucket = "8d+"
+        by_hold.setdefault(bucket, {"wins": 0, "total": 0})
+        by_hold[bucket]["total"] += 1
+        if (t.get("pnl_pct") or 0) > 0:
+            by_hold[bucket]["wins"] += 1
+    for k, s in by_hold.items():
+        s["rate"] = round(s["wins"] / s["total"] * 100, 1) if s["total"] else 0
+
     return {
         "total": total,
         "win_rate": round(len(wins) / total * 100, 1),
@@ -372,6 +536,10 @@ def compute_hit_stats(closed_trades: list[dict]) -> dict | None:
         "r_multiple": round(r_multiple, 2) if r_multiple else None,
         "total_pnl_eur": total_pnl_eur,
         "by_conviction": conv_stats,
+        "by_setup": by_setup,
+        "by_dow": by_dow,
+        "by_hour": by_hour_bucket,
+        "by_hold": by_hold,
         "recent_streak": streak,
         "calibration": calibration,
         "mistake_classes": mistake_classes,
@@ -412,6 +580,44 @@ def format_hit_stats(stats: dict) -> str:
         lines.append(line)
     if stats.get("class_suggestion"):
         lines.append(f"🎯 SELBST-KALIBRIERUNG: {stats['class_suggestion']}")
+
+    # Per-setup table (only show setups with ≥3 trades to avoid noise)
+    setups = stats.get("by_setup") or {}
+    setup_line = " | ".join(
+        f"{name}: {s['rate']}% ({s['wins']}/{s['total']}, Ø{s['avg_pnl_pct']:+.1f}%)"
+        for name, s in sorted(setups.items(), key=lambda x: -x[1]["total"])
+        if s["total"] >= 3
+    )
+    if setup_line:
+        lines.append(f"Setups: {setup_line}")
+
+    # Day-of-week (only if at least one bucket ≥3)
+    dows = stats.get("by_dow") or {}
+    dow_line = " | ".join(
+        f"{d}: {s['rate']}% ({s['wins']}/{s['total']})"
+        for d, s in dows.items() if s["total"] >= 3
+    )
+    if dow_line:
+        lines.append(f"DoW: {dow_line}")
+
+    # Hour bucket (only if at least one bucket ≥3)
+    hours = stats.get("by_hour") or {}
+    hour_line = " | ".join(
+        f"{h}: {s['rate']}% ({s['wins']}/{s['total']})"
+        for h, s in hours.items() if s["total"] >= 3
+    )
+    if hour_line:
+        lines.append(f"Entry-Zeit: {hour_line}")
+
+    # Hold-duration
+    holds = stats.get("by_hold") or {}
+    hold_line = " | ".join(
+        f"{b}: {s['rate']}% ({s['wins']}/{s['total']})"
+        for b, s in sorted(holds.items()) if s["total"] >= 3
+    )
+    if hold_line:
+        lines.append(f"Hold: {hold_line}")
+
     return "\n".join(lines)
 
 

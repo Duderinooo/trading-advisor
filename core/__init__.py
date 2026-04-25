@@ -24,6 +24,10 @@ from core.portfolio import (
     edge_ok,
     kill_switch_active,
     set_kill_switch,
+    compute_confluence,
+    format_confluence,
+    compute_correlations,
+    dd_scaling_factor,
 )
 from core.market_data import (
     get_market_data,
@@ -32,6 +36,7 @@ from core.market_data import (
     get_dividend_warnings,
     fetch_news,
     market_regime,
+    get_returns,
 )
 from core.events import (
     check_news_events,
@@ -57,9 +62,12 @@ __all__ = [
     "compute_equity_stats", "format_equity_stats",
     "risk_halt_status", "maintain_drawdown_state", "edge_ok",
     "kill_switch_active", "set_kill_switch",
+    "compute_confluence", "format_confluence",
+    "compute_correlations", "dd_scaling_factor",
     # market data
     "get_market_data", "invalidate_market_cache",
     "get_earnings_warnings", "get_dividend_warnings", "fetch_news", "market_regime",
+    "get_returns",
     # events
     "check_news_events", "detect_events", "should_analyze_events",
     "check_stop_loss_take_profit", "check_price_alerts",

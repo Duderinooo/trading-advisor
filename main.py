@@ -515,6 +515,34 @@ P&L: +{alert['pnl_pct']:.1f}%
                     action = "TP1_HIT" if alert.get("partial") else "TP_HIT"
                     log_trade(alert, action, f"Take-Profit erreicht bei ${alert['current_price']:.2f}")
 
+            elif alert["type"] == "PARTIAL_TP_HIT":
+                message = (
+                    f"🎯 *PARTIAL-TP: {alert['ticker']}*\n\n"
+                    f"Entry: €{alert['entry']:.2f}\n"
+                    f"TP1: €{alert['take_profit']:.2f}\n"
+                    f"Now: €{alert['current_price']:.2f}\n"
+                    f"P&L: +{alert['pnl_pct']:.1f}%\n\n"
+                    f"💰 *VERKAUFE {alert['shares_sold']} Stk auf TR jetzt*\n"
+                    f"_Rest {alert['shares_remaining']} Stk läuft mit BE-SL + Trailing weiter._"
+                )
+                send_notification(message)
+                if MEMPALACE_AVAILABLE:
+                    log_trade(alert, "PARTIAL_TP", f"Partial-TP @ €{alert['current_price']:.2f}, "
+                              f"sold {alert['shares_sold']}, remain {alert['shares_remaining']}")
+
+            elif alert["type"] == "TIME_STOP_HIT":
+                message = (
+                    f"⏱️ *TIME-STOP: {alert['ticker']}*\n\n"
+                    f"Hold: {alert['held_days']}d ohne TP1 → auto-close\n"
+                    f"Entry: €{alert['entry']:.2f}\n"
+                    f"Now: €{alert['current_price']:.2f}\n"
+                    f"P&L: {alert['pnl_pct']:+.1f}%\n\n"
+                    f"⚠️ *POSITION AUF TR SCHLIESSEN*\n_Tote Trades binden Heat — Kapital frei für neue Setups._"
+                )
+                send_notification(message)
+                if MEMPALACE_AVAILABLE:
+                    log_trade(alert, "TIME_STOP", f"Time-stop hit nach {alert['held_days']}d")
+
             elif alert["type"] == "BREAK_EVEN_SHIFT":
                 send_notification(
                     f"🛡️ *Stop auf Break-Even: {alert['ticker']}*\n\n"
