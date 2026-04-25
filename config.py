@@ -62,6 +62,10 @@ MIN_MINUTES_BETWEEN_FORCED_ANALYSES = 15
 # Earnings Auto-Close Schwelle (Tage bis Earnings)
 EARNINGS_CLOSE_DAYS = 1
 
+# Dividenden: Ex-Div Pre-Warning Fenster (Tage). Mechanischer Preis-Drop ≈ Ausschüttung
+# kann SL triggern, daher Morning-Brief warnt + schlägt SL-Adjust vor wenn drop ≥ 50% SL-Distance.
+DIVIDEND_WARN_DAYS = 7
+
 # Gap-Schwelle (|change_pct| vs prev close) für Morning/Opening Flagging
 GAP_FLAG_PERCENT = 2.0
 
@@ -83,7 +87,6 @@ SECTOR_MAP = {
     "2PP.DE": "fintech",
     # Internet/Mobility
     "UT8.DE": "internet",
-    "SNP.DE": "internet",
     # EV/Auto
     "TL0.DE": "auto_ev",
     # Industrial
@@ -107,7 +110,7 @@ SECTOR_MAP = {
     # Building Materials (cyclical)
     "HEI.DE": "building_materials",
     # Commodities (already risk-diversified by nature but track)
-    "3OIL.DE": "oil",
+    "3OIL.MI": "oil",
     "4GLD.DE": "gold",
     "EXX1.DE": "silver",
     "U3O8.DE": "uranium",
@@ -193,8 +196,7 @@ WATCHLIST = [
     "2PP.DE",       # PayPal - €43
     "INL.DE",       # Intel - €57
     "UT8.DE",       # Uber - €66
-    "SNP.DE",       # Snap - ~€10
-    
+
     # ⚠️ MITTEL (€150-200) - Stop-Loss knapp möglich
     "NVD.DE",       # NVIDIA - €171
     
@@ -231,7 +233,7 @@ WATCHLIST = [
 # Alle via yfinance verifiziert!
 COMMODITIES = [
     # 🛢️ ÖL - Iran/Nahost/OPEC
-    "3OIL.DE",      # WisdomTree WTI 3x Long - €1.61 (sehr günstig, 3x Hebel!)
+    "3OIL.MI",      # WisdomTree WTI 3x Long (Borsa Italiana, EUR ~€48; XETRA-Listing delisted/no yfinance feed)
     
     # 🥇 GOLD - Safe Haven bei Krisen
     "4GLD.DE",      # Xetra-Gold - €130
@@ -249,7 +251,7 @@ COMMODITIES = [
 
 # Geopolitische Trigger-Map für Alerts
 COMMODITY_TRIGGERS = {
-    "3OIL.DE": ["iran", "opec", "nahost", "öl", "oil", "saudi", "krieg", "sanktion"],
+    "3OIL.MI": ["iran", "opec", "nahost", "öl", "oil", "saudi", "krieg", "sanktion"],
     "4GLD.DE": ["rezession", "bankenkrise", "fed", "inflation", "crash", "gold"],
     "EXX1.DE": ["silber", "silver", "safe haven", "krise"],
     "U3O8.DE": ["uran", "nuklear", "atom", "smr", "energie"],
@@ -269,7 +271,6 @@ TICKER_ALIASES = {
     "PYPL": "2PP.DE",
     "INTC": "INL.DE",
     "UBER": "UT8.DE",
-    "SNAP": "SNP.DE",
     "PLTR": "PTX.DE",
     "NVDA": "NVD.DE",
     "AAPL": "APC.DE",

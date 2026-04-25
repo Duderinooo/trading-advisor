@@ -4,11 +4,14 @@ Event-Driven Trading Advisor Bot
 Monitors markets and triggers analysis when important events happen.
 """
 
+import os
 import time
 import logging
 import signal
 import sys
+import threading
 from datetime import datetime, date
+from logging.handlers import RotatingFileHandler
 
 import config
 from core import (
@@ -20,6 +23,7 @@ from core import (
     load_portfolio,
     save_portfolio,
     get_earnings_warnings,
+    get_dividend_warnings,
     check_news_events,
     kill_switch_active,
     portfolio_lock,
@@ -30,12 +34,58 @@ from notifier import send_notification, send_daily_summary, send_alert
 from telegram_listener import start_listener_thread
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot.log")
+_LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+_LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+
+# Root logger → rotating file. No StreamHandler: launchd's bot.err only catches
+# pre-logging-init crashes (small) instead of the ~MB/day yfinance noise we saw before.
+_root_logger = logging.getLogger()
+_root_logger.setLevel(logging.INFO)
+for _h in list(_root_logger.handlers):
+    _root_logger.removeHandler(_h)
+_file_handler = RotatingFileHandler(_LOG_PATH, maxBytes=5 * 1024 * 1024, backupCount=5)
+_file_handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
+_root_logger.addHandler(_file_handler)
+
+# Mute noisy 3rd-party loggers (httpx logs every Telegram poll at INFO).
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("yfinance").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+logging.getLogger("telegram.ext").setLevel(logging.WARNING)
+
 logger = logging.getLogger("trading_advisor")
+
+
+# Heartbeat: main-loop tick timestamp. Watchdog thread alerts via Telegram if
+# the loop is silent for >30 min during market hours. launchd KeepAlive only
+# covers process death — this catches hangs (deadlock, stuck network call).
+_HEARTBEAT_STALE_SEC = 30 * 60
+_heartbeat = [time.monotonic()]
+
+
+def _heartbeat_watchdog():
+    alerted = False
+    while True:
+        try:
+            time.sleep(60)
+            delta = time.monotonic() - _heartbeat[0]
+            if delta > _HEARTBEAT_STALE_SEC:
+                if not alerted:
+                    try:
+                        send_alert(
+                            "Bot Hang",
+                            f"Main loop stale {int(delta / 60)} min "
+                            f"(letzte Iteration vor {int(delta)}s). "
+                            f"launchd restartet bei Crash, aber Prozess lebt → manuell prüfen.",
+                        )
+                    except Exception as exc:
+                        logger.error("Heartbeat alert failed: %s", exc)
+                    alerted = True
+            else:
+                alerted = False
+        except Exception as exc:
+            logger.error("Watchdog tick failed: %s", exc)
 
 
 _ACTIONABLE_PREFIXES = ("ENTRY", "EXIT", "BUY", "SELL", "KAUFEN", "VERKAUFEN", "CLOSE")
@@ -268,6 +318,52 @@ def run_morning_prep():
                     logger.warning("Earnings warning sent: %s in %d days", w["ticker"], w["days_until"])
     except Exception:
         logger.exception("Earnings pre-check failed")
+
+    # Ex-dividend pre-check: mechanical price gap on ex-date can trip SL falsely.
+    # Warn for open positions with ex-div in <=DIVIDEND_WARN_DAYS, flag if div eats >50% of SL distance.
+    try:
+        open_trades = load_portfolio().get("open_trades", [])
+        if open_trades:
+            by_ticker = {t["ticker"]: t for t in open_trades}
+            warns = get_dividend_warnings(list(by_ticker.keys()), days_ahead=config.DIVIDEND_WARN_DAYS)
+            for w in warns:
+                trade = by_ticker.get(w["ticker"])
+                if not trade:
+                    continue
+                entry = trade.get("entry_price")
+                sl = trade.get("stop_loss")
+                div = w["expected_div"]
+                msg = (
+                    f"Ex-Div in *{w['days_until']} Tag(en)* ({w['ex_date']})\n"
+                    f"Erwartete Ausschüttung: ~€{div:.2f}/Aktie\n"
+                )
+                sl_threat = False
+                if entry and sl and entry > sl:
+                    sl_distance = entry - sl
+                    drop_share = div / sl_distance if sl_distance > 0 else 0
+                    msg += (
+                        f"SL-Distance: €{sl_distance:.2f} | Ex-Div-Drop frisst {drop_share*100:.0f}% davon\n"
+                    )
+                    if drop_share >= 0.5:
+                        sl_threat = True
+                        suggested_sl = round(sl - div, 2)
+                        msg += (
+                            f"⚠️ Mechanischer Drop kann SL triggern.\n"
+                            f"Vorschlag: SL temporär auf €{suggested_sl:.2f} senken (heute Abend), "
+                            f"nach Ex-Div ({w['ex_date']}) zurücksetzen."
+                        )
+                title = (
+                    f"💸 EX-DIV WARNUNG: {w['ticker']} — SL-Risiko"
+                    if sl_threat else
+                    f"💸 Ex-Div anstehend: {w['ticker']}"
+                )
+                send_alert(title, msg)
+                logger.info(
+                    "Dividend warning: %s ex=%s div=%.2f sl_threat=%s",
+                    w["ticker"], w["ex_date"], div, sl_threat,
+                )
+    except Exception:
+        logger.exception("Dividend pre-check failed")
 
     try:
         analysis = analyze_portfolio(mode="morning")
@@ -604,6 +700,9 @@ def main():
     # Background Telegram listener for /confirm, /close, /positions, /cancel
     start_listener_thread()
 
+    # Background hang-detection watchdog. Daemon=True → dies with main process.
+    threading.Thread(target=_heartbeat_watchdog, daemon=True, name="heartbeat-watchdog").start()
+
     if is_morning_prep_time() or (is_market_hours() and not _morning_prep_done_today()):
         run_morning_prep()
 
@@ -613,6 +712,7 @@ def main():
     check_interval = config.PRICE_CHECK_INTERVAL_MINUTES * 60
 
     while True:
+        _heartbeat[0] = time.monotonic()
         now = datetime.now()
 
         if is_morning_prep_time():

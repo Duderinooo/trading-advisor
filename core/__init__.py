@@ -29,6 +29,7 @@ from core.market_data import (
     get_market_data,
     invalidate_market_cache,
     get_earnings_warnings,
+    get_dividend_warnings,
     fetch_news,
     market_regime,
 )
@@ -58,7 +59,7 @@ __all__ = [
     "kill_switch_active", "set_kill_switch",
     # market data
     "get_market_data", "invalidate_market_cache",
-    "get_earnings_warnings", "fetch_news", "market_regime",
+    "get_earnings_warnings", "get_dividend_warnings", "fetch_news", "market_regime",
     # events
     "check_news_events", "detect_events", "should_analyze_events",
     "check_stop_loss_take_profit", "check_price_alerts",
