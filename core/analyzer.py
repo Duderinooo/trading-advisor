@@ -251,7 +251,7 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
 ## Markt-Kontext (Indizes + VIX)
 {_dump(_market_ctx_slim)}
 
-## Live Kurse (mit RSI, MACD, MA20/50, BB, VWAP, Intraday-OHLC)
+## Live Kurse (mit RSI, MACD, MA20/50, BB, VWAP, Intraday-OHLC, Analyst-Konsens)
 {_dump(market_data)}
 
 ## Markt-Regime

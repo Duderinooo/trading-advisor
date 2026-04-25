@@ -171,6 +171,14 @@ def _fetch_ticker(ticker: str) -> dict:
     if current_price and bid and ask:
         spread_pct = round((ask - bid) / current_price * 100, 3)
 
+    # Analyst consensus (yfinance aggregates Reuters/Refinitiv feed).
+    # Only surfaced if >=5 analysts cover the name — below that the mean is too noisy.
+    analyst_count = info.get("numberOfAnalystOpinions")
+    target_mean = info.get("targetMeanPrice") if (analyst_count or 0) >= 5 else None
+    analyst_upside_pct = None
+    if target_mean and current_price:
+        analyst_upside_pct = round((target_mean - current_price) / current_price * 100, 1)
+
     snapshot = {
         "name": info.get("shortName", ticker),
         "price": current_price,
@@ -187,6 +195,13 @@ def _fetch_ticker(ticker: str) -> dict:
         "bid": bid,
         "ask": ask,
         "spread_pct": spread_pct,
+        "analyst_target_mean": target_mean,
+        "analyst_target_high": info.get("targetHighPrice") if (analyst_count or 0) >= 5 else None,
+        "analyst_target_low": info.get("targetLowPrice") if (analyst_count or 0) >= 5 else None,
+        "analyst_count": analyst_count,
+        "analyst_rec_mean": info.get("recommendationMean") if (analyst_count or 0) >= 5 else None,
+        "analyst_rec_key": info.get("recommendationKey") if (analyst_count or 0) >= 5 else None,
+        "analyst_upside_pct": analyst_upside_pct,
     }
     snapshot.update(_compute_indicators(hist_daily, hist_intraday))
     return snapshot

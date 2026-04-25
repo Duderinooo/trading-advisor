@@ -249,14 +249,50 @@ COMMODITIES = [
     "EXXY.DE",      # iShares Diversified Commodity - €33
 ]
 
-# Geopolitische Trigger-Map für Alerts
+# Geopolitische Trigger-Map für Alerts.
+# Keywords werden mit \bkw\b matchen (siehe core/events._COMMODITY_TRIGGER_PATTERNS).
+# Daher: Inflexionen explizit listen, keine zu breiten Singles ("crash", "fed", "krise"
+# alleine triggerten FPs auf Goldman/Federated/Bankenkrise-Headlines).
 COMMODITY_TRIGGERS = {
-    "3OIL.MI": ["iran", "opec", "nahost", "öl", "oil", "saudi", "krieg", "sanktion"],
-    "4GLD.DE": ["rezession", "bankenkrise", "fed", "inflation", "crash", "gold"],
-    "EXX1.DE": ["silber", "silver", "safe haven", "krise"],
-    "U3O8.DE": ["uran", "nuklear", "atom", "smr", "energie"],
-    "NUKL.DE": ["uran", "nuklear", "atom", "smr", "energie"],
-    "EXXY.DE": ["supply chain", "lieferkette", "inflation", "rohstoff"],
+    "3OIL.MI": [
+        "iran", "iranian", "iranische", "iranisch",
+        "opec", "opec+",
+        "nahost", "middle east",
+        "öl", "ölpreis", "rohöl", "crude oil", "brent", "wti",
+        "saudi", "saudi-arabien", "saudi arabia",
+        "krieg", "war",
+        "sanktion", "sanktionen", "sanctions",
+    ],
+    "4GLD.DE": [
+        "rezession", "recession",
+        "bankenkrise", "banking crisis", "finanzkrise", "financial crisis",
+        "fed pivot", "fed cut", "fed cuts", "fed hike", "fed hikes",
+        "rate cut", "rate cuts", "rate hike", "rate hikes",
+        "zinssenkung", "zinssenkungen", "zinserhöhung", "zinserhöhungen", "leitzins",
+        "inflation",
+        "market crash", "marktcrash", "stock market crash", "kurssturz",
+        "gold", "goldpreis",
+    ],
+    "EXX1.DE": [
+        "silber", "silver", "silberpreis",
+        "safe haven",
+        "bankenkrise", "banking crisis",
+    ],
+    "U3O8.DE": [
+        "uran", "uranium",
+        "nuklear", "nuclear", "kernkraft", "atomkraft", "atomenergie",
+        "smr", "small modular reactor",
+    ],
+    "NUKL.DE": [
+        "uran", "uranium",
+        "nuklear", "nuclear", "kernkraft", "atomkraft", "atomenergie",
+        "smr", "small modular reactor",
+    ],
+    "EXXY.DE": [
+        "supply chain", "lieferkette",
+        "supply shock", "lieferengpass",
+        "rohstoffknappheit", "raw material shortage",
+    ],
 }
 
 # Markt-Indikatoren (nur beobachten, nicht traden)

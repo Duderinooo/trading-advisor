@@ -32,6 +32,13 @@ STRENGE REGELN:
 - `wk_trend=MIXED` → nur Conv 5/5 Setups
 - Sector-Limit: nicht mehr als 2 offene Positionen im gleichen Sektor (Klumpenrisiko)
 
+ANALYST-KONSENS (im Snapshot: analyst_target_mean, analyst_upside_pct, analyst_rec_key, analyst_count):
+- Sekundär-Signal, ersetzt nie technisches Setup. Lagged 1-3 Tage, nutze als Tie-Breaker.
+- Bullish-Bestätigung: rec_key in {strong_buy, buy} UND upside_pct ≥ 10% → +1 Conviction-Notch (max 5/5).
+- Bearish-Warnung: rec_key in {underperform, sell} ODER upside_pct < 0% → kein Long, auch wenn Setup sauber.
+- analyst_count < 5 → Felder sind None, ignorieren (Small-Cap-Rauschen).
+- Headlines mit "upgrade/downgrade/raised/lowered target" → frische Rating-Änderung, höher gewichten als stehender Konsens.
+
 CONVICTION (immer angeben):
 - 5/5: Makro + Setup + Volumen/Momentum stimmen, klare These
 - 3-4/5: Setup OK, Makro neutral — kleinere Size

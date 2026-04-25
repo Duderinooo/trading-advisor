@@ -7,6 +7,7 @@
 
 import hashlib
 import logging
+import re
 from datetime import datetime, date
 
 import yfinance as yf
@@ -14,31 +15,210 @@ import yfinance as yf
 import config
 from core.portfolio import portfolio_lock, load_portfolio, save_portfolio, maintain_drawdown_state
 from core.market_data import get_market_data
+from core.news_rss import fetch_rss_news
 from core.api_usage import get_minutes_since_last_analysis
 
 logger = logging.getLogger(__name__)
 
 
 # ---------- News event detection ----------
+# Precision > Recall: prefer false-negatives over false-positives. Word-boundary
+# matching via regex; trailing "*" = compound-stem (matches kw + any word chars).
+# Stems used only for domain-specific German compounds (no English-word collision).
+# English: explicit inflections; ambiguous shorts (beat/miss/cut/loss) use bigrams.
+
+def _kw_to_pattern_part(kw: str) -> str:
+    """Build regex fragment for a keyword. `kw*` → stem (\\bkw\\w*\\b); else exact (\\bkw\\b)."""
+    if kw.endswith("*"):
+        return r"\b" + re.escape(kw[:-1]) + r"\w*\b"
+    return r"\b" + re.escape(kw) + r"\b"
+
+
+def _build_keyword_pattern(keywords: list[str]) -> re.Pattern:
+    return re.compile(
+        "(?:" + "|".join(_kw_to_pattern_part(kw) for kw in keywords) + ")",
+        re.IGNORECASE,
+    )
+
 
 _STOCK_NEWS_KEYWORDS = [
-    # English
-    "earnings", "beat", "miss", "guidance", "raised", "lowered", "cut",
-    "upgrade", "downgrade", "outperform", "underperform",
-    "acquisition", "merger", "takeover", "buyout",
-    "fda", "approval", "approved", "rejected", "recall",
-    "ceo", "resign", "fired", "arrested", "investigation", "lawsuit", "fraud",
-    "layoff", "restructur", "bankrupt", "default",
-    "dividend", "buyback", "split",
-    "revenue", "profit", "loss", "forecast", "outlook",
-    # German
-    "übernahme", "quartalsergebnis", "gewinnwarnung", "prognose",
-    "insolvenz", "stellenabbau", "rücktritt",
+    # English — earnings/results (bigrams for ambiguous "beat"/"miss"/"cut")
+    "earnings", "earnings beat", "earnings miss",
+    "revenue beat", "revenue miss",
+    "guidance", "raised guidance", "lowered guidance", "cut guidance",
+    "raised forecast", "lowered forecast", "cut forecast",
+    "profit warning",
+    # English — analyst actions
+    "upgrade", "upgrades", "upgraded",
+    "downgrade", "downgrades", "downgraded",
+    "outperform", "outperforms", "outperformed",
+    "underperform", "underperforms", "underperformed",
+    "raised target", "raises target", "lowered target", "lowers target",
+    "price target", "cut target", "cuts target",
+    "initiated coverage", "initiates coverage",
+    "buy rating", "sell rating", "hold rating",
+    "overweight", "underweight",
+    # English — M&A
+    "acquisition", "acquisitions",
+    "merger", "mergers",
+    "takeover", "takeovers",
+    "buyout", "buyouts",
+    # English — regulatory
+    "fda approval", "fda rejection", "fda warning",
+    "drug approval", "drug rejection",
+    "recall", "recalls", "recalled",
+    # English — leadership/legal
+    "ceo", "cfo",
+    "resign", "resigns", "resigned", "resignation",
+    "investigation", "investigations", "investigated",
+    "lawsuit", "lawsuits",
+    "fraud", "fraudulent",
+    # English — restructuring
+    "layoff", "layoffs",
+    "restructuring", "restructured", "restructure",
+    "bankruptcy", "bankrupt",
+    "loan default", "debt default", "default risk",
+    # English — capital actions
+    "dividend", "dividends",
+    "buyback", "buybacks",
+    "stock split", "share split", "reverse split",
+    # German — compound stems (precision-safe, domain-specific)
+    "übernahm*",       # übernahme, übernahmeangebot, übernahmeversuch
+    "quartalszahl*", "quartalsergebnis*",
+    "gewinnwarn*",     # gewinnwarnung, gewinnwarnungen
+    "gewinneinbruch*", "gewinnsprung*",
+    "prognose*",       # prognose, prognosen, prognoseanhebung, prognosesenkung
+    "insolvenz*",      # insolvenz, insolvenzantrag, insolvenzverfahren
+    "stellenabbau*",
+    "rücktritt*",
+    "kursziel*",       # kursziel, kursziele, kurszielanhebung
+    "hochstuf*", "hochgestuft",
+    "herabstuf*", "herabgestuft",
+    "abstuf*",
+    "skandal*",
+    "ermittlung*",
+    "betrugs*",        # betrugsfall, betrugsverdacht (bare "betrug" too generic verb form)
+    "dividend*",       # dividende, dividenden, dividendenkürzung
+    "aktienrückkauf*",
+    "umsatzsprung*", "umsatzeinbruch*",
+    # German — exact + bigrams for analyst recs (bare kaufen/verkaufen/halten dropped: too generic)
+    "fusion", "fusionen",
+    "ausblick",
+    "kaufempfehl*", "verkaufsempfehl*", "halteempfehl*",
+    "auf kaufen", "auf verkaufen", "auf halten",
 ]
+
+# Rating-change keywords: subset that signals fresh analyst action.
+# These bump priority to HIGH and tag subtype="rating_change" so Claude
+# weights them above stale consensus from market_data snapshot.
+_RATING_CHANGE_KEYWORDS = [
+    "upgrade", "upgrades", "upgraded",
+    "downgrade", "downgrades", "downgraded",
+    "outperform", "outperforms", "outperformed",
+    "underperform", "underperforms", "underperformed",
+    "raised target", "raises target", "lowered target", "lowers target",
+    "price target", "cut target", "cuts target",
+    "initiated coverage", "initiates coverage",
+    "buy rating", "sell rating", "hold rating",
+    "overweight", "underweight",
+    "kursziel*",
+    "hochstuf*", "hochgestuft",
+    "herabstuf*", "herabgestuft",
+    "abstuf*",
+    "kaufempfehl*", "verkaufsempfehl*", "halteempfehl*",
+    "auf kaufen", "auf verkaufen", "auf halten",
+]
+
+_STOCK_NEWS_PATTERN = _build_keyword_pattern(_STOCK_NEWS_KEYWORDS)
+_RATING_CHANGE_PATTERN = _build_keyword_pattern(_RATING_CHANGE_KEYWORDS)
+
+# Per-trigger pattern (need to know which commodity matched).
+_COMMODITY_TRIGGER_PATTERNS = {
+    comm: _build_keyword_pattern(kws)
+    for comm, kws in config.COMMODITY_TRIGGERS.items()
+}
+
+
+def _ticker_in_title(title: str, ticker: str, name: str | None) -> bool:
+    """True if title plausibly mentions the ticker — bare symbol or first significant
+    company-name token. Filters RSS junk where Google News returned tangential results
+    (e.g. broader market commentary that happens to match a keyword).
+    Does NOT disambiguate symbol-collision edge cases (e.g. ticker "RWE" vs football
+    club "RWE Essen" — both contain bare "RWE"). Upstream finance-keyword query is
+    the primary defense there.
+    """
+    title_lower = title.lower()
+    bare = ticker.split(".")[0].lower()
+    if re.search(r"\b" + re.escape(bare) + r"\b", title_lower):
+        return True
+    if name:
+        name_lower = name.lower()
+        if name_lower in title_lower:
+            return True
+        # Extract word tokens (strip punctuation: "Tesla, Inc." → ["tesla", "inc"]).
+        for tok in re.findall(r"\w+", name_lower):
+            if len(tok) >= 4:
+                if re.search(r"\b" + re.escape(tok) + r"\b", title_lower):
+                    return True
+                break
+    return False
+
+
+def _classify_headline(
+    title: str,
+    ticker: str,
+    is_open_position: bool,
+    name: str | None = None,
+) -> dict | None:
+    """Match headline against geo/stock/rating keywords. Returns event dict or None."""
+    triggered = [
+        comm for comm, pat in _COMMODITY_TRIGGER_PATTERNS.items()
+        if pat.search(title)
+    ]
+    if triggered:
+        return {
+            "type": "NEWS_GEO",
+            "headline": title,
+            "triggered_commodities": triggered,
+            "source_ticker": ticker,
+            "priority": "HIGH",
+        }
+
+    if ticker in config.MARKET_INDICATORS or ticker in config.COMMODITIES:
+        return None
+
+    # Ticker-relevance gate: drop headlines that don't mention the ticker/company.
+    # RSS fuzzy-matches and may return tangential results; classifier would otherwise
+    # match keywords on unrelated stories.
+    if not _ticker_in_title(title, ticker, name):
+        return None
+
+    is_rating_change = bool(_RATING_CHANGE_PATTERN.search(title))
+    has_stock_kw = bool(_STOCK_NEWS_PATTERN.search(title))
+
+    if not (is_rating_change or has_stock_kw):
+        return None
+
+    # Rating change on an open position = HIGH (act fast). Otherwise MEDIUM.
+    # Open-position non-rating news also HIGH so Claude reviews exit risk first.
+    if is_rating_change:
+        priority = "HIGH" if is_open_position else "MEDIUM"
+        subtype = "rating_change"
+    else:
+        priority = "HIGH" if is_open_position else "MEDIUM"
+        subtype = "stock_news"
+
+    return {
+        "type": "NEWS_STOCK",
+        "subtype": subtype,
+        "headline": title,
+        "source_ticker": ticker,
+        "priority": priority,
+    }
 
 
 def check_news_events() -> list[dict]:
-    """Scan news for all watchlist/open/commodity tickers.
+    """Scan yfinance + Google News RSS for all watchlist/open/commodity tickers.
     Returns new actionable events not seen before today.
     Persists seen article hashes in portfolio.json (under lock)."""
     with portfolio_lock:
@@ -46,57 +226,72 @@ def check_news_events() -> list[dict]:
         today = str(date.today())
         seen_today = set(portfolio.get("seen_news", {}).get(today, []))
 
-        open_tickers = [t["ticker"] for t in portfolio.get("open_trades", [])]
+        open_tickers = {t["ticker"] for t in portfolio.get("open_trades", [])}
         scan_tickers = list(dict.fromkeys(
-            list(config.MARKET_INDICATORS) + open_tickers + config.WATCHLIST + config.COMMODITIES
+            list(config.MARKET_INDICATORS) + list(open_tickers) + config.WATCHLIST + config.COMMODITIES
         ))
+
+        # RSS scan only for stock tickers (open + watchlist). Skip indices/commodities —
+        # yfinance covers those, and RSS query "SPY" or "GC=F" returns junk.
+        rss_tickers = set(open_tickers) | set(config.WATCHLIST)
+
+        # Pull company names from market_data cache to disambiguate ticker queries
+        # (e.g. "RWE" alone matches Rot-Weiss Essen football headlines).
+        names_by_ticker = {}
+        if rss_tickers:
+            try:
+                snapshots = get_market_data(list(rss_tickers))
+                names_by_ticker = {
+                    t: (s or {}).get("name") for t, s in snapshots.items()
+                }
+            except Exception as e:
+                logger.warning("market_data lookup for RSS names failed: %s", e)
 
         events = []
         new_hashes = []
 
         for ticker in scan_tickers:
+            is_open = ticker in open_tickers
+
+            # Source 1: yfinance (US/EN-biased, fast)
+            titles: list[str] = []
             try:
                 items = yf.Ticker(ticker).news or []
+                titles.extend(it.get("title", "") for it in items)
             except Exception:
-                continue
+                pass
 
-            for item in items:
-                title = item.get("title", "")
+            # Source 2: Google News RSS (multilingual, catches German sources)
+            if ticker in rss_tickers:
+                try:
+                    rss_items = fetch_rss_news(
+                        ticker,
+                        name=names_by_ticker.get(ticker),
+                        max_age_hours=24,
+                    )
+                    titles.extend(it["title"] for it in rss_items)
+                except Exception as e:
+                    logger.warning("RSS fetch failed for %s: %s", ticker, e)
+
+            for title in titles:
                 if not title:
                     continue
-
                 h = hashlib.md5(title.lower().encode()).hexdigest()[:16]
                 if h in seen_today:
                     continue
                 new_hashes.append(h)
+                seen_today.add(h)  # dedup within same cycle (same story across sources)
 
-                title_lower = title.lower()
-
-                triggered = [
-                    comm for comm, kws in config.COMMODITY_TRIGGERS.items()
-                    if any(kw in title_lower for kw in kws)
-                ]
-                if triggered:
-                    events.append({
-                        "type": "NEWS_GEO",
-                        "headline": title,
-                        "triggered_commodities": triggered,
-                        "source_ticker": ticker,
-                        "priority": "HIGH",
-                    })
-                    continue
-
-                if ticker not in config.MARKET_INDICATORS and ticker not in config.COMMODITIES:
-                    if any(kw in title_lower for kw in _STOCK_NEWS_KEYWORDS):
-                        events.append({
-                            "type": "NEWS_STOCK",
-                            "headline": title,
-                            "source_ticker": ticker,
-                            "priority": "MEDIUM",
-                        })
+                event = _classify_headline(
+                    title, ticker,
+                    is_open_position=is_open,
+                    name=names_by_ticker.get(ticker),
+                )
+                if event:
+                    events.append(event)
 
         if new_hashes:
-            portfolio["seen_news"] = {today: list(seen_today | set(new_hashes))}
+            portfolio["seen_news"] = {today: list(seen_today)}
             save_portfolio(portfolio)
 
         return events
