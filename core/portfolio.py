@@ -121,6 +121,51 @@ def set_kill_switch(on: bool, reason: str = "") -> dict:
         return fresh
 
 
+def _equity_curve(portfolio: dict) -> tuple[float, float, float]:
+    """Returns (equity_now, peak, dd_pct) using frozen starting capital + realized pnl.
+    `total_capital_eur` is treated as the original deposit (constant), not current equity."""
+    starting = float(portfolio.get("total_capital_eur", config.BUDGET_EUR) or config.BUDGET_EUR)
+    closed = portfolio.get("closed_trades", [])
+    equity = starting
+    peak = starting
+    for t in sorted(closed, key=lambda x: x.get("exit_date") or ""):
+        equity += float(t.get("pnl_eur") or 0)
+        if equity > peak:
+            peak = equity
+    dd_pct = (peak - equity) / peak * 100 if peak > 0 else 0.0
+    return equity, peak, dd_pct
+
+
+def maintain_drawdown_state(portfolio: dict) -> bool:
+    """Drawdown hysteresis: latch halt on entry threshold, lift only on recovery threshold.
+    Why: without hysteresis, equity flickering around the halt-line toggles state every call.
+    Mutates portfolio in-place. Returns True if state changed."""
+    equity, _peak, dd_pct = _equity_curve(portfolio)
+
+    active = bool(portfolio.get("dd_halt_active"))
+    trough = portfolio.get("dd_halt_trough_eur")
+    changed = False
+
+    if not active:
+        if dd_pct >= config.DRAWDOWN_HALT_PERCENT:
+            portfolio["dd_halt_active"] = True
+            portfolio["dd_halt_trough_eur"] = round(equity, 2)
+            portfolio["dd_halt_started_date"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            changed = True
+    else:
+        if not isinstance(trough, (int, float)) or equity < trough:
+            portfolio["dd_halt_trough_eur"] = round(equity, 2)
+            trough = equity
+        recovery_target = trough * (1 + config.DRAWDOWN_RECOVERY_PERCENT / 100)
+        if equity >= recovery_target:
+            portfolio["dd_halt_active"] = False
+            portfolio["dd_halt_trough_eur"] = None
+            portfolio["dd_halt_started_date"] = None
+            changed = True
+
+    return changed
+
+
 def risk_halt_status(portfolio: dict) -> dict:
     """Evaluate all halt conditions. Returns {'halt': bool, 'reasons': [...], 'metrics': {...}}.
 
@@ -146,15 +191,18 @@ def risk_halt_status(portfolio: dict) -> dict:
             f"Daily-Loss-Cap: {daily_pnl_pct:.2f}% ≤ -{config.DAILY_LOSS_HALT_PERCENT}%"
         )
 
-    starting = capital - sum(float(t.get("pnl_eur") or 0) for t in closed)
-    equity = starting
-    peak = starting
-    for t in sorted(closed, key=lambda x: x.get("exit_date") or ""):
-        equity += float(t.get("pnl_eur") or 0)
-        if equity > peak:
-            peak = equity
-    dd_pct = (peak - equity) / peak * 100 if peak > 0 else 0.0
-    if dd_pct >= config.DRAWDOWN_HALT_PERCENT:
+    _eq, _peak, dd_pct = _equity_curve(portfolio)
+    # Hysteresis: prefer latched state if active, else fresh threshold check.
+    if portfolio.get("dd_halt_active"):
+        trough = portfolio.get("dd_halt_trough_eur")
+        recovery = (
+            f", Recovery-Ziel €{trough * (1 + config.DRAWDOWN_RECOVERY_PERCENT/100):.2f}"
+            if isinstance(trough, (int, float)) else ""
+        )
+        reasons.append(
+            f"Drawdown-Halt latched: {dd_pct:.2f}% (Trough €{trough}{recovery})"
+        )
+    elif dd_pct >= config.DRAWDOWN_HALT_PERCENT:
         reasons.append(
             f"Drawdown-Halt: {dd_pct:.2f}% ≥ {config.DRAWDOWN_HALT_PERCENT}% vom Peak"
         )
@@ -165,6 +213,25 @@ def risk_halt_status(portfolio: dict) -> dict:
             f"Portfolio-Heat: {heat['heat_pct']:.2f}% ≥ {config.MAX_PORTFOLIO_HEAT_PERCENT}%"
         )
 
+    open_count = len(portfolio.get("open_trades", []))
+    if open_count >= config.MAX_ACTIVE_TRADES:
+        reasons.append(
+            f"Max-Active-Trades: {open_count}/{config.MAX_ACTIVE_TRADES} offen"
+        )
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    trades_today = sum(
+        1 for t in portfolio.get("open_trades", [])
+        if (t.get("entry_date") or "").startswith(today)
+    ) + sum(
+        1 for t in closed
+        if (t.get("entry_date") or "").startswith(today)
+    )
+    if trades_today >= config.MAX_TRADES_PER_DAY:
+        reasons.append(
+            f"Max-Trades-Per-Day: {trades_today}/{config.MAX_TRADES_PER_DAY} heute"
+        )
+
     return {
         "halt": bool(reasons),
         "reasons": reasons,
@@ -172,6 +239,8 @@ def risk_halt_status(portfolio: dict) -> dict:
             "daily_pnl_pct": round(daily_pnl_pct, 2),
             "drawdown_pct": round(dd_pct, 2),
             "heat_pct": heat["heat_pct"],
+            "open_count": open_count,
+            "trades_today": trades_today,
         },
     }
 

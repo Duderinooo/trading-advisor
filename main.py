@@ -22,6 +22,8 @@ from core import (
     get_earnings_warnings,
     check_news_events,
     kill_switch_active,
+    portfolio_lock,
+    get_market_data,
 )
 from memory import log_trade, MEMPALACE_AVAILABLE
 from notifier import send_notification, send_daily_summary, send_alert
@@ -113,6 +115,78 @@ def is_weekend_news_window() -> bool:
     return now.weekday() == 6 and 18 <= now.hour < 22
 
 
+def is_eod_summary_time() -> bool:
+    """22:10–22:25 CET on trading days. After US close, before midnight rollover."""
+    now = datetime.now()
+    if not _is_trading_day(now.date()):
+        return False
+    return now.hour == 22 and 10 <= now.minute < 25
+
+
+def _eod_summary_done_today() -> bool:
+    return load_portfolio().get("last_eod_summary_date") == str(date.today())
+
+
+def _mark_eod_summary_done():
+    portfolio = load_portfolio()
+    portfolio["last_eod_summary_date"] = str(date.today())
+    save_portfolio(portfolio)
+
+
+def run_eod_summary():
+    """One-shot EOD digest: realized P&L, open positions w/ unrealized, gates state."""
+    if _eod_summary_done_today():
+        return
+    try:
+        portfolio = load_portfolio()
+        today = str(date.today())
+
+        closed_today = [
+            t for t in portfolio.get("closed_trades", [])
+            if (t.get("exit_date") or "").startswith(today)
+        ]
+        realized_eur = sum(float(t.get("pnl_eur") or 0) for t in closed_today)
+        wins_today = sum(1 for t in closed_today if (t.get("pnl_eur") or 0) > 0)
+
+        open_trades = portfolio.get("open_trades", [])
+        unrealized_eur = 0.0
+        if open_trades:
+            try:
+                live = get_market_data([t["ticker"] for t in open_trades])
+                for t in open_trades:
+                    price = (live.get(t["ticker"]) or {}).get("price") if isinstance(live.get(t["ticker"]), dict) else None
+                    entry = float(t.get("entry_price") or 0)
+                    shares = float(t.get("shares") or 0)
+                    if isinstance(price, (int, float)) and entry > 0:
+                        unrealized_eur += (price - entry) * shares
+            except Exception:
+                logger.exception("EOD live-pull failed")
+
+        from core import get_daily_usage
+        calls_today = get_daily_usage()
+        ks_state = "🛑 AKTIV" if kill_switch_active(portfolio) else "✅ aus"
+        dd_state = "🚫 DD-LATCH" if portfolio.get("dd_halt_active") else "—"
+
+        cash = float(portfolio.get("cash_eur") or 0)
+        starting = float(portfolio.get("total_capital_eur") or config.BUDGET_EUR)
+        equity_realized = starting + sum(float(t.get("pnl_eur") or 0) for t in portfolio.get("closed_trades", []))
+        equity_total = equity_realized + unrealized_eur
+
+        msg = (
+            f"📊 *EOD {today}*\n\n"
+            f"Realized today: €{realized_eur:+.2f} ({len(closed_today)} closed, {wins_today}W)\n"
+            f"Unrealized: €{unrealized_eur:+.2f} ({len(open_trades)} offen)\n"
+            f"Cash: €{cash:.2f} | Equity: €{equity_total:.2f} (Start €{starting:.2f})\n\n"
+            f"Claude calls: {calls_today}/{config.MAX_ANALYSES_PER_DAY}\n"
+            f"Kill-Switch: {ks_state} | DD-Halt: {dd_state}"
+        )
+        send_notification(msg)
+        _mark_eod_summary_done()
+        logger.info("✅ EOD summary sent")
+    except Exception:
+        logger.exception("EOD summary failed")
+
+
 def is_us_open_check_time() -> bool:
     """5–15min window after US market open (15:30 CET)."""
     now = datetime.now()
@@ -124,12 +198,53 @@ def is_us_open_check_time() -> bool:
     )
 
 
+def _check_stale_theses():
+    """Alert on positions held longer than `hold_days_max` from rec.
+    Why: thesis horizon is 3-7d for swing; positions drifting beyond signal a hope-trade.
+    Re-fires once per day at most via stale_alerted_date persistence."""
+    today = str(date.today())
+    with portfolio_lock:
+        portfolio = load_portfolio()
+        dirty = False
+        for trade in portfolio.get("open_trades", []):
+            hold_max = trade.get("hold_days_max")
+            entry_date = trade.get("entry_date")
+            if not isinstance(hold_max, (int, float)) or not entry_date:
+                continue
+            try:
+                entry_d = datetime.strptime(entry_date[:10], "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            days_held = (date.today() - entry_d).days
+            if days_held < hold_max:
+                continue
+            if trade.get("stale_alerted_date") == today:
+                continue
+            ticker = trade.get("ticker", "?")
+            send_alert(
+                f"🕒 STALE THESIS: {ticker}",
+                f"Held {days_held}d > Thesis-Horizon {int(hold_max)}d.\n"
+                f"Thesis: _{trade.get('thesis','—')}_\n"
+                f"Entscheide: schließen, re-analyzen, oder Trailing-Stop straffen.",
+            )
+            logger.warning("Stale thesis alert: %s held %dd > %d", ticker, days_held, hold_max)
+            trade["stale_alerted_date"] = today
+            dirty = True
+        if dirty:
+            save_portfolio(portfolio)
+
+
 def run_morning_prep():
     """Run morning analysis to prepare for the trading day."""
     if _morning_prep_done_today():
         return
 
     logger.info("☀️ Running morning prep...")
+
+    try:
+        _check_stale_theses()
+    except Exception:
+        logger.exception("Stale-thesis check failed")
 
     # Direct earnings alert for open positions — fires before Claude, guaranteed delivery
     try:
@@ -311,6 +426,13 @@ P&L: +{alert['pnl_pct']:.1f}%
                     f"_Rest-Position läuft risikofrei weiter._"
                 )
 
+            elif alert["type"] == "TRAILING_ACTIVATED":
+                send_notification(
+                    f"📐 *Trailing aktiviert: {alert['ticker']}*\n\n"
+                    f"Trail: {alert['trail_pct']}% (1.5× ATR {alert['atr_pct']}%)\n"
+                    f"_Runner-Schutz: SL zieht ab jetzt automatisch nach._"
+                )
+
             elif alert["type"] == "TRAILING_STOP_MOVED":
                 send_notification(
                     f"📈 *Trailing-Stop nachgezogen: {alert['ticker']}*\n\n"
@@ -359,6 +481,38 @@ _Watch closely_"""
         logger.exception("Price check failed")
 
 
+def _auto_watch_geo(commodities: list[str], headline: str):
+    """Set breakout-long watch-levels at +5% on matched commodities (GEO trigger).
+    Skips tickers that already have an active watch-level."""
+    if not commodities:
+        return
+    market = get_market_data(commodities)
+    with portfolio_lock:
+        portfolio = load_portfolio()
+        existing = {w.get("ticker") for w in portfolio.get("watch_levels", [])}
+        added = []
+        for ticker in commodities:
+            if ticker in existing:
+                continue
+            data = market.get(ticker, {})
+            price = data.get("price") if isinstance(data, dict) else None
+            if not isinstance(price, (int, float)) or price <= 0:
+                continue
+            trigger = round(price * 1.05, 2)
+            portfolio.setdefault("watch_levels", []).append({
+                "ticker": ticker,
+                "type": "breakout_long",
+                "trigger_price": trigger,
+                "note": f"GEO-Auto: {headline[:60]}",
+                "source": "geo_news_auto",
+                "created_date": str(date.today()),
+            })
+            added.append(f"{ticker}@€{trigger:.2f}")
+        if added:
+            save_portfolio(portfolio)
+            logger.info("GEO auto-watch added: %s", ", ".join(added))
+
+
 def run_news_check():
     """Scan for new actionable headlines. Geo news forces analysis; stock news respects cooldown.
     Runs during market hours + Sunday 18-22 CET (weekend geo-news catch-up)."""
@@ -381,6 +535,16 @@ def run_news_check():
             comms = ", ".join(event["triggered_commodities"])
             headline = event["headline"]
             logger.info("📰 GEO NEWS → %s: %s", comms, headline)
+
+            # Auto-add breakout watch-levels for matched commodities so the breakout
+            # gets caught by detect_events even if Claude says PASS this round.
+            # Why: GEO news is the trigger; the move often comes hours later — we need
+            # persistent levels, not a one-shot Claude call.
+            try:
+                _auto_watch_geo(event["triggered_commodities"], headline)
+            except Exception:
+                logger.exception("GEO auto-watch failed")
+
             ctx = f"GEO NEWS: {headline} | Commodity-Play: {comms}"
             analysis = analyze_portfolio(mode="event", event_context=ctx, force=True)
             if _is_actionable(analysis):
@@ -459,6 +623,8 @@ def main():
             run_opening_check("xetra")
         if is_us_open_check_time():
             run_opening_check("us")
+        if is_eod_summary_time():
+            run_eod_summary()
 
         if (now - last_check).total_seconds() >= check_interval:
             if is_market_hours():

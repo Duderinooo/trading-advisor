@@ -31,7 +31,7 @@ from core.portfolio import (
     compute_portfolio_heat, format_portfolio_heat,
     compute_sector_exposure, format_sector_exposure,
     compute_equity_stats, format_equity_stats,
-    risk_halt_status, edge_ok,
+    risk_halt_status, maintain_drawdown_state, edge_ok,
 )
 from core.market_data import (
     get_market_data, get_earnings_warnings, fetch_news, market_regime,
@@ -77,6 +77,12 @@ def analyze_portfolio(mode: str = "standard", event_context: str = None, force: 
     if not allowed:
         return f"⚠️ Analysis skipped: {reason}"
 
+    # DD-state hysteresis maintenance: latch/unlatch halt before any read.
+    with portfolio_lock:
+        _fresh = load_portfolio()
+        if maintain_drawdown_state(_fresh):
+            save_portfolio(_fresh)
+
     portfolio = load_portfolio()
 
     open_trade_tickers = [t["ticker"] for t in portfolio.get("open_trades", [])]
@@ -92,14 +98,17 @@ def analyze_portfolio(mode: str = "standard", event_context: str = None, force: 
     market_ctx = get_market_data(market_tickers)
 
     # Liquidity pre-filter: drop illiquid/wide-spread tickers before Claude.
-    # Keep open-trade tickers always (must be visible for exit decisions).
+    # Keep open-trade + watch-level tickers always (exit decisions + breakout context
+    # need them; watch levels were set for a reason — don't silently drop them on a
+    # thin-volume day).
     _kept = {}
     _dropped_illiquid = []
+    _protected = set(open_trade_tickers) | set(watch_level_tickers)
     for _t, _d in market_data.items():
         if not isinstance(_d, dict) or _d.get("error"):
             _kept[_t] = _d
             continue
-        if _t in open_trade_tickers:
+        if _t in _protected:
             _kept[_t] = _d
             continue
         vr = _d.get("volume_ratio")
@@ -509,20 +518,146 @@ _(Empfohlene Größe = Risiko ÷ 1.5×ATR%. Nie mehr als €{cash * config.MAX_P
             entry_recommendation = None
 
     if entry_recommendation:
+        # No-entry-zone: block new entries during open/close noise windows.
+        # Why: auction spikes + EOD chop = bad fills + lag-amplified slippage on
+        # 15min-delayed data. Watch-levels and SL/TP loop run unaffected.
+        _now = datetime.now()
+        _now_min = _now.hour * 60 + _now.minute
+        _blocked_window = None
+        for sh, sm, eh, em in config.NO_ENTRY_WINDOWS:
+            if sh * 60 + sm <= _now_min < eh * 60 + em:
+                _blocked_window = f"{sh:02d}:{sm:02d}–{eh:02d}:{em:02d}"
+                break
+        if _blocked_window:
+            logger.warning(
+                "Entry BLOCKED by no-entry-zone: %s in window %s",
+                entry_recommendation.get("ticker", "?"), _blocked_window,
+            )
+            _notify(
+                f"⛔ *ENTRY BLOCKIERT* ({entry_recommendation.get('ticker','?')})\n"
+                f"No-Entry-Zone {_blocked_window} — Auction/EOD-Chop, schlechte Fills."
+            )
+            entry_recommendation = None
+
+    if entry_recommendation:
+        # SL-distance sanity: block if entry-SL is too tight or too wide vs. ATR.
+        # Why: tight SL (<0.8×ATR) = guaranteed whipsaw; wide SL (>3×ATR) inflates
+        # edge_ok's reward/risk math and breaks risk sizing. Runs before edge gate.
+        _t = (entry_recommendation.get("ticker") or "").upper()
+        _entry = float(entry_recommendation.get("entry_price") or 0)
+        _sl = float(entry_recommendation.get("stop_loss") or 0)
+        _atr = (market_data.get(_t) or {}).get("atr14")
+        if _entry > _sl > 0 and isinstance(_atr, (int, float)) and _atr > 0:
+            _sl_dist_atr = (_entry - _sl) / _atr
+            if _sl_dist_atr < config.MIN_SL_DISTANCE_ATR:
+                logger.warning(
+                    "Entry BLOCKED by SL-too-tight: %s SL %.2f×ATR < %.2f×ATR",
+                    _t, _sl_dist_atr, config.MIN_SL_DISTANCE_ATR,
+                )
+                _notify(
+                    f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
+                    f"SL {_sl_dist_atr:.2f}×ATR < {config.MIN_SL_DISTANCE_ATR} → Whipsaw-Risk."
+                )
+                entry_recommendation = None
+            elif _sl_dist_atr > config.MAX_SL_DISTANCE_ATR:
+                logger.warning(
+                    "Entry BLOCKED by SL-too-wide: %s SL %.2f×ATR > %.2f×ATR",
+                    _t, _sl_dist_atr, config.MAX_SL_DISTANCE_ATR,
+                )
+                _notify(
+                    f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
+                    f"SL {_sl_dist_atr:.2f}×ATR > {config.MAX_SL_DISTANCE_ATR} → Risk pro Trade gesprengt."
+                )
+                entry_recommendation = None
+
+    if entry_recommendation:
+        # Brier-Haircut: subtract calibrated bias from p_win before edge gate.
+        # Why: if Claude's p_win averages 5%+ above realized win-rate, every rec
+        # overstates edge. Haircut enforces what calibration text already told Claude.
+        _p_raw = entry_recommendation.get("p_win")
+        _stats = compute_hit_stats(_pf_snapshot.get("closed_trades", []))
+        _haircut = 0.0
+        if _stats and _stats.get("calibration"):
+            _haircut = _stats["calibration"].get("haircut") or 0.0
+        if isinstance(_p_raw, (int, float)) and _haircut > 0:
+            _p_adj = max(0.01, _p_raw - _haircut)
+        else:
+            _p_adj = _p_raw
+
         _ok, _edge = edge_ok(
-            entry_recommendation.get("p_win"),
+            _p_adj,
             entry_recommendation.get("entry_price"),
             entry_recommendation.get("stop_loss"),
             entry_recommendation.get("take_profit"),
         )
         if not _ok:
             logger.warning(
-                "Entry BLOCKED by edge gate: edge=%.3f < %.3f (p_win=%s)",
-                _edge, config.MIN_EXPECTED_EDGE, entry_recommendation.get("p_win"),
+                "Entry BLOCKED by edge gate: edge=%.3f < %.3f (p_raw=%s, haircut=%s, p_adj=%s)",
+                _edge, config.MIN_EXPECTED_EDGE, _p_raw, _haircut, _p_adj,
             )
             _notify(
                 f"⛔ *ENTRY BLOCKIERT* ({entry_recommendation.get('ticker','?')})\n"
                 f"Edge {_edge:.3f} < {config.MIN_EXPECTED_EDGE} (p·b−(1−p))"
+                + (f" | p_win {_p_raw}→{_p_adj:.2f} (Brier-Haircut {_haircut:+.2f})" if _haircut > 0 else "")
+            )
+            entry_recommendation = None
+
+    if entry_recommendation:
+        # Sector cluster gate: block if ticker's sector already at cap.
+        # Why: 3× Semis long at once = one chip-crash hits three SLs. Diversification
+        # is the only free lunch. 'other' (unmapped) is not enforced.
+        _t = (entry_recommendation.get("ticker") or "").upper()
+        _sector = config.SECTOR_MAP.get(_t)
+        if _sector:
+            _exposure = compute_sector_exposure(_pf_snapshot)
+            _current = _exposure.get(_sector, [])
+            if len(_current) >= config.MAX_POSITIONS_PER_SECTOR and _t not in _current:
+                logger.warning(
+                    "Entry BLOCKED by sector gate: %s in %s, already %d open (%s)",
+                    _t, _sector, len(_current), ", ".join(_current),
+                )
+                _notify(
+                    f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
+                    f"Sektor `{_sector}` bereits voll: {len(_current)}/{config.MAX_POSITIONS_PER_SECTOR} "
+                    f"({', '.join(_current)}). Cluster-Risiko."
+                )
+                entry_recommendation = None
+
+    if entry_recommendation:
+        # VIX size-dampening: shrink size under elevated/extreme volatility.
+        # Why: higher realized range = wider stops + more gap risk. Same 3% risk/trade
+        # but smaller notional so a fast move doesn't blow past SL intraday.
+        _vix = (market_ctx.get("^VIX") or {}).get("price")
+        _vix_factor = 1.0
+        if isinstance(_vix, (int, float)):
+            if _vix > 30:
+                _vix_factor = 0.25
+            elif _vix > 20:
+                _vix_factor = 0.5
+        if _vix_factor < 1.0:
+            _orig = float(entry_recommendation.get("size_eur") or 0)
+            if _orig > 0:
+                entry_recommendation["size_eur"] = round(_orig * _vix_factor, 2)
+                entry_recommendation["vix_dampener"] = {
+                    "vix": _vix, "factor": _vix_factor, "original_size_eur": _orig,
+                }
+                logger.warning(
+                    "VIX-dampener: size €%.2f → €%.2f (VIX=%.2f, factor=%.2f)",
+                    _orig, entry_recommendation["size_eur"], _vix, _vix_factor,
+                )
+
+    if entry_recommendation:
+        # Weekly-trend gate: no LONG against weekly downtrend.
+        # Why: intraday entries against the weekly primary trend are low-hit-rate
+        # mean reverts. CLAUDE.md rule, now enforced instead of advisory.
+        _direction = str(entry_recommendation.get("direction") or "LONG").upper()
+        _t = (entry_recommendation.get("ticker") or "").upper()
+        _wk = (market_data.get(_t) or {}).get("wk_trend")
+        if _direction == "LONG" and _wk == "DOWN":
+            logger.warning("Entry BLOCKED by weekly-trend gate: %s LONG vs wk_trend=DOWN", _t)
+            _notify(
+                f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
+                f"Weekly-Trend DOWN — kein Long gegen primären Trend."
             )
             entry_recommendation = None
 

@@ -12,7 +12,7 @@ from datetime import datetime, date
 import yfinance as yf
 
 import config
-from core.portfolio import portfolio_lock, load_portfolio, save_portfolio
+from core.portfolio import portfolio_lock, load_portfolio, save_portfolio, maintain_drawdown_state
 from core.market_data import get_market_data
 from core.api_usage import get_minutes_since_last_analysis
 
@@ -270,6 +270,27 @@ def _close_trade(trade: dict, exit_price: float, reason: str, portfolio: dict):
         "pnl_pct": round(pnl_pct, 2),
         "status": "closed",
     })
+    # Auto-tag: SL hit filled ≥ SL_SLIPPAGE_TAG_PERCENT below nominal SL → execution error
+    # (fast-market gap or bad fill, not thesis failure). Lets learning loop surface
+    # execution-class dominance even without user /close #tag.
+    if reason == "STOP_LOSS" and pnl_pct <= 0:
+        sl = trade.get("stop_loss")
+        if sl and sl > 0:
+            slip_below = (sl - exit_price) / sl * 100
+            if slip_below >= config.SL_SLIPPAGE_TAG_PERCENT:
+                closed["mistake_tag"] = "slippage"
+                closed["mistake_class"] = "execution"
+                closed["sl_exit_slippage_pct"] = round(slip_below, 3)
+                logger.warning(
+                    "Auto-tag slippage: %s exit €%.2f vs SL €%.2f (%.2f%% below)",
+                    trade.get("ticker", "?"), exit_price, sl, slip_below,
+                )
+            else:
+                closed["mistake_tag"] = None
+                closed["mistake_class"] = "untagged"
+        else:
+            closed["mistake_tag"] = None
+            closed["mistake_class"] = "untagged"
     # Brier score: (p_predicted - outcome)^2. outcome=1 if win, 0 if loss.
     p_win = trade.get("p_win")
     if isinstance(p_win, (int, float)) and 0.0 <= p_win <= 1.0:
@@ -365,6 +386,20 @@ def check_stop_loss_take_profit() -> list[dict]:
                             "ticker": ticker,
                             "new_stop": entry,
                         })
+                    # Runner-protection: activate trailing if not already set.
+                    # Why: after TP1, break-even alone gives runner-gain back on pullback.
+                    # 1.5×ATR% trail locks profit while letting trend extend.
+                    if not trade.get("trailing_stop_pct"):
+                        atr_pct = data.get("atr14_pct")
+                        if isinstance(atr_pct, (int, float)) and atr_pct > 0:
+                            trail_pct = round(atr_pct * 1.5, 2)
+                            trade["trailing_stop_pct"] = trail_pct
+                            alerts.append({
+                                "type": "TRAILING_ACTIVATED",
+                                "ticker": ticker,
+                                "trail_pct": trail_pct,
+                                "atr_pct": atr_pct,
+                            })
                     surviving_trades.append(trade)
                 else:
                     _close_trade(trade, current_price, "TAKE_PROFIT", portfolio)
@@ -383,6 +418,8 @@ def check_stop_loss_take_profit() -> list[dict]:
 
         if portfolio_dirty:
             portfolio["open_trades"] = surviving_trades
+            # Recompute DD halt latch — SL/TP hits just changed realized equity.
+            maintain_drawdown_state(portfolio)
             save_portfolio(portfolio)
 
         return alerts

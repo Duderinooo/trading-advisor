@@ -20,6 +20,7 @@ from core.portfolio import (
     compute_equity_stats,
     format_equity_stats,
     risk_halt_status,
+    maintain_drawdown_state,
     edge_ok,
     kill_switch_active,
     set_kill_switch,
@@ -53,7 +54,7 @@ __all__ = [
     "compute_portfolio_heat", "format_portfolio_heat",
     "compute_sector_exposure", "format_sector_exposure",
     "compute_equity_stats", "format_equity_stats",
-    "risk_halt_status", "edge_ok",
+    "risk_halt_status", "maintain_drawdown_state", "edge_ok",
     "kill_switch_active", "set_kill_switch",
     # market data
     "get_market_data", "invalidate_market_cache",

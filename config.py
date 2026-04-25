@@ -136,6 +136,20 @@ KELLY_FRACTION = 0.25             # Quarter-Kelly cap on size_pct
 
 # Execution-quality gates
 MAX_ENTRY_SLIPPAGE_PERCENT = 2.0  # /confirm @filled_price rejected if |filled-rec|/rec > 2%
+PENDING_REC_TTL_HOURS = 4         # Rec veraltet nach 4h — Preis weg, Kontext veraltet → reject
+SL_SLIPPAGE_TAG_PERCENT = 1.0     # Exit ≥1% unter SL → auto-tag slippage (execution-class)
+MIN_SL_DISTANCE_ATR = 0.8         # SL näher als 0.8×ATR → Whipsaw-garantiert, block
+MAX_SL_DISTANCE_ATR = 3.0         # SL weiter als 3×ATR → Risk-Reward kaputt, block
+
+# No-Entry-Zonen (CET): Auction-Spike Open + EOD-Chop Close = schlechteste Fill-Quality.
+# Format: (start_hour, start_min, end_hour, end_min). Nur entry_recommendation blocked,
+# SL/TP-Monitoring + Watch-Level laufen weiter.
+NO_ENTRY_WINDOWS = [
+    (9, 0, 9, 10),    # XETRA open auction spike
+    (15, 30, 15, 40), # US open spillover
+    (17, 10, 17, 30), # XETRA close chop
+    (21, 40, 22, 0),  # US close chop
+]
 
 # Liquidity pre-filter (gate tickers before Claude sees them)
 MIN_VOLUME_RATIO = 0.3            # current_vol/avg_vol; dead tape if below

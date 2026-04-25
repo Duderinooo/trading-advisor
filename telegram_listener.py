@@ -9,7 +9,7 @@ import re
 import logging
 import threading
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -18,6 +18,7 @@ import config
 from core import (
     portfolio_lock, load_portfolio, save_portfolio, get_market_data,
     risk_halt_status, set_kill_switch, kill_switch_active,
+    maintain_drawdown_state,
 )
 from memory import log_trade, MEMPALACE_AVAILABLE
 
@@ -144,22 +145,56 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        # TTL: reject stale recs. Price & thesis decay fast intraday; re-analyze.
+        rec_ts = rec.get("timestamp")
+        if rec_ts:
+            try:
+                rec_dt = datetime.strptime(rec_ts, "%Y-%m-%d %H:%M")
+                age = datetime.now() - rec_dt
+                if age > timedelta(hours=config.PENDING_REC_TTL_HOURS):
+                    pending.pop(rec_idx)
+                    portfolio["pending_recommendations"] = pending
+                    save_portfolio(portfolio)
+                    await update.message.reply_text(
+                        f"⏱️ *Rec veraltet* ({rec.get('ticker')})\n"
+                        f"Alter: {age.total_seconds()/3600:.1f}h > {config.PENDING_REC_TTL_HOURS}h.\n"
+                        f"Verworfen. Neue Analyse abwarten.",
+                        parse_mode="Markdown",
+                    )
+                    return
+            except ValueError:
+                pass
+
         rec_entry = float(rec.get("entry_price", 0) or 0)
+        # Live-price pull when user didn't supply @price.
+        # Why: 15min-delayed yfinance is closer to actual fill than rec_entry from
+        # hours ago. Forces slippage gate to run instead of silently recording rec_entry.
+        price_source = "user"
+        if price_override is None:
+            try:
+                live = get_market_data([rec["ticker"]]).get(rec["ticker"], {})
+                live_price = live.get("price") if isinstance(live, dict) else None
+                if isinstance(live_price, (int, float)) and live_price > 0:
+                    price_override = float(live_price)
+                    price_source = "live"
+            except Exception:
+                logger.exception("Live-price fetch failed at /confirm")
         entry = price_override if price_override is not None else rec_entry
         if entry <= 0:
             await update.message.reply_text("❌ Kein gültiger Entry-Preis. `@PREIS` angeben.")
             return
 
-        # Slippage gate: if user passed a filled price, reject when too far from rec.
+        # Slippage gate: any treated fill (user or live-fetched) is checked vs. rec.
         slippage_pct = 0.0
         if price_override is not None and rec_entry > 0:
             slippage_pct = (entry - rec_entry) / rec_entry * 100
             if abs(slippage_pct) > config.MAX_ENTRY_SLIPPAGE_PERCENT:
+                src_note = "live (15min delayed)" if price_source == "live" else "Fill"
                 await update.message.reply_text(
                     f"⛔ *Slippage-Abbruch*\n"
-                    f"Rec €{rec_entry:.2f} vs. Fill €{entry:.2f} "
+                    f"Rec €{rec_entry:.2f} vs. {src_note} €{entry:.2f} "
                     f"({slippage_pct:+.2f}%) > {config.MAX_ENTRY_SLIPPAGE_PERCENT}%.\n"
-                    f"Neu quoten oder `/cancel`.",
+                    f"Mit echtem Fill quoten: `/confirm @PREIS` oder `/cancel`.",
                     parse_mode="Markdown",
                 )
                 return
@@ -212,6 +247,8 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "conviction": rec.get("conviction"),
             "p_win": rec.get("p_win"),
             "thesis": rec.get("thesis"),
+            "hold_days_min": rec.get("hold_days_min"),
+            "hold_days_max": rec.get("hold_days_max"),
             "entry_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "status": "open",
             "rec_entry_price": rec_entry,
@@ -235,11 +272,15 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tp = trade["take_profit"]
     tp_str = " / ".join(f"€{t:.2f}" for t in tp) if isinstance(tp, list) else f"€{(tp or 0):.2f}"
     sl_str = f"€{trade['stop_loss']:.2f}" if trade.get("stop_loss") else "–"
+    price_note = ""
+    if price_source == "live":
+        price_note = "\n_⚠️ Preis live-gepulled (15min delayed). Bei tatsächlichem TR-Fill korrigieren._"
     await update.message.reply_text(
         f"✅ *{trade['ticker']} im Portfolio*\n"
         f"{shares:g} × €{entry:.2f} = €{actual_size:.2f}\n"
         f"SL: {sl_str} | TP: {tp_str}\n"
-        f"Cash: €{new_cash:.2f}",
+        f"Cash: €{new_cash:.2f}"
+        f"{price_note}",
         parse_mode="Markdown",
     )
 
@@ -315,6 +356,7 @@ async def close_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         portfolio["cash_eur"] = round(float(portfolio.get("cash_eur", 0) or 0) + (exit_price * shares), 2)
         portfolio["open_trades"] = open_trades
 
+        maintain_drawdown_state(portfolio)
         save_portfolio(portfolio)
         new_cash = portfolio["cash_eur"]
 
@@ -356,16 +398,39 @@ async def positions_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines = [f"💰 *Cash:* €{cash:.2f}"]
 
     if open_trades:
+        # Batch live prices for unrealized P&L. Cache hits if morning-prep ran recently.
+        live = {}
+        try:
+            live = get_market_data([t.get("ticker") for t in open_trades if t.get("ticker")])
+        except Exception:
+            logger.exception("/positions price fetch failed")
+
+        total_unreal_eur = 0.0
         lines.append("\n*Offene Positionen:*")
         for t in open_trades:
             ticker = t.get("ticker", "?")
-            shares = t.get("shares", 0)
-            entry = t.get("entry_price", 0)
+            shares = float(t.get("shares", 0) or 0)
+            entry = float(t.get("entry_price", 0) or 0)
             sl = t.get("stop_loss")
             tp = t.get("take_profit")
             tp_str = "/".join(f"€{x:.2f}" for x in tp) if isinstance(tp, list) else (f"€{tp:.2f}" if tp else "–")
             sl_str = f"€{sl:.2f}" if sl else "–"
-            lines.append(f"• {ticker}: {shares:g}×€{entry:.2f} | SL {sl_str} | TP {tp_str}")
+
+            price = (live.get(ticker) or {}).get("price") if isinstance(live.get(ticker), dict) else None
+            pnl_line = ""
+            if isinstance(price, (int, float)) and entry > 0 and shares > 0:
+                pnl_eur = (price - entry) * shares
+                pnl_pct = (price - entry) / entry * 100
+                total_unreal_eur += pnl_eur
+                emoji = "🟢" if pnl_eur >= 0 else "🔴"
+                pnl_line = f" | {emoji} €{price:.2f} ({pnl_eur:+.2f}€ / {pnl_pct:+.2f}%)"
+
+            lines.append(
+                f"• {ticker}: {shares:g}×€{entry:.2f} | SL {sl_str} | TP {tp_str}{pnl_line}"
+            )
+
+        if total_unreal_eur:
+            lines.append(f"\n_Σ unrealized: €{total_unreal_eur:+.2f}_")
     else:
         lines.append("\n_Keine offenen Positionen._")
 
