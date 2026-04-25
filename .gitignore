@@ -19,6 +19,7 @@ portfolio.json
 
 # Logs
 *.log
+*.err
 trading.log
 
 # IDE
