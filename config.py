@@ -197,6 +197,12 @@ MIN_CONFLUENCE_SCORE = 5          # von 10 möglichen — darunter PASS
 # Regime gate — RISK_OFF blocks new LONG entries (conservative full-trust bias)
 RISK_OFF_BLOCKS_LONGS = True
 
+# Red-Team-Pass: zweiter Claude-Call kritisiert eigene Rec im Bear-Modus.
+# Blockt wenn confidence_thesis_holds < threshold ODER verdict==KILL.
+# Gleicher Modell-Tier wie Hauptcall (Haiku Event/Opening, Sonnet Morning).
+RED_TEAM_ENABLED = True
+RED_TEAM_MIN_CONFIDENCE = 0.55  # confidence-of-thesis < 0.55 → block
+
 # Valid mistake taxonomy tags (guide classes: prediction/timing/execution/external)
 MISTAKE_TAGS = {
     "thesis_wrong",    # prediction error

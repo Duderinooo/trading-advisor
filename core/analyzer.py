@@ -21,9 +21,11 @@ from memory import (
 from macro import today_events as _today_macro_events, format_events as _format_macro_events
 
 from core.api_usage import can_make_api_call, increment_usage
+from core.gate_log import log_gate
 from core.prompts import (
     STRATEGY_SYSTEM, MORNING_PREP_PROMPT, OPENING_CHECK_PROMPT, EVENT_TRIGGER_PROMPT,
     WATCH_LEVELS_TOOL, RECOMMEND_ENTRY_TOOL,
+    RED_TEAM_SYSTEM, RED_TEAM_TOOL,
 )
 from core.portfolio import (
     portfolio_lock, load_portfolio, save_portfolio, suggest_position_size,
@@ -60,6 +62,82 @@ def _compact(d):
 def _dump(d) -> str:
     """Compact JSON: no indent, no spaces, None stripped, UTF-8 preserved."""
     return json.dumps(_compact(d), separators=(",", ":"), ensure_ascii=False)
+
+
+# ---------- Red-team critic ----------
+
+def _run_red_team(rec: dict, snap: dict | None, regime: str, model: str) -> dict | None:
+    """Bear-case critique of a proposed entry. Returns critique dict or None on failure.
+
+    The critique runs as a single tool-forced Claude call. Cache key is the
+    bear-critic system prompt (stable) — only the user-message changes per rec.
+    """
+    payload = {
+        "ticker": rec.get("ticker"),
+        "entry_price": rec.get("entry_price"),
+        "stop_loss": rec.get("stop_loss"),
+        "take_profit": rec.get("take_profit"),
+        "size_eur": rec.get("size_eur"),
+        "conviction": rec.get("conviction"),
+        "p_win": rec.get("p_win"),
+        "setup_type": rec.get("setup_type"),
+        "top_fail_mode": rec.get("top_fail_mode"),
+        "thesis": rec.get("thesis"),
+        "confluence_score": rec.get("confluence_score"),
+        "confluence_items": rec.get("confluence_items"),
+        "correlations": rec.get("correlations"),
+    }
+    snap_slim = None
+    if isinstance(snap, dict):
+        keys = (
+            "price", "prev_close", "change_pct", "rsi14", "macd", "macd_signal",
+            "ma20", "ma50", "ma200", "atr14_pct", "volume_ratio", "spread_pct",
+            "wk_trend", "rs_20d_vs_index_pct",
+            "analyst_rec_key", "analyst_upside_pct", "analyst_count",
+        )
+        snap_slim = {k: snap.get(k) for k in keys if snap.get(k) is not None}
+
+    user_msg = (
+        "Kritisiere folgende Long-Empfehlung. Bear-Sicht. Tool-Call PFLICHT.\n\n"
+        f"## Empfehlung\n{_dump(payload)}\n\n"
+        f"## Markt-Kontext für {payload['ticker']}\n{_dump(snap_slim or {})}\n\n"
+        f"## Regime\n{regime}"
+    )
+
+    try:
+        resp = client.messages.create(
+            model=model,
+            max_tokens=400,
+            system=[{
+                "type": "text",
+                "text": RED_TEAM_SYSTEM,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            tools=[RED_TEAM_TOOL],
+            tool_choice={"type": "tool", "name": "submit_critique"},
+            messages=[{"role": "user", "content": user_msg}],
+        )
+    except Exception as e:
+        logger.warning("Red-team call failed: %s", e)
+        return None
+
+    increment_usage(forced=False)
+
+    for block in resp.content:
+        if getattr(block, "type", None) == "tool_use" and getattr(block, "name", None) == "submit_critique":
+            data = block.input or {}
+            usage = getattr(resp, "usage", None)
+            if usage is not None:
+                logger.info(
+                    "Red-team call: in=%s out=%s cache_read=%s cache_write=%s",
+                    getattr(usage, "input_tokens", None),
+                    getattr(usage, "output_tokens", None),
+                    getattr(usage, "cache_read_input_tokens", None),
+                    getattr(usage, "cache_creation_input_tokens", None),
+                )
+            return data
+    logger.warning("Red-team returned no tool_use block — skipping critique")
+    return None
 
 
 # ---------- Main orchestrator ----------
@@ -495,6 +573,7 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
         if _halt["halt"]:
             reason = " | ".join(_halt["reasons"])
             logger.warning("Entry BLOCKED by risk halt: %s", reason)
+            log_gate(entry_recommendation.get("ticker", "?"), "risk_halt", True, reason, _halt.get("metrics"))
             _notify(f"⛔ *ENTRY BLOCKIERT* ({entry_recommendation.get('ticker','?')})\n{reason}")
             entry_recommendation = None
 
@@ -502,6 +581,10 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
         direction = str(entry_recommendation.get("direction") or "LONG").upper()
         if direction == "LONG":
             logger.warning("Entry BLOCKED by regime gate: RISK_OFF + LONG")
+            log_gate(
+                entry_recommendation.get("ticker", "?"), "regime", True,
+                f"RISK_OFF + LONG (regime={regime})", {"regime": regime},
+            )
             _notify(
                 f"⛔ *ENTRY BLOCKIERT* ({entry_recommendation.get('ticker','?')})\n"
                 f"Regime={regime} → keine neuen Longs (conservative bias)."
@@ -524,6 +607,10 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 "Entry BLOCKED by no-entry-zone: %s in window %s",
                 entry_recommendation.get("ticker", "?"), _blocked_window,
             )
+            log_gate(
+                entry_recommendation.get("ticker", "?"), "no_entry_zone", True,
+                f"window {_blocked_window}", {"window": _blocked_window},
+            )
             _notify(
                 f"⛔ *ENTRY BLOCKIERT* ({entry_recommendation.get('ticker','?')})\n"
                 f"No-Entry-Zone {_blocked_window} — Auction/EOD-Chop, schlechte Fills."
@@ -545,6 +632,9 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                     "Entry BLOCKED by SL-too-tight: %s SL %.2f×ATR < %.2f×ATR",
                     _t, _sl_dist_atr, config.MIN_SL_DISTANCE_ATR,
                 )
+                log_gate(_t, "sl_distance", True,
+                         f"SL {_sl_dist_atr:.2f}×ATR < {config.MIN_SL_DISTANCE_ATR}",
+                         {"sl_dist_atr": round(_sl_dist_atr, 2), "kind": "tight"})
                 _notify(
                     f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
                     f"SL {_sl_dist_atr:.2f}×ATR < {config.MIN_SL_DISTANCE_ATR} → Whipsaw-Risk."
@@ -555,6 +645,9 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                     "Entry BLOCKED by SL-too-wide: %s SL %.2f×ATR > %.2f×ATR",
                     _t, _sl_dist_atr, config.MAX_SL_DISTANCE_ATR,
                 )
+                log_gate(_t, "sl_distance", True,
+                         f"SL {_sl_dist_atr:.2f}×ATR > {config.MAX_SL_DISTANCE_ATR}",
+                         {"sl_dist_atr": round(_sl_dist_atr, 2), "kind": "wide"})
                 _notify(
                     f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
                     f"SL {_sl_dist_atr:.2f}×ATR > {config.MAX_SL_DISTANCE_ATR} → Risk pro Trade gesprengt."
@@ -586,6 +679,11 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 "Entry BLOCKED by edge gate: edge=%.3f < %.3f (p_raw=%s, haircut=%s, p_adj=%s)",
                 _edge, config.MIN_EXPECTED_EDGE, _p_raw, _haircut, _p_adj,
             )
+            log_gate(
+                entry_recommendation.get("ticker", "?"), "edge", True,
+                f"edge {_edge:.3f} < {config.MIN_EXPECTED_EDGE}",
+                {"edge": round(_edge, 3), "p_raw": _p_raw, "p_adj": _p_adj, "haircut": _haircut},
+            )
             _notify(
                 f"⛔ *ENTRY BLOCKIERT* ({entry_recommendation.get('ticker','?')})\n"
                 f"Edge {_edge:.3f} < {config.MIN_EXPECTED_EDGE} (p·b−(1−p))"
@@ -607,6 +705,9 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                     "Entry BLOCKED by sector gate: %s in %s, already %d open (%s)",
                     _t, _sector, len(_current), ", ".join(_current),
                 )
+                log_gate(_t, "sector", True,
+                         f"{_sector} {len(_current)}/{config.MAX_POSITIONS_PER_SECTOR}",
+                         {"sector": _sector, "current": _current})
                 _notify(
                     f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
                     f"Sektor `{_sector}` bereits voll: {len(_current)}/{config.MAX_POSITIONS_PER_SECTOR} "
@@ -677,6 +778,7 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
         _wk = (market_data.get(_t) or {}).get("wk_trend")
         if _direction == "LONG" and _wk == "DOWN":
             logger.warning("Entry BLOCKED by weekly-trend gate: %s LONG vs wk_trend=DOWN", _t)
+            log_gate(_t, "weekly_trend", True, "LONG vs wk_trend=DOWN", {"wk_trend": _wk})
             _notify(
                 f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
                 f"Weekly-Trend DOWN — kein Long gegen primären Trend."
@@ -696,6 +798,9 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                     "Entry BLOCKED by earnings gate: %s in %d Tag(en) (%s)",
                     _t, _w["days_until"], _w["earnings_date"],
                 )
+                log_gate(_t, "earnings", True,
+                         f"earnings in {_w['days_until']}d",
+                         {"days_until": _w["days_until"], "earnings_date": _w["earnings_date"]})
                 _notify(
                     f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
                     f"Earnings in {_w['days_until']} Tag(en) ({_w['earnings_date']}). "
@@ -716,6 +821,9 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                     "Entry BLOCKED by RS gate: %s rs_20d=%+.2fpp < %.2fpp (setup=%s)",
                     _t, _rs, config.MIN_RS_20D_VS_INDEX_PCT, _setup,
                 )
+                log_gate(_t, "relative_strength", True,
+                         f"rs_20d {_rs:+.1f}pp < {config.MIN_RS_20D_VS_INDEX_PCT}pp",
+                         {"rs_20d": _rs, "setup": _setup})
                 _notify(
                     f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
                     f"Relative-Strength {_rs:+.1f}pp vs Index < {config.MIN_RS_20D_VS_INDEX_PCT}pp. "
@@ -734,6 +842,9 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                     "Entry BLOCKED by volume gate: %s breakout vol_ratio=%.2f < %.2f",
                     _t, _vr, config.MIN_BREAKOUT_VOLUME_RATIO,
                 )
+                log_gate(_t, "breakout_volume", True,
+                         f"vol_ratio {_vr:.2f} < {config.MIN_BREAKOUT_VOLUME_RATIO}",
+                         {"vol_ratio": _vr})
                 _notify(
                     f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
                     f"Breakout-Setup ohne Volumen-Bestätigung (vol_ratio {_vr:.2f} < {config.MIN_BREAKOUT_VOLUME_RATIO}). "
@@ -756,6 +867,9 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 "Entry BLOCKED by confluence gate: %s score=%d < %d (setup=%s, missing: %s)",
                 _t, _conf["score"], _min_conf, _setup, ", ".join(_conf.get("missing") or []),
             )
+            log_gate(_t, "confluence", True,
+                     f"score {_conf['score']}/10 < {_min_conf}",
+                     {"score": _conf["score"], "min": _min_conf, "missing": _conf.get("missing") or []})
             _notify(
                 f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
                 f"Confluence-Score {_conf['score']}/10 < {_min_conf} (setup={_setup}). "
@@ -782,6 +896,9 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                         "Entry BLOCKED by correlation gate: %s vs %s (corrs %s)",
                         _t, list(_high.keys()), _high,
                     )
+                    log_gate(_t, "correlation", True,
+                             f"{len(_high)} corr ≥ {config.MAX_CORRELATION}",
+                             {"high_corrs": _high})
                     _notify(
                         f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
                         f"Korrelation ≥{config.MAX_CORRELATION} mit {len(_high)} bestehenden Positionen: "
@@ -793,6 +910,47 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                     entry_recommendation["correlations"] = _corrs
             except Exception as e:
                 logger.warning("Correlation check failed for %s: %s", _t, e)
+
+    if entry_recommendation and config.RED_TEAM_ENABLED:
+        # Red-Team-Pass: Bear-Critic-Persona reviewt fertige Bull-Rec.
+        # Block bei verdict==KILL ODER confidence < RED_TEAM_MIN_CONFIDENCE.
+        # WEAKEN bleibt durch, wird nur am Telegram-Alert angeflanscht.
+        _t = (entry_recommendation.get("ticker") or "").upper()
+        _snap = market_data.get(_t)
+        _critique = _run_red_team(entry_recommendation, _snap, regime, model)
+        if isinstance(_critique, dict):
+            _verdict = (_critique.get("verdict") or "").upper()
+            _conf = _critique.get("confidence_thesis_holds")
+            _reason = _critique.get("reason") or ""
+            _modes = _critique.get("top_failure_modes") or []
+            _kill = (
+                _verdict == "KILL"
+                or (isinstance(_conf, (int, float)) and _conf < config.RED_TEAM_MIN_CONFIDENCE)
+            )
+            if _kill:
+                logger.warning(
+                    "Entry BLOCKED by red-team: %s verdict=%s conf=%s reason=%s",
+                    _t, _verdict, _conf, _reason,
+                )
+                log_gate(_t, "red_team", True,
+                         f"verdict={_verdict} conf={_conf}",
+                         {"verdict": _verdict, "confidence": _conf,
+                          "failure_modes": _modes, "reason": _reason})
+                _modes_str = "\n  • " + "\n  • ".join(_modes[:3]) if _modes else ""
+                _notify(
+                    f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
+                    f"Red-Team {_verdict} (conf {_conf}): {_reason}"
+                    + (f"\n\nFailure-Modes:{_modes_str}" if _modes_str else "")
+                )
+                entry_recommendation = None
+            else:
+                # Stamp critique on rec — surfaces in Telegram alert + dashboard.
+                entry_recommendation["red_team_review"] = {
+                    "verdict": _verdict,
+                    "confidence_thesis_holds": _conf,
+                    "top_failure_modes": _modes,
+                    "reason": _reason,
+                }
 
     if entry_recommendation:
         # Drawdown-Soft-Scaling: zwischen DD_SOFT und DD_HALT halbe Size.
@@ -831,6 +989,12 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                     )
 
     if entry_recommendation:
+        log_gate(
+            entry_recommendation.get("ticker", "?"), "all_passed", False, "entry approved",
+            {"size_eur": entry_recommendation.get("size_eur"),
+             "conviction": entry_recommendation.get("conviction"),
+             "p_win": entry_recommendation.get("p_win")},
+        )
         # Stamp regime + VIX so downstream alpha-attribution + regime-conditional hit-rate
         # has the entry context, even if regime shifts mid-trade.
         _vix_at_entry = (market_ctx.get("^VIX") or {}).get("price")
@@ -868,6 +1032,21 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
         _pct_cap = (_actual_size / _capital * 100) if _capital > 0 else 0.0
         _risk_eur = (_entry - _sl) * _shares_prev if _entry > _sl > 0 else 0.0
         _risk_pct = (_risk_eur / _capital * 100) if _capital > 0 else 0.0
+        # Red-Team Review Block (wenn vorhanden): zeigt Bear-Sicht direkt am Alert,
+        # damit User Conviction des Bots vs Bear-Critic vergleichen kann.
+        _rt = rec.get("red_team_review") or {}
+        _rt_block = ""
+        if _rt:
+            _rt_modes = _rt.get("top_failure_modes") or []
+            _rt_modes_str = "\n  • " + "\n  • ".join(_rt_modes[:3]) if _rt_modes else ""
+            _rt_conf = _rt.get("confidence_thesis_holds")
+            _rt_verdict = _rt.get("verdict") or "?"
+            _rt_emoji = "🐻" if _rt_verdict == "WEAKEN" else "✅"
+            _rt_block = (
+                f"\n{_rt_emoji} *Red-Team*: {_rt_verdict} (conf {_rt_conf})"
+                f"{_rt_modes_str}\n"
+            )
+
         # Anchor message for reply-based /confirm. User replies `/confirm 3` on this post.
         message_id = _notify(
             f"🎯 *ENTRY EMPFEHLUNG: {_ticker}*\n\n"
@@ -876,7 +1055,8 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             f"Kauf: {_shares_str} à €{_entry:.2f} = €{_actual_size:.2f} "
             f"({_pct_cap:.1f}% Kapital, Cash €{_cash:.0f})\n"
             f"Risk bei SL: €{_risk_eur:.2f} ({_risk_pct:.2f}% Kapital) | Conv: {_conv}/5\n"
-            f"Hold: {_hmin}-{_hmax} Tage{_trail_line}\n\n"
+            f"Hold: {_hmin}-{_hmax} Tage{_trail_line}\n"
+            f"{_rt_block}\n"
             f"💡 _{_thesis}_\n\n"
             f"_Reply `/confirm` (auto={_shares_str}) oder `/confirm <stück> @<preis>` für override._"
         )
@@ -889,10 +1069,49 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
     if MEMPALACE_AVAILABLE:
         log_analysis(analysis_text, mode, event_context)
 
+    # Correlation snapshot for the dashboard: full pairwise matrix over open
+    # positions, refreshed on morning analysis. Cheap (already pulling returns
+    # for the corr-gate) and avoids re-computing in JS.
+    corr_matrix = None
+    if mode == "morning":
+        try:
+            _open = [t["ticker"] for t in portfolio.get("open_trades", []) if t.get("ticker")]
+            if len(_open) >= 2:
+                _ret = get_returns(_open, days=config.CORRELATION_LOOKBACK_DAYS)
+                _m: dict[str, dict[str, float]] = {}
+                for a in _open:
+                    sa = _ret.get(a)
+                    if sa is None:
+                        continue
+                    _m[a] = {}
+                    for b in _open:
+                        if a == b:
+                            _m[a][b] = 1.0
+                            continue
+                        sb = _ret.get(b)
+                        if sb is None:
+                            continue
+                        try:
+                            c = float(sa.corr(sb))
+                            if c == c:
+                                _m[a][b] = round(c, 2)
+                        except Exception:
+                            continue
+                corr_matrix = {
+                    "tickers": _open,
+                    "matrix": _m,
+                    "lookback_days": config.CORRELATION_LOOKBACK_DAYS,
+                    "computed_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                }
+        except Exception:
+            logger.exception("Correlation snapshot failed")
+
     # Reload-merge save: protects concurrent writes from the Telegram listener
     # (e.g. /confirm that moves a pending_rec into open_trades).
     with portfolio_lock:
         fresh = load_portfolio()
+        if corr_matrix is not None:
+            fresh["correlation_matrix"] = corr_matrix
         if new_levels is not None:
             filtered = [lvl for lvl in new_levels if lvl.get("ticker") not in excluded]
             dropped = len(new_levels) - len(filtered)

@@ -14,6 +14,14 @@ import OpenTrades from "@/components/OpenTrades";
 import ClosedTrades from "@/components/ClosedTrades";
 import WatchLevels from "@/components/WatchLevels";
 import Stats from "@/components/Stats";
+import Heartbeat from "@/components/Heartbeat";
+import GateAttribution from "@/components/GateAttribution";
+import CorrelationHeatmap from "@/components/CorrelationHeatmap";
+import CalibrationCurve from "@/components/CalibrationCurve";
+import WhatIfShock from "@/components/WhatIfShock";
+import ThesisDecay from "@/components/ThesisDecay";
+import MistakeTrend from "@/components/MistakeTrend";
+import BacktestReport from "@/components/BacktestReport";
 
 const REFRESH_MS = 30_000;
 
@@ -149,13 +157,55 @@ export default function Dashboard({ initial }: { initial: Portfolio }) {
         </Card>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <Card title="Hit Stats" className="lg:col-span-1">
+          <Card title="Bot-Heartbeat" className="lg:col-span-1">
+            <Heartbeat
+              heartbeat={portfolio.heartbeat}
+              killSwitchActive={
+                portfolio.kill_switch ?? portfolio.kill_switch_active
+              }
+              killSwitchReason={portfolio.kill_switch_reason}
+              killSwitchTs={portfolio.kill_switch_ts}
+              ddHaltActive={portfolio.dd_halt_active}
+            />
+          </Card>
+          <Card title="Hit Stats" className="lg:col-span-2">
             <Stats stats={stats} />
           </Card>
-          <Card title="Watch Levels" className="lg:col-span-2">
-            <WatchLevels levels={portfolio.watch_levels} />
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <Card title="Thesis-Decay" className="lg:col-span-1">
+            <ThesisDecay open={portfolio.open_trades} />
+          </Card>
+          <Card title="What-If Shock" className="lg:col-span-2">
+            <WhatIfShock open={portfolio.open_trades} />
           </Card>
         </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <Card title="Korrelations-Heatmap (offene Positionen)">
+            <CorrelationHeatmap matrix={portfolio.correlation_matrix} />
+          </Card>
+          <Card title="Calibration-Curve (p_win vs Realität)">
+            <CalibrationCurve />
+          </Card>
+        </div>
+
+        <Card title="Mistake-Class Trend (rolling 10 Losses)">
+          <MistakeTrend closed={portfolio.closed_trades} />
+        </Card>
+
+        <Card title="Gate-Attribution">
+          <GateAttribution />
+        </Card>
+
+        <Card title="Backtest-Replay (gates × closed trades)">
+          <BacktestReport />
+        </Card>
+
+        <Card title="Watch Levels">
+          <WatchLevels levels={portfolio.watch_levels} />
+        </Card>
 
         <Card title="Open Trades">
           <OpenTrades trades={portfolio.open_trades} />

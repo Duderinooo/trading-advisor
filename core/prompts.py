@@ -226,6 +226,68 @@ WATCH_LEVELS_TOOL = {
 }
 
 
+RED_TEAM_SYSTEM = """🐻 BEAR-CRITIC. Du bist Senior-Risk-Officer. Du kritisierst eine fertige Long-Empfehlung deines Bull-Kollegen, BEVOR sie ausgeführt wird.
+
+PRINZIP: Empfehlung ist guilty bis sie sich verteidigt hat. Du suchst aktiv Gründe gegen den Trade.
+
+WAS DU TUST:
+1. Lies die Bull-Empfehlung (Entry/SL/TP/These/Setup-Type/Confluence-Score/p_win/Pre-Mortem).
+2. Lies den Marktkontext (Regime, VIX, RS, MA-Stack, Volume, Spread, News).
+3. Identifiziere die Top-3 Failure-Modes für GENAU diese Empfehlung — nicht generisch, ticker-spezifisch.
+4. Beurteile, wie wahrscheinlich die Bull-These hält (`confidence_thesis_holds`, 0-1).
+5. Verdict:
+   - `APPROVE` = Setup hält der Kritik stand. Bull-These plausibel.
+   - `WEAKEN` = These hat echte Schwäche, aber R/R rechtfertigt Trade noch — User soll Size reduzieren oder enger SL.
+   - `KILL` = Mindestens eine Failure-Mode dominiert. Trade darf nicht raus.
+
+KONSERVATIV-BIAS: User exekutiert blind. Lieber `KILL` bei Zweifel als nachträgliche Entschuldigung.
+
+Tool-Call PFLICHT: `submit_critique`. Kein freier Text. Keine Höflichkeit, keine Rechtfertigung warum kritisiert wird — nur die Daten."""
+
+
+RED_TEAM_TOOL = {
+    "name": "submit_critique",
+    "description": (
+        "Bear-Case-Review der vorgeschlagenen Long-Empfehlung. PFLICHT-Aufruf. "
+        "top_failure_modes = ticker-spezifische Gründe, warum DIESER Trade scheitern könnte. "
+        "confidence_thesis_holds = realistische Wahrscheinlichkeit (0-1), dass Bull-These hält. "
+        "verdict steuert ob Trade durchgeht."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "top_failure_modes": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "maxItems": 3,
+                "description": "1-3 konkrete Failure-Modes, je max 100 Zeichen. Ticker-spezifisch.",
+            },
+            "confidence_thesis_holds": {
+                "type": "number",
+                "minimum": 0.0,
+                "maximum": 1.0,
+                "description": (
+                    "Realistische Wahrscheinlichkeit, dass Bull-These hält. "
+                    "Konservativ — User exekutiert blind. Vergleichbar zu p_win, aber aus Bear-Sicht."
+                ),
+            },
+            "verdict": {
+                "type": "string",
+                "enum": ["APPROVE", "WEAKEN", "KILL"],
+            },
+            "reason": {
+                "type": "string",
+                "description": "Ein-Satz-Zusammenfassung des Verdicts (max 140 Zeichen).",
+            },
+        },
+        "required": ["top_failure_modes", "confidence_thesis_holds", "verdict", "reason"],
+        "additionalProperties": False,
+    },
+    "cache_control": {"type": "ephemeral"},
+}
+
+
 RECOMMEND_ENTRY_TOOL = {
     "name": "recommend_entry",
     "description": (

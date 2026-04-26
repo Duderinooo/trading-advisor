@@ -1,8 +1,15 @@
 import type {
+  CalibrationBin,
   ClosedTrade,
   EquityPoint,
+  GateAttribution,
+  GateBlock,
   HitStats,
+  MistakeTrendPoint,
+  OpenTrade,
   Portfolio,
+  ShockResult,
+  ThesisDecayFlag,
 } from "./types";
 
 export function computeEquityCurve(p: Portfolio): EquityPoint[] {
@@ -134,6 +141,170 @@ export function openExposure(p: Portfolio): number {
     s += t.size_eur ?? t.entry_price * t.shares;
   }
   return Math.round(s * 100) / 100;
+}
+
+// ---------- Gate attribution ----------
+
+export function aggregateGateBlocks(blocks: GateBlock[]): GateAttribution[] {
+  const acc: Record<string, { blocks: number; passes: number }> = {};
+  for (const b of blocks) {
+    const slot = (acc[b.gate] ??= { blocks: 0, passes: 0 });
+    if (b.blocked) slot.blocks += 1;
+    else slot.passes += 1;
+  }
+  const out: GateAttribution[] = Object.entries(acc).map(
+    ([gate, s]) => ({
+      gate,
+      blocks: s.blocks,
+      passes: s.passes,
+      block_rate:
+        s.blocks + s.passes > 0
+          ? Math.round((s.blocks / (s.blocks + s.passes)) * 1000) / 10
+          : 0,
+    }),
+  );
+  return out.sort((a, b) => b.blocks - a.blocks);
+}
+
+// ---------- Calibration bins (predicted p_win vs realized win-rate) ----------
+
+const BINS: Array<[number, number]> = [
+  [0.0, 0.2],
+  [0.2, 0.4],
+  [0.4, 0.6],
+  [0.6, 0.8],
+  [0.8, 1.0001],
+];
+
+export function computeCalibrationBins(closed: ClosedTrade[]): CalibrationBin[] {
+  const final = closed.filter((t) => !t.partial && typeof t.p_win === "number");
+  return BINS.map(([lo, hi]) => {
+    const inBin = final.filter((t) => (t.p_win ?? 0) >= lo && (t.p_win ?? 0) < hi);
+    const n = inBin.length;
+    const predicted =
+      n > 0 ? inBin.reduce((s, t) => s + (t.p_win ?? 0), 0) / n : 0;
+    const actual =
+      n > 0
+        ? inBin.filter(
+            (t) => (t.outcome ?? ((t.pnl_pct ?? 0) > 0 ? 1 : 0)) === 1,
+          ).length / n
+        : 0;
+    return {
+      range: `${lo.toFixed(1)}–${hi >= 1 ? "1.0" : hi.toFixed(1)}`,
+      predicted: Math.round(predicted * 1000) / 1000,
+      actual: Math.round(actual * 1000) / 1000,
+      n,
+    };
+  });
+}
+
+// ---------- Thesis-decay flags ----------
+
+export function computeThesisDecay(
+  open: OpenTrade[],
+  livePrices: Record<string, number> = {},
+): ThesisDecayFlag[] {
+  const today = new Date();
+  const out: ThesisDecayFlag[] = [];
+  for (const t of open) {
+    const holdMax = t.hold_days_max;
+    if (typeof holdMax !== "number" || holdMax <= 0) continue;
+    const entry = new Date(t.entry_date.slice(0, 10));
+    if (Number.isNaN(entry.getTime())) continue;
+    const heldDays = Math.floor(
+      (today.getTime() - entry.getTime()) / 86_400_000,
+    );
+    if (heldDays < Math.floor(holdMax * 0.5)) continue;
+
+    const live = livePrices[t.ticker];
+    const refPrice = typeof live === "number" ? live : t.entry_price;
+    const pnlPct = t.entry_price > 0
+      ? ((refPrice - t.entry_price) / t.entry_price) * 100
+      : 0;
+
+    let severity: ThesisDecayFlag["severity"] = "info";
+    if (heldDays >= holdMax) severity = "stale";
+    else if (heldDays >= Math.floor(holdMax * 0.75)) severity = "warn";
+
+    out.push({
+      ticker: t.ticker,
+      held_days: heldDays,
+      hold_max: holdMax,
+      pnl_pct: Math.round(pnlPct * 100) / 100,
+      severity,
+    });
+  }
+  return out.sort((a, b) => b.held_days - a.held_days);
+}
+
+// ---------- What-if shock ----------
+
+export function simulateShock(
+  open: OpenTrade[],
+  shockPct: number, // negative number = drop, e.g. -3 for SPX -3%
+): { results: ShockResult[]; total_loss_eur: number; sl_hits: number } {
+  const results: ShockResult[] = [];
+  let totalLoss = 0;
+  let slHits = 0;
+  for (const t of open) {
+    const shocked = t.entry_price * (1 + shockPct / 100);
+    const hitsSl = t.stop_loss > 0 && shocked <= t.stop_loss;
+    const exit = hitsSl ? t.stop_loss : shocked;
+    const loss = (exit - t.entry_price) * t.shares;
+    totalLoss += loss;
+    if (hitsSl) slHits += 1;
+    results.push({
+      ticker: t.ticker,
+      shocked_price: Math.round(shocked * 100) / 100,
+      hits_sl: hitsSl,
+      loss_eur: Math.round(loss * 100) / 100,
+      loss_pct:
+        t.entry_price > 0
+          ? Math.round(((exit - t.entry_price) / t.entry_price) * 10000) / 100
+          : 0,
+    });
+  }
+  return {
+    results: results.sort((a, b) => a.loss_eur - b.loss_eur),
+    total_loss_eur: Math.round(totalLoss * 100) / 100,
+    sl_hits: slHits,
+  };
+}
+
+// ---------- Mistake-class rolling trend ----------
+
+export function computeMistakeTrend(
+  closed: ClosedTrade[],
+  windowSize = 10,
+): MistakeTrendPoint[] {
+  const losses = closed
+    .filter((t) => !t.partial && (t.pnl_pct ?? 0) <= 0)
+    .filter((t) => t.exit_date)
+    .sort((a, b) => a.exit_date.localeCompare(b.exit_date));
+  if (losses.length < windowSize) return [];
+
+  const out: MistakeTrendPoint[] = [];
+  for (let i = windowSize - 1; i < losses.length; i++) {
+    const window = losses.slice(i - windowSize + 1, i + 1);
+    const counts = {
+      prediction: 0,
+      timing: 0,
+      execution: 0,
+      external: 0,
+      untagged: 0,
+    };
+    for (const l of window) {
+      const cls = (l.mistake_class ?? "untagged") as keyof typeof counts;
+      if (cls in counts) counts[cls] += 1;
+      else counts.untagged += 1;
+    }
+    out.push({
+      bucket: losses[i].exit_date.slice(0, 10),
+      ...counts,
+      total: window.length,
+    });
+  }
+  return out;
 }
 
 export type Timeframe = "1D" | "1W" | "1M" | "1Y" | "ALL";

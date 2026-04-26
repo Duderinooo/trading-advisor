@@ -28,6 +28,7 @@ from core import (
     kill_switch_active,
     portfolio_lock,
     get_market_data,
+    maybe_auto_kill,
 )
 from memory import log_trade, MEMPALACE_AVAILABLE
 from notifier import send_notification, send_daily_summary, send_alert
@@ -237,6 +238,147 @@ def run_eod_summary():
         logger.exception("EOD summary failed")
 
 
+def is_weekend_summary_time() -> bool:
+    """Sat 10:00–10:15 CET OR Sun 10:00–10:15 CET. Two-shot weekend recap window."""
+    now = datetime.now()
+    if now.weekday() not in (5, 6):
+        return False
+    return now.hour == 10 and now.minute < 15
+
+
+def _weekend_summary_done_today() -> bool:
+    return load_portfolio().get("last_weekend_summary_date") == str(date.today())
+
+
+def _mark_weekend_summary_done():
+    portfolio = load_portfolio()
+    portfolio["last_weekend_summary_date"] = str(date.today())
+    save_portfolio(portfolio)
+
+
+def run_weekend_summary():
+    """Sat/Sun 10:00 CET digest. Deterministic, no Claude.
+
+    Why: weekend has no Morning Brief (not a trading day), but user wants weekly
+    recap + alive-ping. Surfaces last-week P&L, open exposure, mistake-class
+    drift, upcoming earnings + macro for next week.
+    """
+    if _weekend_summary_done_today():
+        return
+    try:
+        from datetime import timedelta
+        from core import (
+            compute_portfolio_heat, compute_hit_stats, compute_equity_stats,
+            get_earnings_warnings, get_daily_usage,
+        )
+        from macro import today_events as _macro_today
+
+        portfolio = load_portfolio()
+        today = date.today()
+
+        # Last 7 days realized P&L
+        cutoff = today - timedelta(days=7)
+        closed_recent = [
+            t for t in portfolio.get("closed_trades", [])
+            if (t.get("exit_date") or "") >= str(cutoff)
+        ]
+        realized_eur = sum(float(t.get("pnl_eur") or 0) for t in closed_recent)
+        wins = sum(1 for t in closed_recent if (t.get("pnl_eur") or 0) > 0)
+        losses = len(closed_recent) - wins
+
+        # Open positions + unrealized
+        open_trades = portfolio.get("open_trades", [])
+        unrealized = 0.0
+        if open_trades:
+            try:
+                live = get_market_data([t["ticker"] for t in open_trades])
+                for t in open_trades:
+                    snap = live.get(t["ticker"])
+                    price = snap.get("price") if isinstance(snap, dict) else None
+                    entry = float(t.get("entry_price") or 0)
+                    shares = float(t.get("shares") or 0)
+                    if isinstance(price, (int, float)) and entry > 0:
+                        unrealized += (price - entry) * shares
+            except Exception:
+                logger.exception("Weekend live-pull failed")
+
+        starting = float(portfolio.get("total_capital_eur") or config.BUDGET_EUR)
+        equity_realized = starting + sum(float(t.get("pnl_eur") or 0) for t in portfolio.get("closed_trades", []))
+        equity_total = equity_realized + unrealized
+
+        heat = compute_portfolio_heat(portfolio)
+        eq = compute_equity_stats(portfolio.get("closed_trades", []), starting) or {}
+        stats = compute_hit_stats(portfolio.get("closed_trades", []))
+
+        # Mistake distribution (last 20 losses) — surfaces drift
+        last_losses = [
+            t for t in portfolio.get("closed_trades", [])
+            if (t.get("pnl_pct") or 0) <= 0
+        ][-20:]
+        mistake_line = ""
+        if last_losses:
+            cls_counts: dict[str, int] = {}
+            for t in last_losses:
+                c = t.get("mistake_class") or "untagged"
+                cls_counts[c] = cls_counts.get(c, 0) + 1
+            mistake_line = " | ".join(f"{c}={n}" for c, n in sorted(cls_counts.items(), key=lambda x: -x[1]))
+
+        # Upcoming earnings next 7 days for open positions + watchlist
+        candidates = list({t["ticker"] for t in open_trades} | set(config.WATCHLIST))
+        upcoming_earn = get_earnings_warnings(candidates, days_ahead=7)
+        earn_line = ""
+        if upcoming_earn:
+            earn_line = "\n".join(
+                f"  • {w['ticker']}: T-{w['days_until']} ({w['earnings_date']})"
+                for w in sorted(upcoming_earn, key=lambda x: x["days_until"])[:8]
+            )
+
+        # Today's macro events as a peek into next week
+        macro = _macro_today()
+        macro_line = ""
+        if macro:
+            macro_line = "\n".join(
+                f"  • {m.get('time','?')} {m.get('country','')}: {m.get('event','?')}"
+                for m in macro[:5]
+            )
+
+        ks_state = "🛑 AKTIV" if kill_switch_active(portfolio) else "✅ aus"
+        dd_state = "🚫 DD-LATCH" if portfolio.get("dd_halt_active") else "—"
+
+        # Last-week call count from api usage file isn't trivially weekly — show today only.
+        calls_today = get_daily_usage()
+
+        msg = (
+            f"📅 *WEEKEND-RECAP {today}*\n\n"
+            f"_Last 7d_: €{realized_eur:+.2f} ({len(closed_recent)} closed, {wins}W/{losses}L)\n"
+            f"Unrealized: €{unrealized:+.2f} ({len(open_trades)} offen)\n"
+            f"Equity: €{equity_total:.2f} | Cash: €{portfolio.get('cash_eur',0):.2f}\n"
+            f"Max DD all-time: {eq.get('max_drawdown_pct',0):.1f}% | "
+            f"Heat: €{heat['total_heat_eur']:.2f} ({heat['heat_pct']:.1f}%)\n"
+            f"Kill-Switch: {ks_state} | DD-Halt: {dd_state} | Calls heute: {calls_today}\n"
+        )
+        if stats and stats.get("calibration"):
+            cal = stats["calibration"]
+            msg += (
+                f"\n*Calibration*: Brier {cal['avg_brier']:.3f}, "
+                f"p_pred {cal['avg_p_predicted']:.2f} vs actual {cal['actual_win_rate']:.2f}"
+            )
+            if cal.get("haircut"):
+                msg += f" | Haircut aktiv: {cal['haircut']:+.2f}"
+        if mistake_line:
+            msg += f"\n*Mistakes (last 20 L)*: {mistake_line}"
+        if earn_line:
+            msg += f"\n\n*Earnings nächste 7d:*\n{earn_line}"
+        if macro_line:
+            msg += f"\n\n*Macro heute (Vorschau):*\n{macro_line}"
+
+        send_daily_summary(msg)
+        _mark_weekend_summary_done()
+        logger.info("✅ Weekend summary sent")
+    except Exception:
+        logger.exception("Weekend summary failed")
+
+
 def is_us_open_check_time() -> bool:
     """5–15min window after US market open (15:30 CET)."""
     now = datetime.now()
@@ -319,8 +461,9 @@ def run_morning_prep():
     except Exception:
         logger.exception("Earnings pre-check failed")
 
-    # Ex-dividend pre-check: mechanical price gap on ex-date can trip SL falsely.
-    # Warn for open positions with ex-div in <=DIVIDEND_WARN_DAYS, flag if div eats >50% of SL distance.
+    # Ex-dividend pre-check: only notify when the mechanical drop threatens the SL.
+    # Plain "ex-div anstehend" is info-noise — actionable cases require user to lower
+    # SL the night before; non-threats are logged only.
     try:
         open_trades = load_portfolio().get("open_trades", [])
         if open_trades:
@@ -333,43 +476,46 @@ def run_morning_prep():
                 entry = trade.get("entry_price")
                 sl = trade.get("stop_loss")
                 div = w["expected_div"]
+                if not (entry and sl and entry > sl):
+                    logger.info("Dividend info-only (no SL): %s ex=%s div=%.2f", w["ticker"], w["ex_date"], div)
+                    continue
+                sl_distance = entry - sl
+                drop_share = div / sl_distance if sl_distance > 0 else 0
+                if drop_share < 0.5:
+                    logger.info(
+                        "Dividend info-only (drop_share=%.2f<0.5): %s ex=%s div=%.2f",
+                        drop_share, w["ticker"], w["ex_date"], div,
+                    )
+                    continue
+                suggested_sl = round(sl - div, 2)
                 msg = (
                     f"Ex-Div in *{w['days_until']} Tag(en)* ({w['ex_date']})\n"
                     f"Erwartete Ausschüttung: ~€{div:.2f}/Aktie\n"
+                    f"SL-Distance: €{sl_distance:.2f} | Ex-Div-Drop frisst {drop_share*100:.0f}% davon\n"
+                    f"⚠️ Mechanischer Drop kann SL triggern.\n"
+                    f"Vorschlag: SL temporär auf €{suggested_sl:.2f} senken (heute Abend), "
+                    f"nach Ex-Div ({w['ex_date']}) zurücksetzen."
                 )
-                sl_threat = False
-                if entry and sl and entry > sl:
-                    sl_distance = entry - sl
-                    drop_share = div / sl_distance if sl_distance > 0 else 0
-                    msg += (
-                        f"SL-Distance: €{sl_distance:.2f} | Ex-Div-Drop frisst {drop_share*100:.0f}% davon\n"
-                    )
-                    if drop_share >= 0.5:
-                        sl_threat = True
-                        suggested_sl = round(sl - div, 2)
-                        msg += (
-                            f"⚠️ Mechanischer Drop kann SL triggern.\n"
-                            f"Vorschlag: SL temporär auf €{suggested_sl:.2f} senken (heute Abend), "
-                            f"nach Ex-Div ({w['ex_date']}) zurücksetzen."
-                        )
-                title = (
-                    f"💸 EX-DIV WARNUNG: {w['ticker']} — SL-Risiko"
-                    if sl_threat else
-                    f"💸 Ex-Div anstehend: {w['ticker']}"
-                )
-                send_alert(title, msg)
-                logger.info(
-                    "Dividend warning: %s ex=%s div=%.2f sl_threat=%s",
-                    w["ticker"], w["ex_date"], div, sl_threat,
+                send_alert(f"💸 EX-DIV WARNUNG: {w['ticker']} — SL-Risiko", msg)
+                logger.warning(
+                    "Dividend SL-threat alert: %s ex=%s div=%.2f drop_share=%.2f",
+                    w["ticker"], w["ex_date"], div, drop_share,
                 )
     except Exception:
         logger.exception("Dividend pre-check failed")
 
     try:
         analysis = analyze_portfolio(mode="morning")
-        send_daily_summary(analysis)
+        # Always forward Sonnet's morning verdict — daily alive-ping confirms bot ran.
+        # "Keine Setups heute." is one line, fine as heartbeat. Skip only on the
+        # tool-only-no-text edge case (nothing to forward).
+        stripped = (analysis or "").strip().lower()
+        if "(keine text-analyse)" in stripped or not stripped:
+            logger.info("Morning brief: tool-only call, skipping forward")
+        else:
+            send_daily_summary(analysis)
+            logger.info("✅ Morning prep sent")
         _mark_morning_prep_done()
-        logger.info("✅ Morning prep sent")
     except (ConnectionError, TimeoutError, OSError) as e:
         logger.exception("Morning prep failed (network/IO)")
         send_alert("Morning Prep Error", str(e))
@@ -743,6 +889,22 @@ def main():
         _heartbeat[0] = time.monotonic()
         now = datetime.now()
 
+        # Persist heartbeat to portfolio.json so the web dashboard can show
+        # last-tick age + API spend without re-implementing fs scans.
+        try:
+            from core import get_daily_usage
+            with portfolio_lock:
+                _pf = load_portfolio()
+                _pf["heartbeat"] = {
+                    "last_tick": now.strftime("%Y-%m-%d %H:%M:%S"),
+                    "market_hours": is_market_hours(),
+                    "api_calls_today": get_daily_usage(),
+                    "api_cap": config.MAX_ANALYSES_PER_DAY,
+                }
+                save_portfolio(_pf)
+        except Exception:
+            logger.exception("Heartbeat persist failed")
+
         if is_morning_prep_time():
             run_morning_prep()
 
@@ -753,9 +915,24 @@ def main():
             run_opening_check("us")
         if is_eod_summary_time():
             run_eod_summary()
+        if is_weekend_summary_time():
+            run_weekend_summary()
 
         if (now - last_check).total_seconds() >= check_interval:
             if is_market_hours():
+                # Auto-kill check fires before other work — if VIX/SPX shocked,
+                # skip new entries this cycle (event_check + news_check honor kill).
+                try:
+                    shock = maybe_auto_kill()
+                    if shock:
+                        send_alert(
+                            "🛑 AUTO-KILL aktiviert",
+                            f"{shock['reason']}\n\nKill-Switch flipped automatisch. "
+                            f"SL/TP-Monitoring läuft weiter. "
+                            f"Manuell aufheben via `/resume`."
+                        )
+                except Exception:
+                    logger.exception("auto-kill check failed")
                 run_price_check()
                 run_event_check()
                 run_news_check()
