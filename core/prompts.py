@@ -59,6 +59,18 @@ SETUP-TYPE (Pflicht im recommend_entry):
 - gap_fill: Gap-Trade mit Mean-Reversion-These
 - earnings_drift: Post-Earnings-Drift nach starkem Beat (T+1 bis T+5)
 
+PRE-MORTEM (top_fail_mode) — PFLICHT im recommend_entry Tool:
+- Vor jedem Entry: "Wenn dieser Trade verliert, was bricht zuerst?" Wähle dominanten Fail-Mode aus enum.
+- support_breakdown: Setup baut auf Support, Support hält nicht
+- thesis_invalidation: These wird durch fundamental Datum widerlegt
+- earnings_miss: Earnings-Drift-Setup, Beat erweist sich als nicht nachhaltig
+- macro_event: Fed/CPI/Geo-News kippt Regime mid-trade
+- regime_shift: SPY/VIX-Regime ändert sich gegen Position
+- sector_rotation: Sektor-Flow dreht (z.B. Growth→Value, Tech→Defensive)
+- false_breakout: Breakout-Setup, Kurs fällt zurück unter Trigger
+- stop_run: Stop-Hunt durch zu enge SL-Distanz oder Whipsaw
+- Wenn keine klare Fail-Mode → vermutlich kein A+ Setup, PASS.
+
 WAHRSCHEINLICHKEIT (p_win) — PFLICHT im recommend_entry Tool:
 - p_win = realistische Wahrscheinlichkeit, dass Trade im Gewinn schließt (pnl_pct > 0) bevor SL greift
 - Zahl zwischen 0.00 und 1.00 (keine Conviction-Kategorie, sondern echter Kalibrierungs-Wert)
@@ -78,7 +90,30 @@ _EXCLUDED_SUFFIX = (
     f"\n\nAUSGESCHLOSSEN (NIE traden, Sparpläne/Positionen aktiv): {', '.join(config.EXCLUDED_TICKERS)}"
     if config.EXCLUDED_TICKERS else ""
 )
-STRATEGY_SYSTEM = STRATEGY_PROMPT + _EXCLUDED_SUFFIX
+
+# Static section semantics — moved here so they live in the cached system prompt
+# instead of being re-sent in every user-message section header.
+_SECTION_LEGEND = f"""
+
+KONTEXT-SEKTIONEN (User-Message kann diese enthalten — wende Regeln stumm an):
+
+- ## Markt-Regime: SPY vs 200MA + VIX. RISK_OFF = keine neuen Longs, Cash halten. RISK_ON = Trend-Setups bevorzugen.
+- ## ATR-basierte Positionsgrößen: Empfohlene Größe = Risiko ÷ 1.5×ATR%. Nie mehr als MAX_POSITION_SIZE_PERCENT vom Cash.
+- ## LAST-20 MISTAKES: Klassen: prediction (These falsch), timing (zu früh/spät/whipsaw), execution (slippage/sl_too_tight), external (news_shock/regime_shift). Wenn eine Klasse dominiert: aktiv gegensteuern (timing-heavy → Entry-Trigger strenger; execution-heavy → Spread/Vol-Gate strenger).
+- ## PORTFOLIO HEAT: Wenn Budget remaining < 30% vom Max: nur A+ Conv 5/5 Setups. Wenn < 10%: PASS, keine neuen Entries.
+- ## SECTOR EXPOSURE: Max {config.MAX_POSITIONS_PER_SECTOR} Positionen pro Sektor. Bei Limit: kein neuer Entry im gleichen Sektor.
+- ## HEUTE: HIGH-IMPACT EVENTS (Macro): Pre-Release: keine neuen Entries außer thesis ist Event-unabhängig. Offene Positionen: SL vor Event straffen oder Size halbieren.
+- ## HIT-RATE: Nutze zur Conviction-Kalibrierung. Brier-Line: 0=perfekt, 0.25=random. KORREKTUR-Zeile (wenn aktiv): zieh Wert von neuer p_win-Schätzung ab; trade nur wenn p_win nach Haircut ≥0.55. SELBST-KALIBRIERUNG-Zeile: konkrete Parameter-Anpassung aus Mistake-Klassen.
+  - Setup×Regime-Line: regime-conditional hit-rate. `breakout_resistance@RISK_OFF: 30%` heißt: dieser Setup-Typ läuft schlecht in diesem Regime → höhere Conv-Schwelle.
+  - Attribution-Line: Wins skill = α>0 (Setup hat Markt geschlagen), luck = α≤0 (Markt zog hoch, Setup nicht); Losses noise = α>0 (Setup beat market trotz Verlust), setup-fail = α≤0 (echter Fehler). Mehr "noise"-Verluste = weniger streng tagging, mehr "setup-fail" = These war falsch.
+  - Slippage-Line: aktueller adaptiver Slippage-Budget (% max bei Confirm). Hoher avg → strenger Gate.
+  - Pre-Mortem-Accuracy: % der Verluste wo top_fail_mode korrekt antizipiert wurde. <50% = du übersiehst Fail-Modes, denke breiter.
+  - Kelly-Mult: adaptiver Kelly-Faktor aus Brier (0.10 schlecht kalibriert, 0.50 sehr gut). Beeinflusst max position-size.
+- ## CONFLUENCE-SCORES: 10 Items: wk_trend_up, MA-Stack, RSI healthy, MACD bullish, Volumen, Spread tight, RS vs Index ≥0, Analyst bullish, Regime RISK_ON. Score ≥7 = full Size, 5-6 = halbe Size, <5 = PASS. Tradeable-Schwelle: ≥{config.MIN_CONFLUENCE_SCORE}.
+- ## Earnings Kalender: Positionen in earnings-nahen Titeln prüfen — vor Earnings schließen oder Size reduzieren.
+- ## GAPS: Tickers mit Move ≥{config.GAP_FLAG_PERCENT}% vs prev close. POS = offene Position, WATCH = Watch Level."""
+
+STRATEGY_SYSTEM = STRATEGY_PROMPT + _EXCLUDED_SUFFIX + _SECTION_LEGEND
 
 
 MORNING_PREP_PROMPT = """☀️ MORNING OUTPUT-FORMAT (STRENG):
@@ -246,9 +281,26 @@ RECOMMEND_ENTRY_TOOL = {
                     "Wähle den dominanten Typ — keine Mehrfach-Tags."
                 ),
             },
+            "top_fail_mode": {
+                "type": "string",
+                "enum": [
+                    "support_breakdown",
+                    "thesis_invalidation",
+                    "earnings_miss",
+                    "macro_event",
+                    "regime_shift",
+                    "sector_rotation",
+                    "false_breakout",
+                    "stop_run",
+                ],
+                "description": (
+                    "Pre-Mortem (PFLICHT): Wenn dieser Trade verliert, was ist der wahrscheinlichste Grund? "
+                    "Wähle GENAU einen. Wird beim Close gegen mistake_class validiert (Lerne welche Fail-Modes du gut/schlecht antizipierst)."
+                ),
+            },
         },
         "required": ["ticker", "entry_price", "stop_loss", "take_profit", "size_eur",
-                     "conviction", "p_win", "thesis", "setup_type"],
+                     "conviction", "p_win", "thesis", "setup_type", "top_fail_mode"],
         "additionalProperties": False,
     },
     # Cache the full tools block (both tool defs) alongside system prompt.

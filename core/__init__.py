@@ -11,6 +11,8 @@ from core.portfolio import (
     load_portfolio,
     save_portfolio,
     suggest_position_size,
+    compute_kelly_mult,
+    compute_slippage_budget,
     compute_hit_stats,
     format_hit_stats,
     compute_portfolio_heat,
@@ -37,6 +39,7 @@ from core.market_data import (
     fetch_news,
     market_regime,
     get_returns,
+    get_period_return,
 )
 from core.events import (
     check_news_events,
@@ -55,7 +58,7 @@ from core.api_usage import (
 __all__ = [
     # portfolio
     "portfolio_lock", "load_portfolio", "save_portfolio",
-    "suggest_position_size",
+    "suggest_position_size", "compute_kelly_mult", "compute_slippage_budget",
     "compute_hit_stats", "format_hit_stats",
     "compute_portfolio_heat", "format_portfolio_heat",
     "compute_sector_exposure", "format_sector_exposure",
@@ -67,7 +70,7 @@ __all__ = [
     # market data
     "get_market_data", "invalidate_market_cache",
     "get_earnings_warnings", "get_dividend_warnings", "fetch_news", "market_regime",
-    "get_returns",
+    "get_returns", "get_period_return",
     # events
     "check_news_events", "detect_events", "should_analyze_events",
     "check_stop_loss_take_profit", "check_price_alerts",

@@ -259,11 +259,9 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
 
 ## Markt-Regime
 {regime}
-_(SPY vs 200MA + VIX. RISK_OFF = keine neuen Longs, Cash halten. RISK_ON = Trend-Setups bevorzugen.)_
 
 ## ATR-basierte Positionsgrößen (€{cash:.0f} Cash, {config.MAX_RISK_PER_TRADE_PERCENT}% Risiko/Trade)
 {_dump(atr_sizes)}
-_(Empfohlene Größe = Risiko ÷ 1.5×ATR%. Nie mehr als €{cash * config.MAX_POSITION_SIZE_PERCENT / 100:.0f}.)_
 """
 
     # Gap detection (morning + opening)
@@ -288,42 +286,24 @@ _(Empfohlene Größe = Risiko ÷ 1.5×ATR%. Nie mehr als €{cash * config.MAX_P
         analysis_request += f"\n\n## Relevante History (aus MemPalace)\n{history_context}\n"
 
     if mistake_summary:
-        analysis_request += (
-            f"\n\n## LAST-20 MISTAKES (Taxonomie)\n{mistake_summary}\n"
-            "_Klassen: prediction (These falsch), timing (zu früh/spät/whipsaw), "
-            "execution (slippage/sl_too_tight), external (news_shock/regime_shift). "
-            "Wenn eine Klasse dominiert: aktiv gegensteuern (z.B. timing-heavy → "
-            "Entry-Trigger strenger; execution-heavy → Spread/Vol-Gate strenger)._\n"
-        )
+        analysis_request += f"\n\n## LAST-20 MISTAKES (Taxonomie)\n{mistake_summary}\n"
 
     # Portfolio heat (sizing-critical)
     if mode in ("morning", "opening"):
         heat = compute_portfolio_heat(portfolio)
-        analysis_request += (
-            f"\n\n## PORTFOLIO HEAT\n{format_portfolio_heat(heat)}\n"
-            "_Wenn Budget remaining < 30% vom Max: nur A+ Conv 5/5 Setups. "
-            "Wenn < 10%: PASS, keine neuen Entries._\n"
-        )
+        analysis_request += f"\n\n## PORTFOLIO HEAT\n{format_portfolio_heat(heat)}\n"
 
     # Sector exposure (cluster risk)
     if mode in ("morning", "opening"):
         sectors = compute_sector_exposure(portfolio)
         if sectors:
-            analysis_request += (
-                f"\n\n## SECTOR EXPOSURE\n{format_sector_exposure(sectors)}\n"
-                f"_Max {config.MAX_POSITIONS_PER_SECTOR} Positionen pro Sektor. "
-                f"Bei Limit: kein neuer Entry im gleichen Sektor._\n"
-            )
+            analysis_request += f"\n\n## SECTOR EXPOSURE\n{format_sector_exposure(sectors)}\n"
 
     # Economic calendar (pre-release gating)
     if mode in ("morning", "opening"):
         macro = _today_macro_events()
         if macro:
-            analysis_request += (
-                f"\n\n## ⚠️ HEUTE: HIGH-IMPACT EVENTS\n{_format_macro_events(macro)}\n"
-                "_Pre-Release: keine neuen Entries außer thesis ist Event-unabhängig. "
-                "Offene Positionen: SL vor Event straffen oder Size halbieren._\n"
-            )
+            analysis_request += f"\n\n## ⚠️ HEUTE: HIGH-IMPACT EVENTS\n{_format_macro_events(macro)}\n"
 
     # Equity curve (morning only)
     if mode == "morning":
@@ -337,14 +317,7 @@ _(Empfohlene Größe = Risiko ÷ 1.5×ATR%. Nie mehr als €{cash * config.MAX_P
         if stats:
             if stats.get("class_suggestion"):
                 logger.warning("Self-calibration: %s", stats["class_suggestion"])
-            analysis_request += (
-                f"\n\n## HIT-RATE (eigene History)\n{format_hit_stats(stats)}\n"
-                "_Nutze zur Conviction-Kalibrierung. Brier-Line zeigt ob deine p_win-Schätzung "
-                "kalibriert ist (0=perfekt, 0.25=random). KORREKTUR-Zeile: wenn aktiv, zieh den "
-                "Wert von deiner nächsten p_win-Schätzung ab (Trade nur wenn p_win nach Haircut "
-                "noch über 0.55 liegt). SELBST-KALIBRIERUNG-Zeile: konkrete Parameter-Anpassung "
-                "aus Mistake-Klassen ableiten._\n"
-            )
+            analysis_request += f"\n\n## HIT-RATE (eigene History)\n{format_hit_stats(stats)}\n"
 
     # Confluence scores per tradeable ticker (deterministic setup quality 0-10)
     if mode in ("morning", "opening", "event"):
@@ -360,10 +333,8 @@ _(Empfohlene Größe = Risiko ÷ 1.5×ATR%. Nie mehr als €{cash * config.MAX_P
                 conf_lines.append(f"  {_t}: {_c['score']}/10 — {', '.join(hits)}")
         if conf_lines:
             analysis_request += (
-                f"\n\n## CONFLUENCE-SCORES (deterministisch, score≥{config.MIN_CONFLUENCE_SCORE}=tradeable)\n"
+                f"\n\n## CONFLUENCE-SCORES\n"
                 + "\n".join(conf_lines) + "\n"
-                "_10 Items: wk_trend_up, MA-Stack, RSI healthy, MACD bullish, Volumen, Spread tight, "
-                "RS vs Index ≥0, Analyst bullish, Regime RISK_ON. Score ≥7 = full Size, 5-6 = halbe Size, <5 = PASS._\n"
             )
 
     # Earnings calendar (morning only)
@@ -375,10 +346,7 @@ _(Empfohlene Größe = Risiko ÷ 1.5×ATR%. Nie mehr als €{cash * config.MAX_P
                 f"  ⚠️ {w['ticker']}: Earnings in {w['days_until']} Tag(en) ({w['earnings_date']})"
                 for w in ew
             )
-            analysis_request += (
-                f"\n\n## Earnings Kalender (nächste 3 Tage)\n{ew_lines}\n"
-                "_Positionen in earnings-nahen Titeln prüfen — vor Earnings schließen oder Size reduzieren._\n"
-            )
+            analysis_request += f"\n\n## Earnings Kalender (nächste 3 Tage)\n{ew_lines}\n"
 
     # News headlines (morning + event)
     if mode == "event":
@@ -647,6 +615,37 @@ _(Empfohlene Größe = Risiko ÷ 1.5×ATR%. Nie mehr als €{cash * config.MAX_P
                 entry_recommendation = None
 
     if entry_recommendation:
+        # Adaptive-Kelly clamp: enforce max position-size from Brier-derived kelly_mult.
+        # Why: when calibration is poor (high Brier), Claude's size proposal can over-bet
+        # on a noisy edge estimate. Clamp size_eur to fractional-Kelly using adaptive mult.
+        _p_clamp = entry_recommendation.get("p_win")
+        _entry_c = float(entry_recommendation.get("entry_price") or 0)
+        _sl_c = float(entry_recommendation.get("stop_loss") or 0)
+        _tp_c = entry_recommendation.get("take_profit")
+        _tp1 = _tp_c[0] if isinstance(_tp_c, list) and _tp_c else (_tp_c if isinstance(_tp_c, (int, float)) else None)
+        if (
+            isinstance(_p_clamp, (int, float)) and 0 < _p_clamp < 1
+            and _entry_c > _sl_c > 0 and isinstance(_tp1, (int, float)) and _tp1 > _entry_c
+        ):
+            _r2r = (_tp1 - _entry_c) / (_entry_c - _sl_c)
+            _km = (_stats or {}).get("kelly_mult") or config.KELLY_FRACTION
+            _atr_pct = (market_data.get((entry_recommendation.get("ticker") or "").upper()) or {}).get("atr14_pct")
+            _kelly_cap = suggest_position_size(
+                _atr_pct, cash, p_win=_p_clamp, reward_to_risk=_r2r, kelly_mult=_km,
+            )
+            _orig_size = float(entry_recommendation.get("size_eur") or 0)
+            if _orig_size > _kelly_cap > 0:
+                entry_recommendation["size_eur"] = _kelly_cap
+                entry_recommendation["kelly_clamp"] = {
+                    "kelly_mult": _km, "r2r": round(_r2r, 2),
+                    "original_size_eur": _orig_size, "capped_size_eur": _kelly_cap,
+                }
+                logger.warning(
+                    "Kelly-clamp: size €%.2f → €%.2f (kelly_mult=%.2f, p=%.2f, R:R=%.2f)",
+                    _orig_size, _kelly_cap, _km, _p_clamp, _r2r,
+                )
+
+    if entry_recommendation:
         # VIX size-dampening: shrink size under elevated/extreme volatility.
         # Why: higher realized range = wider stops + more gap risk. Same 3% risk/trade
         # but smaller notional so a fast move doesn't blow past SL intraday.
@@ -832,10 +831,15 @@ _(Empfohlene Größe = Risiko ÷ 1.5×ATR%. Nie mehr als €{cash * config.MAX_P
                     )
 
     if entry_recommendation:
+        # Stamp regime + VIX so downstream alpha-attribution + regime-conditional hit-rate
+        # has the entry context, even if regime shifts mid-trade.
+        _vix_at_entry = (market_ctx.get("^VIX") or {}).get("price")
         rec = {
             **entry_recommendation,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "status": "pending",
+            "regime_at_entry": regime,
+            "vix_at_entry": _vix_at_entry if isinstance(_vix_at_entry, (int, float)) else None,
         }
         _ticker = rec.get("ticker", "?")
         _entry = rec.get("entry_price", 0)

@@ -532,6 +532,16 @@ def _close_trade(trade: dict, exit_price: float, reason: str, portfolio: dict):
         closed["brier"] = round((p_win - outcome) ** 2, 4)
         closed["outcome"] = outcome
 
+    # Alpha vs Beta attribution (same period as trade hold-window).
+    try:
+        from core.market_data import get_period_return
+        spy_ret = get_period_return("SPY5.DE", trade.get("entry_date", ""), closed["exit_date"])
+        if spy_ret is not None:
+            closed["spy_return_pct"] = spy_ret
+            closed["alpha_pct"] = round(pnl_pct - spy_ret, 2)
+    except Exception:
+        logger.exception("SPY-attribution failed for %s", trade.get("ticker", "?"))
+
     portfolio.setdefault("closed_trades", []).append(closed)
     portfolio["cash_eur"] = portfolio.get("cash_eur", 0) + (exit_price * shares)
 

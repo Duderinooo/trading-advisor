@@ -58,21 +58,72 @@ def save_portfolio(portfolio: dict):
 
 # ---------- Position sizing ----------
 
+def compute_kelly_mult(closed_trades: list[dict]) -> float:
+    """Adaptive Kelly fraction from rolling Brier-Score.
+
+    Better calibration → bigger Kelly fraction. Worse → shrink. Range [0.10, 0.50].
+    Until N≥10 scored trades exist, fall back to config.KELLY_FRACTION.
+
+    Why: Kelly assumes edge estimate is correct. If our p_win is poorly calibrated,
+    we overbet on bad estimates. Brier=0 perfect, 0.25 random — scale linearly.
+    """
+    scored = [
+        t for t in closed_trades[-30:]
+        if isinstance(t.get("brier"), (int, float))
+    ]
+    if len(scored) < 10:
+        return config.KELLY_FRACTION
+    avg_brier = sum(t["brier"] for t in scored) / len(scored)
+    # Brier 0 → 0.50, Brier 0.25 (random) → 0.10. Linear interp.
+    mult = 0.50 - (avg_brier / 0.25) * 0.40
+    return max(0.10, min(0.50, round(mult, 2)))
+
+
+def compute_slippage_budget(closed_trades: list[dict]) -> float:
+    """Adaptive entry-slippage cap. Tightens if rolling avg slippage runs hot.
+
+    Returns max-allowed slippage % (replaces static MAX_ENTRY_SLIPPAGE_PERCENT).
+    Why: spread/liquidity drifts over time. Static gate either too lax (lets bad
+    fills through) or too strict (blocks ok fills). Adaptive gate self-tunes.
+    """
+    recent = [
+        abs(float(t.get("slippage_pct") or 0))
+        for t in closed_trades[-30:]
+        if t.get("slippage_pct") is not None
+    ]
+    base = config.MAX_ENTRY_SLIPPAGE_PERCENT
+    if len(recent) < 10:
+        return base
+    avg = sum(recent) / len(recent)
+    # If avg ≤0.3%: keep base. If avg ≥1.0%: clamp to 1.0%. Linear scale between.
+    if avg <= 0.3:
+        return base
+    if avg >= 1.0:
+        return 1.0
+    return round(base - (avg - 0.3) / 0.7 * (base - 1.0), 2)
+
+
 def suggest_position_size(
     atr14_pct: float | None,
     capital_eur: float,
     risk_pct: float = None,
     p_win: float | None = None,
     reward_to_risk: float | None = None,
+    kelly_mult: float | None = None,
 ) -> float:
     """Position size: min(ATR-risk size, fractional-Kelly size, hard cap).
 
     ATR leg: capital × risk_pct / (1.5 × ATR%).
-    Kelly leg (only if p_win + reward_to_risk given): f* = (p·b − (1−p))/b, scaled by KELLY_FRACTION.
+    Kelly leg (only if p_win + reward_to_risk given): f* = (p·b − (1−p))/b, scaled by kelly_mult.
     Hard cap: MAX_POSITION_SIZE_PERCENT of capital.
+
+    `kelly_mult` defaults to config.KELLY_FRACTION but can be overridden with adaptive
+    multiplier from `compute_kelly_mult(closed_trades)`.
     """
     if risk_pct is None:
         risk_pct = config.MAX_RISK_PER_TRADE_PERCENT
+    if kelly_mult is None:
+        kelly_mult = config.KELLY_FRACTION
     max_eur = capital_eur * config.MAX_POSITION_SIZE_PERCENT / 100
 
     if not atr14_pct or atr14_pct <= 0:
@@ -87,7 +138,7 @@ def suggest_position_size(
         b = reward_to_risk
         f_kelly = (p_win * b - (1 - p_win)) / b
         if f_kelly > 0:
-            kelly_eur = capital_eur * f_kelly * config.KELLY_FRACTION
+            kelly_eur = capital_eur * f_kelly * kelly_mult
             size = min(size, kelly_eur)
         else:
             size = 0.0  # negative edge → no trade
@@ -528,6 +579,83 @@ def compute_hit_stats(closed_trades: list[dict]) -> dict | None:
     for k, s in by_hold.items():
         s["rate"] = round(s["wins"] / s["total"] * 100, 1) if s["total"] else 0
 
+    # --- Regime × setup_type hit-rate (institutional: regime-conditional models) ---
+    by_setup_regime: dict[str, dict] = {}
+    for t in closed_trades:
+        st = t.get("setup_type") or "untagged"
+        rg = t.get("regime_at_entry") or "UNKNOWN"
+        key = f"{st}@{rg}"
+        by_setup_regime.setdefault(key, {"wins": 0, "total": 0})
+        by_setup_regime[key]["total"] += 1
+        if (t.get("pnl_pct") or 0) > 0:
+            by_setup_regime[key]["wins"] += 1
+    for k, s in by_setup_regime.items():
+        s["rate"] = round(s["wins"] / s["total"] * 100, 1) if s["total"] else 0
+
+    # --- Alpha vs Beta attribution (was loss skill or market noise?) ---
+    attributed = [
+        t for t in closed_trades
+        if isinstance(t.get("alpha_pct"), (int, float))
+    ]
+    attribution: dict | None = None
+    if len(attributed) >= 5:
+        wins_alpha_pos = [t for t in attributed if (t.get("pnl_pct") or 0) > 0 and t["alpha_pct"] > 0]
+        wins_alpha_neg = [t for t in attributed if (t.get("pnl_pct") or 0) > 0 and t["alpha_pct"] <= 0]
+        loss_alpha_pos = [t for t in attributed if (t.get("pnl_pct") or 0) <= 0 and t["alpha_pct"] > 0]
+        loss_alpha_neg = [t for t in attributed if (t.get("pnl_pct") or 0) <= 0 and t["alpha_pct"] <= 0]
+        avg_alpha = sum(t["alpha_pct"] for t in attributed) / len(attributed)
+        attribution = {
+            "n": len(attributed),
+            "avg_alpha_pct": round(avg_alpha, 2),
+            "wins_with_alpha": len(wins_alpha_pos),       # real skill wins
+            "wins_riding_market": len(wins_alpha_neg),    # lucky beta wins
+            "losses_market_noise": len(loss_alpha_pos),   # lost despite beating market
+            "losses_setup_fail": len(loss_alpha_neg),     # lost AND underperformed market
+        }
+
+    # --- Slippage tracking (drives adaptive gate) ---
+    slip_recent = [
+        abs(float(t.get("slippage_pct") or 0))
+        for t in closed_trades[-30:]
+        if t.get("slippage_pct") is not None
+    ]
+    slippage_stats: dict | None = None
+    if len(slip_recent) >= 5:
+        slippage_stats = {
+            "n": len(slip_recent),
+            "avg_pct": round(sum(slip_recent) / len(slip_recent), 3),
+            "max_pct": round(max(slip_recent), 3),
+            "current_budget_pct": compute_slippage_budget(closed_trades),
+        }
+
+    # --- Pre-mortem accuracy (did predicted top_fail_mode match reality?) ---
+    fail_mode_to_class = {
+        "support_breakdown": "prediction",
+        "thesis_invalidation": "prediction",
+        "earnings_miss": "external",
+        "macro_event": "external",
+        "regime_shift": "external",
+        "sector_rotation": "external",
+        "false_breakout": "timing",
+        "stop_run": "timing",
+    }
+    premortem_losses = [
+        t for t in closed_trades
+        if (t.get("pnl_pct") or 0) <= 0
+        and t.get("top_fail_mode")
+        and t.get("mistake_class")
+    ]
+    premortem_stats: dict | None = None
+    if len(premortem_losses) >= 5:
+        correct = sum(
+            1 for t in premortem_losses
+            if fail_mode_to_class.get(t["top_fail_mode"]) == t["mistake_class"]
+        )
+        premortem_stats = {
+            "n": len(premortem_losses),
+            "accuracy_pct": round(correct / len(premortem_losses) * 100, 1),
+        }
+
     return {
         "total": total,
         "win_rate": round(len(wins) / total * 100, 1),
@@ -537,6 +665,7 @@ def compute_hit_stats(closed_trades: list[dict]) -> dict | None:
         "total_pnl_eur": total_pnl_eur,
         "by_conviction": conv_stats,
         "by_setup": by_setup,
+        "by_setup_regime": by_setup_regime,
         "by_dow": by_dow,
         "by_hour": by_hour_bucket,
         "by_hold": by_hold,
@@ -544,6 +673,10 @@ def compute_hit_stats(closed_trades: list[dict]) -> dict | None:
         "calibration": calibration,
         "mistake_classes": mistake_classes,
         "class_suggestion": class_suggestion,
+        "attribution": attribution,
+        "slippage_stats": slippage_stats,
+        "premortem_stats": premortem_stats,
+        "kelly_mult": compute_kelly_mult(closed_trades),
     }
 
 
@@ -617,6 +750,46 @@ def format_hit_stats(stats: dict) -> str:
     )
     if hold_line:
         lines.append(f"Hold: {hold_line}")
+
+    # Regime-conditional setups (only show buckets ≥3 — avoid noise from rare combos)
+    sr = stats.get("by_setup_regime") or {}
+    sr_line = " | ".join(
+        f"{k}: {s['rate']}% ({s['wins']}/{s['total']})"
+        for k, s in sorted(sr.items(), key=lambda x: -x[1]["total"])
+        if s["total"] >= 3
+    )
+    if sr_line:
+        lines.append(f"Setup×Regime: {sr_line}")
+
+    # Alpha vs Beta attribution
+    attr = stats.get("attribution")
+    if attr:
+        lines.append(
+            f"Attribution (n={attr['n']}, Ø α {attr['avg_alpha_pct']:+.2f}%): "
+            f"Wins skill {attr['wins_with_alpha']} / luck {attr['wins_riding_market']} | "
+            f"Losses noise {attr['losses_market_noise']} / setup-fail {attr['losses_setup_fail']}"
+        )
+
+    # Slippage budget (adaptive)
+    slip = stats.get("slippage_stats")
+    if slip:
+        lines.append(
+            f"Slippage (last {slip['n']}): Ø {slip['avg_pct']}% | max {slip['max_pct']}% | "
+            f"Budget aktuell: {slip['current_budget_pct']}%"
+        )
+
+    # Pre-mortem accuracy
+    pm = stats.get("premortem_stats")
+    if pm:
+        lines.append(
+            f"Pre-Mortem-Accuracy (last {pm['n']} losses): {pm['accuracy_pct']}% — "
+            "predicted top_fail_mode entsprach realer mistake_class."
+        )
+
+    # Adaptive Kelly (only show if non-default)
+    km = stats.get("kelly_mult")
+    if isinstance(km, (int, float)) and km != config.KELLY_FRACTION:
+        lines.append(f"Kelly-Mult: {km} (adaptiv aus Brier-Score)")
 
     return "\n".join(lines)
 

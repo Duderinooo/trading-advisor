@@ -18,7 +18,7 @@ import config
 from core import (
     portfolio_lock, load_portfolio, save_portfolio, get_market_data,
     risk_halt_status, set_kill_switch, kill_switch_active,
-    maintain_drawdown_state,
+    maintain_drawdown_state, compute_slippage_budget, get_period_return,
 )
 from memory import log_trade, MEMPALACE_AVAILABLE
 
@@ -184,16 +184,19 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Kein gültiger Entry-Preis. `@PREIS` angeben.")
             return
 
-        # Slippage gate: any treated fill (user or live-fetched) is checked vs. rec.
+        # Slippage gate: adaptive budget from rolling 30-trade avg slippage.
+        # Why: fills tighten/loosen with liquidity regime. Static gate over-blocks
+        # in calm tape and under-blocks in volatile tape.
+        slip_budget = compute_slippage_budget(portfolio.get("closed_trades", []))
         slippage_pct = 0.0
         if price_override is not None and rec_entry > 0:
             slippage_pct = (entry - rec_entry) / rec_entry * 100
-            if abs(slippage_pct) > config.MAX_ENTRY_SLIPPAGE_PERCENT:
+            if abs(slippage_pct) > slip_budget:
                 src_note = "live (15min delayed)" if price_source == "live" else "Fill"
                 await update.message.reply_text(
                     f"⛔ *Slippage-Abbruch*\n"
                     f"Rec €{rec_entry:.2f} vs. {src_note} €{entry:.2f} "
-                    f"({slippage_pct:+.2f}%) > {config.MAX_ENTRY_SLIPPAGE_PERCENT}%.\n"
+                    f"({slippage_pct:+.2f}%) > {slip_budget}% (adaptiv).\n"
                     f"Mit echtem Fill quoten: `/confirm @PREIS` oder `/cancel`.",
                     parse_mode="Markdown",
                 )
@@ -250,12 +253,16 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "hold_days_min": rec.get("hold_days_min"),
             "hold_days_max": rec.get("hold_days_max"),
             "setup_type": rec.get("setup_type"),
+            "top_fail_mode": rec.get("top_fail_mode"),
             "confluence_score": rec.get("confluence_score"),
             "confluence_items": rec.get("confluence_items"),
             "correlations": rec.get("correlations"),
             "auto_split_tp": rec.get("auto_split_tp"),
             "dd_soft_scale": rec.get("dd_soft_scale"),
             "vix_dampener": rec.get("vix_dampener"),
+            "kelly_clamp": rec.get("kelly_clamp"),
+            "regime_at_entry": rec.get("regime_at_entry"),
+            "vix_at_entry": rec.get("vix_at_entry"),
             "entry_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "status": "open",
             "rec_entry_price": rec_entry,
@@ -348,6 +355,17 @@ async def close_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "pnl_pct": round(pnl_pct, 2),
             "status": "closed",
         }
+        # Alpha vs Beta attribution: trade-return − SPY-return over same period.
+        # >0 = real skill (beat market); <0 = lost vs market. Drives loss interpretation:
+        # negative pnl with positive alpha = market noise, not setup failure.
+        try:
+            entry_date = trade.get("entry_date", "")
+            spy_ret = get_period_return("SPY5.DE", entry_date, closed["exit_date"])
+            if spy_ret is not None:
+                closed["spy_return_pct"] = spy_ret
+                closed["alpha_pct"] = round(pnl_pct - spy_ret, 2)
+        except Exception:
+            logger.exception("SPY-attribution fetch failed for %s", ticker)
         if pnl_pct <= 0 and mistake_tag:
             closed["mistake_tag"] = mistake_tag
             closed["mistake_class"] = _MISTAKE_CLASS_MAP.get(mistake_tag, "other")
