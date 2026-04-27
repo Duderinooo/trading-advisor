@@ -218,7 +218,7 @@ MISTAKE_TAGS = {
 # API usage - ROI driven, not hard capped
 MAX_ANALYSES_PER_DAY = 20          # Safety cap, but shouldn't hit it normally
 MIN_MINUTES_BETWEEN_ANALYSES = 45  # Swing braucht keine Hektik
-ANALYSIS_COST_EUR = 0.002          # ~cost per Haiku call for tracking
+ANALYSIS_COST_EUR = 0.01          # ~cost per Haiku call (gemessen 2026-04, event/opening/news)
 
 # Trade Republic constraint: Need 1 full share for Stop-Loss orders
 MAX_SHARE_PRICE_FOR_SL = 150.0  # Only auto-suggest SL for stocks under this price

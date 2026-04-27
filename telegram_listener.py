@@ -539,6 +539,30 @@ async def killstatus_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Kill-Switch AUS.")
 
 
+async def morning_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Manual re-run of morning prep (re-populates watch_levels)."""
+    if not _authorized(update):
+        return
+    await update.message.reply_text("⏳ Morning Prep läuft (Sonnet-Call, ~10s)...")
+    try:
+        # Lazy import to avoid circular deps with main at module load.
+        from main import run_morning_prep
+        # Clear daily-dedup flag so run_morning_prep doesn't short-circuit.
+        with portfolio_lock:
+            pf = load_portfolio()
+            pf.pop("last_morning_prep_date", None)
+            save_portfolio(pf)
+        await asyncio.get_event_loop().run_in_executor(None, run_morning_prep)
+        pf = load_portfolio()
+        levels = pf.get("watch_levels", [])
+        await update.message.reply_text(
+            f"✅ Morning Prep fertig. {len(levels)} Watch-Level gesetzt."
+        )
+    except Exception as e:
+        logger.exception("Manual morning prep failed")
+        await update.message.reply_text(f"❌ Morning Prep Fehler: {e}")
+
+
 async def help_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _authorized(update):
         return
@@ -551,6 +575,7 @@ async def help_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/close TICKER [@preis] [#tag]` — Position schließen (bei Verlust: #tag = Grund)\n"
         "`/cancel` (reply) — Pending-Empfehlung verwerfen\n"
         "`/positions` — Portfolio anzeigen\n"
+        "`/morning` — Morning Prep manuell neu laufen lassen\n"
         "`/panic [grund]` — Kill-Switch AN (blockt neue Entries + Event-Analysen)\n"
         "`/resume` — Kill-Switch AUS\n"
         "`/killstatus` — Kill-Switch Status",
@@ -567,6 +592,7 @@ async def _async_run():
     app.add_handler(CommandHandler("panic", panic_handler))
     app.add_handler(CommandHandler("resume", resume_handler))
     app.add_handler(CommandHandler("killstatus", killstatus_handler))
+    app.add_handler(CommandHandler("morning", morning_handler))
     app.add_handler(CommandHandler("help", help_handler))
     app.add_handler(CommandHandler("start", help_handler))
 

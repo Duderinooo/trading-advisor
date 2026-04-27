@@ -137,7 +137,10 @@ Siehe [docs/API.md](docs/API.md#risk-management) für Details zu:
 
 ## Kosten
 
-- Claude API: ~€0.50-2/Monat
+- Claude API: ~€3-6/Monat (gemessen)
+  - Morning-Call (Sonnet 4.6): ~€0.06/Tag × ~22 Trading-Tage = ~€1.30
+  - Opening-Checks (Haiku 4.5, Xetra+US): ~€0.02/Tag = ~€0.45
+  - Event-/News-Checks (Haiku 4.5): variabel ~€0.05-0.20/Tag
 - Strom: ~€3-4/Monat (Mac 24/7)
 - Telegram: free
 

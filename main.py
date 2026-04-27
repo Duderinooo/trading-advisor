@@ -55,6 +55,16 @@ logging.getLogger("yfinance").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext").setLevel(logging.WARNING)
 
+# yfinance ERROR-spam: ETFs/Commodities ohne Fundamentals 404'en erwartbar,
+# transiente "possibly delisted" sind Yahoo-API-Hickups (vergehen von selbst).
+# Beide Cases werden im market_data.py per try/except behandelt — Logger-Noise unnötig.
+class _YFinanceNoiseFilter(logging.Filter):
+    _SUPPRESS = ("possibly delisted", "No fundamentals data found")
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(s in msg for s in self._SUPPRESS)
+logging.getLogger("yfinance").addFilter(_YFinanceNoiseFilter())
+
 logger = logging.getLogger("trading_advisor")
 
 
@@ -510,6 +520,10 @@ def run_morning_prep():
         # "Keine Setups heute." is one line, fine as heartbeat. Skip only on the
         # tool-only-no-text edge case (nothing to forward).
         stripped = (analysis or "").strip().lower()
+        if analysis and analysis.startswith("⚠️ Analysis skipped"):
+            # Cooldown/cap blocked the call → don't mark done, don't notify (retry later).
+            logger.info("Morning prep deferred: %s", analysis)
+            return
         if "(keine text-analyse)" in stripped or not stripped:
             logger.info("Morning brief: tool-only call, skipping forward")
         else:
@@ -546,18 +560,11 @@ def run_opening_check(market: str):
             logger.info("%s open check: %s", market.upper(), analysis)
             return
 
-        stripped = analysis.strip().lower()
-        is_stable = (
-            stripped.startswith("alles stabil")
-            or stripped == "keine anpassungen"
-            or len(stripped) < 40
-        )
-
-        if is_stable:
-            logger.info("%s open: stabil, no notification", market.upper())
-        else:
+        if _is_actionable(analysis):
             send_daily_summary(f"🔔 *{label} OPEN CHECK*\n\n{analysis}")
             logger.info("✅ %s open check sent (action flagged)", market.upper())
+        else:
+            logger.info("%s open: non-actionable verdict, no notification: %s", market.upper(), analysis[:80])
 
         _mark_opening_check_done(market)
     except Exception as e:

@@ -230,7 +230,9 @@ def analyze_portfolio(mode: str = "standard", event_context: str = None, force: 
         system_prompt = STRATEGY_SYSTEM + "\n\n" + EVENT_TRIGGER_PROMPT
         system_prompt += "\n\nBei ENTRY-Empfehlung mit Conviction ≥3/5: `recommend_entry` aufrufen."
         context_intro = f"🚨 EVENT: {event_context}"
-        tools = [WATCH_LEVELS_TOOL, RECOMMEND_ENTRY_TOOL]
+        # Watch-Levels sind Morning-Domain. Event-Mode darf sie nicht überschreiben
+        # (Bug 2026-04-27: News-Event-Call rief set_watch_levels([]) und löschte 5 Morning-Levels).
+        tools = [RECOMMEND_ENTRY_TOOL]
     else:
         system_prompt = STRATEGY_SYSTEM
         context_intro = "Standard-Analyse"
