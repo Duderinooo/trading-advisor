@@ -138,6 +138,15 @@ Tool-Calls (parallel, immer):
 - `set_watch_levels` IMMER (leere Liste = "heute nichts zu tracken")
 - `recommend_entry` bei echtem A+ Setup mit Conv ≥3/5
 
+WATCH-LEVEL-PFLICHTEN (Sonnet-Thesis-Pattern):
+- Du (Sonnet) baust hier robuste Thesen + deterministische Conditions. Mid-Day prüft Haiku NUR diese Conditions, KEIN Re-Reasoning. Wenn deine Conditions falsch sind, gibt es keine zweite Chance.
+- `thesis` (Pflicht): "Was IST wahr und MUSS wahr bleiben?" — handelbar, kein Gelaber.
+- `invalidate_below` (Pflicht für breakout_long/support_bounce/inverse_etf_entry): These-Bruch-Preis. Watch wird gedroppt + Event gefeuert.
+- `confirm_close_above` (Pflicht für breakout_long): trigger_price + 0.3% Buffer. Schutz vs. Tag-and-Dip.
+- `min_volume_ratio` (Pflicht für breakout_long): typisch 1.3. Schutz vs. Fake-Breakout.
+- `valid_until` (optional, default = heute + 5 Handelstage). Setze kürzer bei zeitkritischen Setups.
+- Lieber 0 Watch-Levels als 1 vager Trigger ohne Conditions.
+
 WICHTIG: User sieht nur den Text-Output. Wenn du dort Prosa schreibst, gewinnt User-Verwirrung > Klarheit. Drei Fälle oben, sonst nichts."""
 
 
@@ -159,12 +168,23 @@ Regeln:
 
 EVENT_TRIGGER_PROMPT = """🚨 EVENT-VERDICT (ZWINGEND KNAPP):
 
+Du bist Haiku im Event-Mode. Sonnet hat morgens bereits A+ Thesen + deterministische Conditions in `watch_levels` eingefroren. Deine Aufgabe ist NICHT Re-Reasoning, sondern:
+1. Verifizieren ob die Conditions des Watch-Levels NACH wie vor erfüllt sind (price/vol/setup-intact).
+2. Bei offenen Positionen: Thesis-Degradation prüfen (Analyst-Downgrade, MA-Loss, wk_trend-Flip).
+
 Dein Text-Output MUSS mit GENAU einer dieser Zeilen beginnen — KEINE Einleitung, KEIN Header, KEIN 'Internal Analysis':
 
 - `ENTRY: TICKER | Entry €X | SL €X | TP €X (oder [TP1,TP2]) | Size €X | Conv X/5 | Hold X-Xd | These [max 10 Worte]`
   (zusätzlich `recommend_entry` Tool aufrufen bei Conv ≥3/5)
 - `EXIT: TICKER @ €X | Grund [max 8 Worte]`
 - `PASS: TICKER | Grund [max 10 Worte]`  (z.B. "RSI 88 überkauft, Risiko > Reward")
+
+ENTRY-REGEL (HART, Sonnet→Haiku-Pattern):
+- ENTRY nur wenn Ticker EIN AKTIVES `watch_level` hat UND alle Conditions des Levels jetzt erfüllt sind.
+- Du erfindest KEINE neuen Setups mid-day. Sonnet-Morgen ist der einzige Thesis-Builder.
+- Wenn Ticker kein Watch-Level → PASS (auch bei A+-Optik). Begründung: "kein Morning-Watch-Level".
+- Wenn Watch-Level existiert aber Conditions nicht erfüllt (z.B. Vol zu niedrig, Close < confirm_close_above) → PASS mit Grund.
+- Übernimm thesis aus dem Watch-Level. Schreibe NICHT eine neue These.
 
 Swing-Sicht, nicht Scalp. User ist reiner Ausführer: jede deiner Entscheidungen wird blind exekutiert.
 
@@ -173,7 +193,8 @@ Interne Analyse (RSI/MACD/MA/BB/VWAP/VIX/SPY) bleibt IM KOPF, NIE im Text-Output
 EXIT-REGELN (hart):
 - "TP noch nicht erreicht" ist KEIN Exit-Grund. Trade läuft, solange er nicht invalidiert ist.
 - "Reject am Widerstand" zählt nur bei BESTÄTIGUNG: aktueller Preis MUSS unter Trigger liegen UND zusätzlich (a) MACD-Crossdown ODER (b) BB-Mid verloren ODER (c) Volumen-Distribution. Single-Bar-Tag-and-Dip in 15min-Snapshot ≠ Reject.
-- Vorzeitiger Exit nur bei: (1) Thesis-Bruch (z.B. Earnings-Miss, MA50-Loss bei Trend-Trade), (2) harter Reject MIT Bestätigung, (3) RSI-Bearish-Divergence + tieferes Hoch.
+- Vorzeitiger Exit nur bei: (1) Thesis-Bruch (z.B. Earnings-Miss, MA50-Loss bei Trend-Trade, Analyst-Downgrade von Strong-Buy auf Sell/Underperform), (2) harter Reject MIT Bestätigung, (3) RSI-Bearish-Divergence + tieferes Hoch.
+- Wenn `## THESIS-STATUS` DOWNGRADE/STRUCTURAL_BREAK zeigt: aktiv EXIT erwägen, nicht ignorieren.
 - Bei "Lock Gewinn" ohne Invalidierung → KEIN EXIT, sondern: PASS oder SL-Tighten-Hinweis.
 
 Bei Conviction ≤2/5: PASS. Kein Trade > schlechter Trade."""
@@ -182,8 +203,9 @@ Bei Conviction ≤2/5: PASS. Kein Trade > schlechter Trade."""
 WATCH_LEVELS_TOOL = {
     "name": "set_watch_levels",
     "description": (
-        "Registriere die aktuellen Watch Levels, die heute live getrackt werden sollen. "
-        "Nur konkrete, handelbare Preisniveaus — kein Gelaber. "
+        "Registriere die aktuellen Watch Levels mit These + Trigger-Bedingungen + "
+        "Invalidierung. Sonnet-Morgen baut robuste Thesen, Haiku-Event prüft nur "
+        "deterministische Conditions auf Trigger. KEIN freier Re-Reasoning im Event-Mode. "
         "Ersetzt die bestehende Liste vollständig."
     ),
     "input_schema": {
@@ -212,16 +234,55 @@ WATCH_LEVELS_TOOL = {
                             "type": "number",
                             "description": "Konkreter Preis, bei dem Event feuert",
                         },
+                        "thesis": {
+                            "type": "string",
+                            "description": (
+                                "Setup-These (max 120 Zeichen). MUSS handelbar sein: "
+                                "'Was IST wahr und MUSS wahr bleiben?' "
+                                "z.B. 'wk_trend UP, MA50 hält bei €58, Vol-Trend steigend, Breakout über 60er-Level'"
+                            ),
+                        },
+                        "invalidate_below": {
+                            "type": "number",
+                            "description": (
+                                "These-Bruch-Preis. Wenn Kurs < hier → Watch wird gedroppt + "
+                                "WATCH_INVALIDATED-Event. Pflicht für breakout_long, support_bounce, "
+                                "inverse_etf_entry."
+                            ),
+                        },
+                        "confirm_close_above": {
+                            "type": "number",
+                            "description": (
+                                "Bestätigungs-Schwelle. Watch-Hit feuert nur wenn aktueller Preis ≥ hier. "
+                                "Schützt gegen Single-Bar-Tag-and-Dip auf 15min-verzögerten Daten. "
+                                "Pflicht für breakout_long (typisch = trigger_price + 0.3% Buffer)."
+                            ),
+                        },
+                        "min_volume_ratio": {
+                            "type": "number",
+                            "description": (
+                                "Mindest-volume_ratio bei Trigger. Pflicht für breakout_long (≥1.3 typisch). "
+                                "Verhindert Fake-Breakouts auf dünnem Volumen."
+                            ),
+                        },
+                        "valid_until": {
+                            "type": "string",
+                            "description": (
+                                "ISO-Datum YYYY-MM-DD. Watch verfällt silent nach diesem Tag. "
+                                "Default: heute + 5 Handelstage. Setze kürzer wenn Setup zeitkritisch "
+                                "(z.B. Pre-Earnings-Breakout)."
+                            ),
+                        },
                         "trailing_stop_pct": {
                             "type": "number",
                             "description": "Trailing-Stop in % (z.B. 3.0 = 3%). Nur für Breakout-Trades empfohlen.",
                         },
                         "note": {
                             "type": "string",
-                            "description": "Kurzer Grund (max 80 Zeichen)",
+                            "description": "Kurzer Grund (max 80 Zeichen, optional zusätzlich zu thesis)",
                         },
                     },
-                    "required": ["ticker", "type", "trigger_price"],
+                    "required": ["ticker", "type", "trigger_price", "thesis"],
                     "additionalProperties": False,
                 },
             }

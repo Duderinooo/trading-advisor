@@ -64,6 +64,71 @@ def _dump(d) -> str:
     return json.dumps(_compact(d), separators=(",", ":"), ensure_ascii=False)
 
 
+# ---------- Thesis-degradation diff ----------
+
+# Lower index = more bullish. analyst_rec_key downgrade = rank-increase ≥1.
+_REC_KEY_RANK = {
+    "strong_buy": 0, "buy": 1, "outperform": 1,
+    "hold": 2, "neutral": 2,
+    "underperform": 3, "sell": 4, "strong_sell": 4,
+}
+
+
+def _build_thesis_degradation_lines(open_trades: list, market_data: dict) -> list[str]:
+    """Per-position diff between frozen entry_snapshot and current market_data.
+
+    Only surfaces DEGRADATIONS — improvements are noise here. Claude needs to know
+    when a thesis-pillar broke (analyst flipped bearish, MA50 lost, wk_trend down,
+    upside collapsed, RSI moved into reversal-zone vs entry).
+    """
+    out: list[str] = []
+    for tr in open_trades or []:
+        snap = tr.get("entry_snapshot") or {}
+        if not snap:
+            continue
+        ticker = (tr.get("ticker") or "").upper()
+        cur = market_data.get(ticker)
+        if not isinstance(cur, dict) or cur.get("error"):
+            continue
+
+        flags: list[str] = []
+
+        e_rec = (snap.get("analyst_rec_key") or "").lower()
+        c_rec = (cur.get("analyst_rec_key") or "").lower()
+        if e_rec in _REC_KEY_RANK and c_rec in _REC_KEY_RANK:
+            if _REC_KEY_RANK[c_rec] - _REC_KEY_RANK[e_rec] >= 1:
+                flags.append(f"DOWNGRADE Analyst {e_rec}→{c_rec}")
+
+        e_up = snap.get("analyst_upside_pct")
+        c_up = cur.get("analyst_upside_pct")
+        if isinstance(e_up, (int, float)) and isinstance(c_up, (int, float)):
+            if e_up - c_up >= 5.0:
+                flags.append(f"DOWNGRADE Upside {e_up:+.1f}%→{c_up:+.1f}%")
+
+        e_wk = (snap.get("wk_trend") or "").upper()
+        c_wk = (cur.get("wk_trend") or "").upper()
+        if e_wk == "UP" and c_wk in ("DOWN", "MIXED"):
+            flags.append(f"DOWNGRADE wk_trend {e_wk}→{c_wk}")
+
+        price = cur.get("price")
+        e_ma50 = snap.get("ma50")
+        c_ma50 = cur.get("ma50")
+        if isinstance(price, (int, float)) and isinstance(e_ma50, (int, float)) and isinstance(c_ma50, (int, float)):
+            entry_above = float(tr.get("entry_price") or 0) >= e_ma50
+            if entry_above and price < c_ma50:
+                flags.append(f"STRUCTURAL_BREAK MA50-Loss (€{price:.2f} < €{c_ma50:.2f})")
+
+        e_rs = snap.get("rs_20d_vs_index_pct")
+        c_rs = cur.get("rs_20d_vs_index_pct")
+        if isinstance(e_rs, (int, float)) and isinstance(c_rs, (int, float)):
+            if e_rs - c_rs >= 5.0:
+                flags.append(f"DOWNGRADE RS_20d {e_rs:+.1f}pp→{c_rs:+.1f}pp")
+
+        if flags:
+            out.append(f"  {ticker}: " + " | ".join(flags))
+    return out
+
+
 # ---------- Red-team critic ----------
 
 def _run_red_team(rec: dict, snap: dict | None, regime: str, model: str) -> dict | None:
@@ -344,6 +409,16 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
 {_dump(atr_sizes)}
 """
 
+    # Thesis-degradation diff (event + opening + morning):
+    # Compare each open trade's frozen entry_snapshot against current market_data.
+    # Surface only DOWNGRADE / STRUCTURAL_BREAK signals so Claude has explicit
+    # signal to consider exit instead of silently letting position rot.
+    _degr_lines = _build_thesis_degradation_lines(
+        portfolio.get("open_trades", []), market_data,
+    )
+    if _degr_lines:
+        analysis_request += "\n\n## THESIS-STATUS (Snapshot vs. Jetzt)\n" + "\n".join(_degr_lines) + "\n"
+
     # Gap detection (morning + opening)
     if mode in ("morning", "opening"):
         gap_lines = []
@@ -568,6 +643,40 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
     # Build the rec BEFORE notification so we can attach the Telegram message_id.
     rec = None
     message_id: int | None = None
+
+    if entry_recommendation and mode == "event":
+        # Sonnet→Haiku-Pattern: Event-Mode (Haiku) darf nur entries empfehlen, deren
+        # Ticker bereits ein aktives Morning-Watch-Level hat. Sonnet baut die Thesen,
+        # Haiku verifiziert nur deterministische Conditions. Verhindert Mid-Day-
+        # Improvisations-Entries auf 15min-verzögerten Daten.
+        _t = (entry_recommendation.get("ticker") or "").upper()
+        _watch_match = next(
+            (w for w in load_portfolio().get("watch_levels", [])
+             if (w.get("ticker") or "").upper() == _t),
+            None,
+        )
+        if not _watch_match:
+            logger.warning(
+                "Entry BLOCKED by event-watch-coupling: %s has no morning watch_level",
+                _t,
+            )
+            log_gate(
+                _t, "event_watch_coupling", True,
+                "no morning watch_level for event-mode entry",
+                {"ticker": _t},
+            )
+            _notify(
+                f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
+                f"Event-Mode-Entry ohne Morning-Watch-Level. Sonnet-Morgen muss These erst eingefroren haben."
+            )
+            entry_recommendation = None
+        else:
+            # Stamp the morning thesis on the rec so downstream (telegram alert,
+            # /confirm-snapshot) carries the Sonnet-vetted thesis, not the Haiku one.
+            morning_thesis = _watch_match.get("thesis")
+            if morning_thesis:
+                entry_recommendation["watch_thesis"] = morning_thesis
+
     if entry_recommendation:
         # --- Risk gates: halt + edge ---
         _pf_snapshot = load_portfolio()

@@ -303,6 +303,8 @@ def _get_event_key(event: dict) -> str:
     """Unique key per event (dedup today)."""
     if event["type"] == "WATCH_LEVEL_HIT":
         return f"watch_{event['ticker']}_{event['trigger_price']}"
+    if event["type"] == "WATCH_INVALIDATED":
+        return f"watch_invalid_{event['ticker']}_{event.get('invalidate_below')}"
     return str(event)
 
 
@@ -334,7 +336,18 @@ def _mark_events_triggered(events: list[dict]):
 
 
 def detect_events() -> list[dict]:
-    """Returns NEW watch-level hits (dedup'd today). Skips EXCLUDED_TICKERS."""
+    """Returns NEW watch-level hits (dedup'd today). Skips EXCLUDED_TICKERS.
+
+    Compound-condition gate (Sonnet-Thesis-Pattern, 2026-04-27):
+    - `valid_until` past   → silent expire, drop from watch_levels
+    - `invalidate_below`   → fire WATCH_INVALIDATED event + drop watch
+    - `confirm_close_above`→ trigger only if current price ≥ threshold (anti-tag-and-dip)
+    - `min_volume_ratio`   → trigger only if vol_ratio ≥ threshold (anti-fake-breakout)
+    - distance_pct ≤ BREAKOUT_TRIGGER_PERCENT (existing proximity check)
+
+    All conditions AND-combined. Designed so Haiku-Event-Mode does no re-reasoning —
+    Sonnet's morning thesis-conditions are the only gate.
+    """
     events = []
     portfolio = load_portfolio()
     excluded = set(config.EXCLUDED_TICKERS)
@@ -351,7 +364,11 @@ def detect_events() -> list[dict]:
 
     market_data = get_market_data(all_tickers)
 
-    for level in watch_levels:
+    today = date.today()
+    expired_indices: list[int] = []
+    invalidated_indices: list[int] = []
+
+    for idx, level in enumerate(watch_levels):
         ticker = level["ticker"]
         data = market_data.get(ticker, {})
         if "error" in data or not data.get("price"):
@@ -363,8 +380,59 @@ def detect_events() -> list[dict]:
         if not trigger_price:
             continue
 
+        valid_until = level.get("valid_until")
+        if valid_until:
+            try:
+                vu = datetime.strptime(valid_until, "%Y-%m-%d").date()
+                if today > vu:
+                    logger.info("Watch %s expired (valid_until=%s)", ticker, valid_until)
+                    expired_indices.append(idx)
+                    continue
+            except ValueError:
+                logger.warning("Watch %s has invalid valid_until=%r", ticker, valid_until)
+
+        invalidate_below = level.get("invalidate_below")
+        if isinstance(invalidate_below, (int, float)) and invalidate_below > 0:
+            if current_price < invalidate_below:
+                logger.warning(
+                    "Watch %s INVALIDATED: price %.2f < invalidate_below %.2f",
+                    ticker, current_price, invalidate_below,
+                )
+                events.append({
+                    "type": "WATCH_INVALIDATED",
+                    "ticker": ticker,
+                    "level_type": level_type,
+                    "trigger_price": trigger_price,
+                    "current_price": current_price,
+                    "invalidate_below": invalidate_below,
+                    "thesis": level.get("thesis", ""),
+                    "note": f"These gebrochen: Preis {current_price:.2f} < Invalid-Schwelle {invalidate_below:.2f}",
+                    "priority": "HIGH",
+                })
+                invalidated_indices.append(idx)
+                continue
+
         distance_pct = abs(current_price - trigger_price) / trigger_price * 100
         if distance_pct <= config.BREAKOUT_TRIGGER_PERCENT:
+            confirm_close_above = level.get("confirm_close_above")
+            if isinstance(confirm_close_above, (int, float)) and confirm_close_above > 0:
+                if current_price < confirm_close_above:
+                    logger.info(
+                        "Watch %s @%.2f not confirmed: price %.2f < confirm_close_above %.2f",
+                        ticker, trigger_price, current_price, confirm_close_above,
+                    )
+                    continue
+
+            min_vol = level.get("min_volume_ratio")
+            if isinstance(min_vol, (int, float)) and min_vol > 0:
+                vr = data.get("volume_ratio")
+                if not isinstance(vr, (int, float)) or vr < min_vol:
+                    logger.info(
+                        "Watch %s @%.2f vol-gate fail: vol_ratio %s < min %.2f",
+                        ticker, trigger_price, vr, min_vol,
+                    )
+                    continue
+
             # Direction-confirm gate: a `resistance_reject` is only meaningful if
             # price is actually back below the trigger; a `support_bounce` only if
             # back above. Without this, bot fires on the natural tag-and-continue
@@ -410,10 +478,34 @@ def detect_events() -> list[dict]:
                 "trigger_price": trigger_price,
                 "current_price": current_price,
                 "note": event_note,
+                "thesis": level.get("thesis", ""),
+                "invalidate_below": level.get("invalidate_below"),
                 "vwap_dev_atr": vwap_dev,
                 "anomaly": anomaly,
                 "priority": "HIGH",
             })
+
+    # Persist expiry + invalidation removals (drop levels whose conditions are gone).
+    drop = set(expired_indices) | set(invalidated_indices)
+    if drop:
+        with portfolio_lock:
+            fresh = load_portfolio()
+            current = fresh.get("watch_levels", [])
+            keep_keys = {
+                (watch_levels[i].get("ticker"), watch_levels[i].get("trigger_price"), watch_levels[i].get("type"))
+                for i in range(len(watch_levels)) if i not in drop
+            }
+            kept = [
+                lvl for lvl in current
+                if (lvl.get("ticker"), lvl.get("trigger_price"), lvl.get("type")) in keep_keys
+            ]
+            if len(kept) != len(current):
+                fresh["watch_levels"] = kept
+                save_portfolio(fresh)
+                logger.info(
+                    "Watch-levels pruned: %d → %d (expired=%d, invalidated=%d)",
+                    len(current), len(kept), len(expired_indices), len(invalidated_indices),
+                )
 
     # Filter out events that were already triggered today
     new_events = [e for e in events if not _is_event_already_triggered(_get_event_key(e), portfolio)]

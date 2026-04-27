@@ -170,6 +170,7 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # Why: 15min-delayed yfinance is closer to actual fill than rec_entry from
         # hours ago. Forces slippage gate to run instead of silently recording rec_entry.
         price_source = "user"
+        live: dict | None = None
         if price_override is None:
             try:
                 live = get_market_data([rec["ticker"]]).get(rec["ticker"], {})
@@ -239,6 +240,31 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        # Thesis-state snapshot at entry: freezes analyst consensus + structural
+        # markers so events.py can detect thesis-degradation later (analyst downgrade,
+        # MA50-loss, wk_trend flip). Without this, "is the thesis still intact?" is
+        # not answerable mid-trade.
+        snapshot_data = live if isinstance(live, dict) and live and not live.get("error") else {}
+        if not snapshot_data:
+            try:
+                _snap = get_market_data([rec["ticker"]]).get(rec["ticker"], {})
+                if isinstance(_snap, dict) and not _snap.get("error"):
+                    snapshot_data = _snap
+            except Exception:
+                logger.exception("Snapshot fetch failed at /confirm")
+        entry_snapshot = {
+            "snapshot_date": datetime.now().strftime("%Y-%m-%d"),
+            "analyst_rec_key": snapshot_data.get("analyst_rec_key"),
+            "analyst_target_mean": snapshot_data.get("analyst_target_mean"),
+            "analyst_upside_pct": snapshot_data.get("analyst_upside_pct"),
+            "analyst_count": snapshot_data.get("analyst_count"),
+            "rsi14": snapshot_data.get("rsi14"),
+            "ma50": snapshot_data.get("ma50"),
+            "ma200": snapshot_data.get("ma200"),
+            "wk_trend": snapshot_data.get("wk_trend"),
+            "rs_20d_vs_index_pct": snapshot_data.get("rs_20d_vs_index_pct"),
+        }
+
         trade = {
             "ticker": rec["ticker"],
             "entry_price": entry,
@@ -250,6 +276,8 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "conviction": rec.get("conviction"),
             "p_win": rec.get("p_win"),
             "thesis": rec.get("thesis"),
+            "watch_thesis": rec.get("watch_thesis"),
+            "entry_snapshot": entry_snapshot,
             "hold_days_min": rec.get("hold_days_min"),
             "hold_days_max": rec.get("hold_days_max"),
             "setup_type": rec.get("setup_type"),
