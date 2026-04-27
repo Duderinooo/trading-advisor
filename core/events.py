@@ -365,6 +365,32 @@ def detect_events() -> list[dict]:
 
         distance_pct = abs(current_price - trigger_price) / trigger_price * 100
         if distance_pct <= config.BREAKOUT_TRIGGER_PERCENT:
+            # Direction-confirm gate: a `resistance_reject` is only meaningful if
+            # price is actually back below the trigger; a `support_bounce` only if
+            # back above. Without this, bot fires on the natural tag-and-continue
+            # of a breakout (Bug 2026-04-27: RWE @60.70 → tag → continue → bot saw
+            # 15-min snapshot of dip and recommended EXIT).
+            # Buffer: 0.25×ATR when available, else 0.3% absolute.
+            atr_pct = data.get("atr14_pct")
+            if isinstance(atr_pct, (int, float)) and atr_pct > 0:
+                buf_pct = 0.25 * atr_pct
+            else:
+                buf_pct = 0.3
+            buf_abs = trigger_price * buf_pct / 100
+            if level_type == "resistance_reject" and current_price > trigger_price - buf_abs:
+                logger.info(
+                    "Watch %s resistance_reject @%.2f not confirmed: price %.2f "
+                    "(needs ≤ %.2f for reject)",
+                    ticker, trigger_price, current_price, trigger_price - buf_abs,
+                )
+                continue
+            if level_type == "support_bounce" and current_price < trigger_price + buf_abs:
+                logger.info(
+                    "Watch %s support_bounce @%.2f not confirmed: price %.2f "
+                    "(needs ≥ %.2f for bounce)",
+                    ticker, trigger_price, current_price, trigger_price + buf_abs,
+                )
+                continue
             vwap_dev = data.get("vwap_dev_atr")
             extreme = isinstance(vwap_dev, (int, float)) and abs(vwap_dev) >= 3.0
             if extreme:

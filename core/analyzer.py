@@ -938,12 +938,8 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                          f"verdict={_verdict} conf={_conf}",
                          {"verdict": _verdict, "confidence": _conf,
                           "failure_modes": _modes, "reason": _reason})
-                _modes_str = "\n  • " + "\n  • ".join(_modes[:3]) if _modes else ""
-                _notify(
-                    f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
-                    f"Red-Team {_verdict} (conf {_conf}): {_reason}"
-                    + (f"\n\nFailure-Modes:{_modes_str}" if _modes_str else "")
-                )
+                # Silent block: user has no action on a killed entry — only logs +
+                # dashboard (gate_log) keep the trail. Past Telegram alert was pure noise.
                 entry_recommendation = None
             else:
                 # Stamp critique on rec — surfaces in Telegram alert + dashboard.
@@ -1119,6 +1115,39 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             dropped = len(new_levels) - len(filtered)
             if dropped:
                 logger.warning("Dropped %d watch level(s) on excluded tickers", dropped)
+
+            # Self-sabotage filter: drop resistance_reject whose trigger sits between
+            # an open trade's entry and TP1. Such a level fires on the natural tag-and-
+            # continue of a breakout, killing the trade before it reaches its own
+            # target. (Bug 2026-04-27: RWE breakout @60.6 with TP1 62.4 + watch_reject
+            # @60.7 → 15-min snapshot saw tag-and-dip → bot recommended EXIT while
+            # breakout was actually working.)
+            _open_by_ticker = {t["ticker"]: t for t in fresh.get("open_trades", [])}
+            _conflict_filtered = []
+            for lvl in filtered:
+                if lvl.get("type") != "resistance_reject":
+                    _conflict_filtered.append(lvl)
+                    continue
+                _ot = _open_by_ticker.get(lvl.get("ticker"))
+                if not _ot:
+                    _conflict_filtered.append(lvl)
+                    continue
+                _entry = float(_ot.get("entry_price") or 0)
+                _tp = _ot.get("take_profit")
+                _tp1 = float(_tp[0]) if isinstance(_tp, list) and _tp else (
+                    float(_tp) if isinstance(_tp, (int, float)) else 0
+                )
+                _trig = float(lvl.get("trigger_price") or 0)
+                if _entry > 0 and _tp1 > _entry and _entry < _trig <= _tp1:
+                    logger.warning(
+                        "Dropped self-sabotage watch_resistance_reject %s @%.2f "
+                        "(sits between entry %.2f and TP1 %.2f of open breakout)",
+                        lvl.get("ticker"), _trig, _entry, _tp1,
+                    )
+                    continue
+                _conflict_filtered.append(lvl)
+            filtered = _conflict_filtered
+
             fresh["watch_levels"] = filtered
             logger.info("Watch levels updated: %d level(s) registered", len(filtered))
         if rec is not None:
