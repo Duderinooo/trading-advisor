@@ -144,7 +144,13 @@ WATCH-LEVEL-PFLICHTEN (Sonnet-Thesis-Pattern):
 - `invalidate_below` (Pflicht für breakout_long/support_bounce/inverse_etf_entry): These-Bruch-Preis. Watch wird gedroppt + Event gefeuert.
 - `confirm_close_above` (Pflicht für breakout_long): trigger_price + 0.3% Buffer. Schutz vs. Tag-and-Dip.
 - `min_volume_ratio` (Pflicht für breakout_long): typisch 1.3. Schutz vs. Fake-Breakout.
-- `valid_until` (optional, default = heute + 5 Handelstage). Setze kürzer bei zeitkritischen Setups.
+- `valid_until` Setup-Type-spezifisch kalibrieren, NICHT pauschal:
+  - breakout_long: +3 bis +5d (Vol/Momentum decay → Stale-Breakout = Fake)
+  - support_bounce: +7 bis +10d (langsames Setup, Support wird mehrfach getestet)
+  - resistance_reject: +3 bis +5d
+  - inverse_etf_entry: +5 bis +7d (Regime-Shifts)
+  - Pre-Earnings-Trigger: bis Tag vor Earnings (hart, nicht später)
+  - Fallback Default: heute + 5 Handelstage
 - Lieber 0 Watch-Levels als 1 vager Trigger ohne Conditions.
 
 WICHTIG: User sieht nur den Text-Output. Wenn du dort Prosa schreibst, gewinnt User-Verwirrung > Klarheit. Drei Fälle oben, sonst nichts."""
@@ -269,8 +275,13 @@ WATCH_LEVELS_TOOL = {
                             "type": "string",
                             "description": (
                                 "ISO-Datum YYYY-MM-DD. Watch verfällt silent nach diesem Tag. "
-                                "Default: heute + 5 Handelstage. Setze kürzer wenn Setup zeitkritisch "
-                                "(z.B. Pre-Earnings-Breakout)."
+                                "Setup-Type-abhängig kalibrieren (NICHT pauschal): "
+                                "breakout_long = +3 bis +5d (Vol/Momentum decay). "
+                                "support_bounce = +7 bis +10d (langsames Setup, mehrfach getestet). "
+                                "resistance_reject = +3 bis +5d. "
+                                "inverse_etf_entry = +5 bis +7d (Regime-abhängig). "
+                                "Pre-Earnings-Trigger = bis Tag vor Earnings (hart). "
+                                "Wenn None, Default = +5d."
                             ),
                         },
                         "trailing_stop_pct": {
