@@ -56,6 +56,33 @@ def save_portfolio(portfolio: dict):
         raise
 
 
+def add_cash_movement(
+    portfolio: dict,
+    *,
+    amount: float,
+    kind: str,
+    ticker: str,
+    note: str = "",
+) -> dict:
+    """Append a cash flow (e.g. dividend) to the cash_movements ledger and adjust cash_eur.
+
+    Caller must already hold portfolio_lock. Returns the appended entry. Does not save —
+    the surrounding transaction is responsible for save_portfolio().
+    """
+    movement = {
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "amount": round(float(amount), 2),
+        "kind": kind,
+        "ticker": ticker,
+        "note": note or "",
+    }
+    portfolio.setdefault("cash_movements", []).append(movement)
+    portfolio["cash_eur"] = round(
+        float(portfolio.get("cash_eur", 0) or 0) + movement["amount"], 2
+    )
+    return movement
+
+
 # ---------- Position sizing ----------
 
 def compute_kelly_mult(closed_trades: list[dict]) -> float:
@@ -173,14 +200,19 @@ def set_kill_switch(on: bool, reason: str = "") -> dict:
 
 
 def _equity_curve(portfolio: dict) -> tuple[float, float, float]:
-    """Returns (equity_now, peak, dd_pct) using frozen starting capital + realized pnl.
+    """Returns (equity_now, peak, dd_pct) using frozen starting capital + realized pnl + cash movements.
     `total_capital_eur` is treated as the original deposit (constant), not current equity."""
     starting = float(portfolio.get("total_capital_eur", config.BUDGET_EUR) or config.BUDGET_EUR)
-    closed = portfolio.get("closed_trades", [])
+    events: list[tuple[str, float]] = []
+    for t in portfolio.get("closed_trades", []):
+        events.append((t.get("exit_date") or "", float(t.get("pnl_eur") or 0)))
+    for m in portfolio.get("cash_movements", []):
+        events.append((m.get("date") or "", float(m.get("amount") or 0)))
+    events.sort(key=lambda e: e[0])
     equity = starting
     peak = starting
-    for t in sorted(closed, key=lambda x: x.get("exit_date") or ""):
-        equity += float(t.get("pnl_eur") or 0)
+    for _date, delta in events:
+        equity += delta
         if equity > peak:
             peak = equity
     dd_pct = (peak - equity) / peak * 100 if peak > 0 else 0.0
@@ -880,20 +912,33 @@ def format_sector_exposure(by_sector: dict[str, list[str]]) -> str:
 
 # ---------- Equity curve ----------
 
-def compute_equity_stats(closed_trades: list[dict], starting_capital: float) -> dict | None:
-    """Equity curve + drawdown + per-trade Sharpe. Returns None if no closed trades."""
+def compute_equity_stats(
+    closed_trades: list[dict],
+    starting_capital: float,
+    cash_movements: list[dict] | None = None,
+) -> dict | None:
+    """Equity curve + drawdown + per-trade Sharpe. Returns None if no closed trades.
+
+    `cash_movements` (dividends etc.) are folded into the equity curve chronologically
+    alongside trade exits so peak / max-drawdown reflect actual capital state. Sharpe
+    is still computed only from trade pnl_pct (Sharpe is a trade-quality metric)."""
     if not closed_trades:
         return None
 
-    ordered = sorted(closed_trades, key=lambda x: x.get("exit_date") or "")
+    events: list[tuple[str, float]] = [
+        (t.get("exit_date") or "", float(t.get("pnl_eur") or 0))
+        for t in closed_trades
+    ]
+    for m in (cash_movements or []):
+        events.append((m.get("date") or "", float(m.get("amount") or 0)))
+    events.sort(key=lambda e: e[0])
 
     equity = starting_capital
     peak = starting_capital
     max_dd_pct = 0.0
     max_dd_eur = 0.0
-    for t in ordered:
-        pnl = float(t.get("pnl_eur") or 0)
-        equity += pnl
+    for _date, delta in events:
+        equity += delta
         if equity > peak:
             peak = equity
         dd_eur = peak - equity
@@ -906,7 +951,7 @@ def compute_equity_stats(closed_trades: list[dict], starting_capital: float) -> 
     total_return_pct = round((equity - starting_capital) / starting_capital * 100, 2) if starting_capital else 0.0
 
     # Per-trade Sharpe (mean/stdev of pnl_pct) — needs ≥2 trades.
-    returns = [float(t.get("pnl_pct") or 0) for t in ordered]
+    returns = [float(t.get("pnl_pct") or 0) for t in closed_trades]
     sharpe = None
     if len(returns) >= 2:
         import statistics
@@ -923,7 +968,7 @@ def compute_equity_stats(closed_trades: list[dict], starting_capital: float) -> 
         "max_drawdown_pct": round(max_dd_pct, 2),
         "max_drawdown_eur": round(max_dd_eur, 2),
         "sharpe_per_trade": sharpe,
-        "trades_closed": len(ordered),
+        "trades_closed": len(closed_trades),
     }
 
 

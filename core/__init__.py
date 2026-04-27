@@ -10,6 +10,7 @@ from core.portfolio import (
     portfolio_lock,
     load_portfolio,
     save_portfolio,
+    add_cash_movement,
     suggest_position_size,
     compute_kelly_mult,
     compute_slippage_budget,
@@ -59,7 +60,7 @@ from core.gate_log import read_gate_blocks
 
 __all__ = [
     # portfolio
-    "portfolio_lock", "load_portfolio", "save_portfolio",
+    "portfolio_lock", "load_portfolio", "save_portfolio", "add_cash_movement",
     "suggest_position_size", "compute_kelly_mult", "compute_slippage_budget",
     "compute_hit_stats", "format_hit_stats",
     "compute_portfolio_heat", "format_portfolio_heat",

@@ -313,11 +313,19 @@ def run_weekend_summary():
                 logger.exception("Weekend live-pull failed")
 
         starting = float(portfolio.get("total_capital_eur") or config.BUDGET_EUR)
-        equity_realized = starting + sum(float(t.get("pnl_eur") or 0) for t in portfolio.get("closed_trades", []))
+        equity_realized = (
+            starting
+            + sum(float(t.get("pnl_eur") or 0) for t in portfolio.get("closed_trades", []))
+            + sum(float(m.get("amount") or 0) for m in portfolio.get("cash_movements", []))
+        )
         equity_total = equity_realized + unrealized
 
         heat = compute_portfolio_heat(portfolio)
-        eq = compute_equity_stats(portfolio.get("closed_trades", []), starting) or {}
+        eq = compute_equity_stats(
+            portfolio.get("closed_trades", []),
+            starting,
+            portfolio.get("cash_movements", []),
+        ) or {}
         stats = compute_hit_stats(portfolio.get("closed_trades", []))
 
         # Mistake distribution (last 20 losses) — surfaces drift

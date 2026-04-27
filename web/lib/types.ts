@@ -73,12 +73,21 @@ export type CorrelationMatrix = {
   computed_at: string;
 };
 
+export type CashMovement = {
+  date: string;
+  amount: number;
+  kind: "dividend";
+  ticker?: string;
+  note?: string;
+};
+
 export type Portfolio = {
   open_trades: OpenTrade[];
   closed_trades: ClosedTrade[];
   watch_levels: WatchLevel[];
   cash_eur: number;
   total_capital_eur: number;
+  cash_movements?: CashMovement[];
   last_analysis?: string;
   last_updated?: string;
   notes?: string;

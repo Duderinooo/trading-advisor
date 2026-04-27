@@ -13,20 +13,29 @@ import type {
 } from "./types";
 
 export function computeEquityCurve(p: Portfolio): EquityPoint[] {
-  const sorted = [...p.closed_trades]
-    .filter((t) => t.exit_date)
-    .sort((a, b) => a.exit_date.localeCompare(b.exit_date));
+  type Event = { date: string; delta: number };
+  const events: Event[] = [];
+  for (const t of p.closed_trades) {
+    if (!t.exit_date) continue;
+    events.push({ date: t.exit_date, delta: Number(t.pnl_eur ?? 0) });
+  }
+  for (const m of p.cash_movements ?? []) {
+    if (!m.date) continue;
+    events.push({ date: m.date, delta: Number(m.amount ?? 0) });
+  }
+  events.sort((a, b) => a.date.localeCompare(b.date));
+
   let equity = p.total_capital_eur;
   let peak = equity;
   const points: EquityPoint[] = [
     { date: "start", equity, peak, dd_pct: 0 },
   ];
-  for (const t of sorted) {
-    equity += Number(t.pnl_eur ?? 0);
+  for (const e of events) {
+    equity += e.delta;
     if (equity > peak) peak = equity;
     const dd_pct = peak > 0 ? ((peak - equity) / peak) * 100 : 0;
     points.push({
-      date: t.exit_date.split(" ")[0],
+      date: e.date.split(" ")[0],
       equity: Math.round(equity * 100) / 100,
       peak: Math.round(peak * 100) / 100,
       dd_pct: Math.round(dd_pct * 100) / 100,
@@ -132,6 +141,7 @@ export function computeHitStats(closed: ClosedTrade[]): HitStats | null {
 export function currentEquity(p: Portfolio): number {
   let eq = p.total_capital_eur;
   for (const t of p.closed_trades) eq += Number(t.pnl_eur ?? 0);
+  for (const m of p.cash_movements ?? []) eq += Number(m.amount ?? 0);
   return Math.round(eq * 100) / 100;
 }
 

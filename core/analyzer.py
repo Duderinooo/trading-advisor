@@ -462,7 +462,11 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
 
     # Equity curve (morning only)
     if mode == "morning":
-        eq = compute_equity_stats(portfolio.get("closed_trades", []), config.BUDGET_EUR)
+        eq = compute_equity_stats(
+            portfolio.get("closed_trades", []),
+            config.BUDGET_EUR,
+            portfolio.get("cash_movements", []),
+        )
         if eq:
             analysis_request += f"\n\n## EQUITY CURVE\n{format_equity_stats(eq)}\n"
 

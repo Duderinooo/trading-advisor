@@ -16,7 +16,8 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 import config
 from core import (
-    portfolio_lock, load_portfolio, save_portfolio, get_market_data,
+    portfolio_lock, load_portfolio, save_portfolio, add_cash_movement,
+    get_market_data,
     risk_halt_status, set_kill_switch, kill_switch_active,
     maintain_drawdown_state, compute_slippage_budget, get_period_return,
 )
@@ -437,6 +438,73 @@ async def close_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+def _parse_dividend_args(args: list[str]) -> tuple[str | None, float | None, str]:
+    """Parse `/dividend TICKER AMOUNT [reason...]`. Order-tolerant for ticker/amount."""
+    ticker = None
+    amount = None
+    reason_tokens: list[str] = []
+    for tok in args:
+        if amount is None and _NUMBER_RE.match(tok):
+            try:
+                amount = float(tok)
+                continue
+            except ValueError:
+                pass
+        if ticker is None:
+            upper = tok.upper()
+            if _TICKER_RE.match(upper) and any(c.isalpha() for c in upper):
+                ticker = upper
+                continue
+        reason_tokens.append(tok)
+    return ticker, amount, " ".join(reason_tokens).strip()
+
+
+async def dividend_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not _authorized(update):
+        return
+
+    ticker, amount, reason = _parse_dividend_args(ctx.args or [])
+    if not ticker or amount is None:
+        await update.message.reply_text(
+            "Format: `/dividend TICKER AMOUNT [grund]`\n"
+            "Beispiel: `/dividend RWE.DE 12.50 Q1 2026 Dividende`",
+            parse_mode="Markdown",
+        )
+        return
+    if amount <= 0:
+        await update.message.reply_text("❌ Betrag muss > 0 sein.")
+        return
+
+    with portfolio_lock:
+        portfolio = load_portfolio()
+        known_tickers = {
+            t.get("ticker", "").upper()
+            for t in portfolio.get("open_trades", []) + portfolio.get("closed_trades", [])
+        }
+        if ticker not in known_tickers:
+            await update.message.reply_text(
+                f"❌ {ticker} unbekannt (nie gehalten). "
+                "Tippfehler? Sonst Position erst öffnen oder Closed-Trade beibehalten."
+            )
+            return
+        add_cash_movement(
+            portfolio,
+            amount=amount,
+            kind="dividend",
+            ticker=ticker,
+            note=reason,
+        )
+        save_portfolio(portfolio)
+        new_cash = portfolio["cash_eur"]
+
+    note_line = f"\n_„{reason}“_" if reason else ""
+    await update.message.reply_text(
+        f"💰 *Dividende {ticker} +€{amount:.2f}*{note_line}\n"
+        f"Cash: €{new_cash:.2f}",
+        parse_mode="Markdown",
+    )
+
+
 async def positions_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _authorized(update):
         return
@@ -601,6 +669,7 @@ async def help_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/confirm 3 @172.50` (reply) — 3 Stück, Preis €172.50\n"
         "`/confirm NVD.DE 3 @172.50` — standalone\n"
         "`/close TICKER [@preis] [#tag]` — Position schließen (bei Verlust: #tag = Grund)\n"
+        "`/dividend TICKER AMOUNT [grund]` — Dividende verbuchen (Cash + Equity-Curve)\n"
         "`/cancel` (reply) — Pending-Empfehlung verwerfen\n"
         "`/positions` — Portfolio anzeigen\n"
         "`/morning` — Morning Prep manuell neu laufen lassen\n"
@@ -615,6 +684,7 @@ async def _async_run():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("confirm", confirm_handler))
     app.add_handler(CommandHandler("close", close_handler))
+    app.add_handler(CommandHandler("dividend", dividend_handler))
     app.add_handler(CommandHandler("positions", positions_handler))
     app.add_handler(CommandHandler("cancel", cancel_handler))
     app.add_handler(CommandHandler("panic", panic_handler))
