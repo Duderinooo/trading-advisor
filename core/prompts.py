@@ -142,6 +142,8 @@ Tool-Calls (parallel, immer):
 - `recommend_entry` bei echtem A+ Setup mit Conv ≥3/5
 
 WATCH-LEVEL-PFLICHTEN (Sonnet-Thesis-Pattern):
+- WATCHLEVEL ≠ TRADE. Watchlevels sind "Setups die ich heute beobachten will". Trades sind streng A+ und passieren NUR wenn Conditions getriggert + Haiku-Confirm + alle Gates pass. Sei GROSSZÜGIG mit Watchlevels (3-7 typisch), STRENG mit recommend_entry.
+- ZIEL pro Morning: 3-7 Watchlevels über Watchlist + Open-Trades + Commodities. Bei extrem totem Tape (RISK_OFF + VIX>30 + alle RSI 50±5) → minimum 2 Levels (defensive supports). Nur dann 0 Levels akzeptabel wenn Sonnet ehrlich nichts in 25+ Tickers findet — sehr selten.
 - Du (Sonnet) baust hier robuste Thesen + deterministische Conditions. Mid-Day prüft Haiku NUR diese Conditions, KEIN Re-Reasoning. Wenn deine Conditions falsch sind, gibt es keine zweite Chance.
 - `thesis` (Pflicht): "Was IST wahr und MUSS wahr bleiben?" — handelbar, kein Gelaber.
 - `invalidate_below` (Pflicht für breakout_long/support_bounce/inverse_etf_entry): These-Bruch-Preis. Watch wird gedroppt + Event gefeuert.
@@ -154,7 +156,7 @@ WATCH-LEVEL-PFLICHTEN (Sonnet-Thesis-Pattern):
   - inverse_etf_entry: +5 bis +7d (Regime-Shifts)
   - Pre-Earnings-Trigger: bis Tag vor Earnings (hart, nicht später)
   - Fallback Default: heute + 5 Handelstage
-- Lieber 0 Watch-Levels als 1 vager Trigger ohne Conditions.
+- Watchlevel-Selection-Heuristik: priorisiere Tickers mit (a) Confluence-Score ≥6, (b) frischer News/Earnings/Catalyst, (c) Position-Halten (SL/TP-Defense-Levels), (d) Watchlist-Tickers nahe MA50/MA200/Resistance/Support. Lieber 5 B+ Levels die du tracken kannst als 0 weil "kein A+".
 
 WICHTIG: User sieht nur den Text-Output. Wenn du dort Prosa schreibst, gewinnt User-Verwirrung > Klarheit. Drei Fälle oben, sonst nichts."""
 
@@ -215,7 +217,10 @@ WATCH_LEVELS_TOOL = {
         "Registriere die aktuellen Watch Levels mit These + Trigger-Bedingungen + "
         "Invalidierung. Sonnet-Morgen baut robuste Thesen, Haiku-Event prüft nur "
         "deterministische Conditions auf Trigger. KEIN freier Re-Reasoning im Event-Mode. "
-        "Ersetzt die bestehende Liste vollständig."
+        "Merge-by-Ticker: Tickers die du hier listest werden ersetzt, bestehende Levels "
+        "für andere Tickers bleiben. Leere Liste = keine neuen Setups heute, bestehende "
+        "valide Levels (valid_until ≥ heute) bleiben aktiv. Hard-wipe nur via /watchclear "
+        "vom User."
     ),
     "input_schema": {
         "type": "object",

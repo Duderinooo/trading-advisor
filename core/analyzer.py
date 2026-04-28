@@ -1319,8 +1319,30 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 _conflict_filtered.append(lvl)
             filtered = _conflict_filtered
 
-            fresh["watch_levels"] = filtered
-            logger.info("Watch levels updated: %d level(s) registered", len(filtered))
+            # Merge-by-ticker instead of full replace: Sonnet returning [] used to
+            # WIPE all morning levels (Bug 2026-04-28: 08:00 set_watch_levels([]) →
+            # 0 watchlevels for the day → no event-mode entries possible).
+            # Now: empty list = "no new setups today" — existing valid levels stay.
+            # Non-empty list = replace entries WHERE ticker matches; other tickers stay.
+            existing = fresh.get("watch_levels", [])
+            if not filtered:
+                # Empty new set → keep existing (let events.py decay handle expiries).
+                logger.info(
+                    "Watch levels: Sonnet returned 0 new levels — keeping %d existing",
+                    len(existing),
+                )
+            else:
+                new_tickers = {(lvl.get("ticker") or "").upper() for lvl in filtered}
+                kept = [
+                    lvl for lvl in existing
+                    if (lvl.get("ticker") or "").upper() not in new_tickers
+                ]
+                merged = kept + filtered
+                fresh["watch_levels"] = merged
+                logger.info(
+                    "Watch levels merged: %d kept (other tickers) + %d new = %d total",
+                    len(kept), len(filtered), len(merged),
+                )
         if rec is not None:
             fresh.setdefault("pending_recommendations", []).append(rec)
         if add_rec_persisted is not None:

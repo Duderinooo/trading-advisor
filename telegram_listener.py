@@ -107,6 +107,149 @@ def _parse_close_args(args: list[str]) -> tuple[str | None, float | None, str | 
     return ticker, exit_price, tag
 
 
+_WATCH_TYPES = {"breakout_long", "support_bounce", "resistance_reject", "inverse_etf_entry"}
+
+
+async def watch_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Manually add a watch-level. Format: /watch TICKER TYPE @PREIS [thesis...]
+
+    Example: /watch RWE.DE breakout_long @62.50 Vol-Spike + Analyst-Upgrade
+
+    Types: breakout_long | support_bounce | resistance_reject | inverse_etf_entry
+    Sets valid_until = today + 5 days. Adds to existing list (merge by-ticker, so
+    re-running for same ticker REPLACES the old level for that ticker).
+    """
+    if not _authorized(update):
+        return
+    args = ctx.args or []
+    ticker = None
+    wtype = None
+    price = None
+    thesis_tokens: list[str] = []
+    for tok in args:
+        upper = tok.upper()
+        if tok.startswith("@"):
+            try:
+                price = float(tok[1:].replace(",", "."))
+            except ValueError:
+                pass
+            continue
+        if tok.lower() in _WATCH_TYPES:
+            wtype = tok.lower()
+            continue
+        if ticker is None and _TICKER_RE.match(upper) and any(c.isalpha() for c in upper):
+            ticker = upper
+            continue
+        thesis_tokens.append(tok)
+    if not ticker or not wtype or not price:
+        await update.message.reply_text(
+            "Format: `/watch TICKER TYPE @PREIS [thesis...]`\n"
+            f"TYPE: {' | '.join(sorted(_WATCH_TYPES))}\n"
+            "Beispiel: `/watch RWE.DE breakout_long @62.50 Vol-Spike + Analyst Upgrade`",
+            parse_mode="Markdown",
+        )
+        return
+    thesis = " ".join(thesis_tokens).strip()[:120] or f"Manual {wtype} watch"
+
+    valid_until = (datetime.now() + timedelta(days=5)).strftime("%Y-%m-%d")
+
+    new_level = {
+        "ticker": ticker,
+        "type": wtype,
+        "trigger_price": price,
+        "thesis": thesis,
+        "valid_until": valid_until,
+        "source": "manual_/watch",
+        "created_date": datetime.now().strftime("%Y-%m-%d"),
+    }
+
+    with portfolio_lock:
+        portfolio = load_portfolio()
+        existing = portfolio.get("watch_levels", [])
+        kept = [w for w in existing if (w.get("ticker") or "").upper() != ticker]
+        portfolio["watch_levels"] = kept + [new_level]
+        save_portfolio(portfolio)
+        new_count = len(portfolio["watch_levels"])
+
+    await update.message.reply_text(
+        f"👀 *Watchlevel gesetzt*\n"
+        f"`{ticker}` {wtype} @ €{price:.2f}\n"
+        f"These: _{thesis}_\n"
+        f"Valid bis: {valid_until}\n"
+        f"Σ Watchlevels: {new_count}",
+        parse_mode="Markdown",
+    )
+
+
+async def watchremove_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Remove watch-level(s) for a ticker. Format: /watchremove TICKER"""
+    if not _authorized(update):
+        return
+    if not ctx.args:
+        await update.message.reply_text(
+            "Format: `/watchremove TICKER`",
+            parse_mode="Markdown",
+        )
+        return
+    ticker = ctx.args[0].upper()
+    with portfolio_lock:
+        portfolio = load_portfolio()
+        existing = portfolio.get("watch_levels", [])
+        kept = [w for w in existing if (w.get("ticker") or "").upper() != ticker]
+        removed = len(existing) - len(kept)
+        if removed == 0:
+            await update.message.reply_text(
+                f"❓ Keine Watchlevels für {ticker} gefunden.",
+            )
+            return
+        portfolio["watch_levels"] = kept
+        save_portfolio(portfolio)
+    await update.message.reply_text(
+        f"❌ {removed} Watchlevel(s) für {ticker} entfernt. Σ verbleibend: {len(kept)}.",
+    )
+
+
+async def watchclear_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Hard-wipe ALL watch-levels. Confirm with arg 'yes'."""
+    if not _authorized(update):
+        return
+    args = ctx.args or []
+    if not args or args[0].lower() != "yes":
+        await update.message.reply_text(
+            "⚠️ `/watchclear yes` löscht ALLE Watchlevels. Bestätigung nötig.",
+            parse_mode="Markdown",
+        )
+        return
+    with portfolio_lock:
+        portfolio = load_portfolio()
+        n = len(portfolio.get("watch_levels", []))
+        portfolio["watch_levels"] = []
+        save_portfolio(portfolio)
+    await update.message.reply_text(f"🗑️ Alle {n} Watchlevels entfernt.")
+
+
+async def watchlist_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Show all active watch-levels."""
+    if not _authorized(update):
+        return
+    with portfolio_lock:
+        portfolio = load_portfolio()
+    levels = portfolio.get("watch_levels", [])
+    if not levels:
+        await update.message.reply_text("Keine aktiven Watchlevels.")
+        return
+    lines = ["*Aktive Watchlevels:*"]
+    for w in levels:
+        line = (
+            f"• `{w.get('ticker')}` {w.get('type')} @ €{w.get('trigger_price')} "
+            f"(bis {w.get('valid_until','?')})"
+        )
+        if w.get("thesis"):
+            line += f"\n  _{w['thesis'][:80]}_"
+        lines.append(line)
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
 async def add_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Manual add to existing position. Format: /add TICKER STK X @PREIS
 
@@ -911,6 +1054,10 @@ async def help_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/confirm 3 @172.50` (reply) — 3 Stück, Preis €172.50\n"
         "`/confirm NVD.DE 3 @172.50` — standalone\n"
         "`/add TICKER STK X @PREIS` — manuell aufstocken (z.B. `/add RWE.DE STK 2 @61.60`)\n"
+        "`/watch TICKER TYPE @PREIS [thesis]` — Watchlevel manuell setzen\n"
+        "`/watchlist` — alle aktiven Watchlevels anzeigen\n"
+        "`/watchremove TICKER` — Watchlevel(s) für Ticker entfernen\n"
+        "`/watchclear yes` — ALLE Watchlevels löschen\n"
         "`/close TICKER [@preis] [#tag]` — Position schließen (bei Verlust: #tag = Grund)\n"
         "`/dividend TICKER AMOUNT [grund]` — Dividende verbuchen (Cash + Equity-Curve)\n"
         "`/cancel` (reply) — Pending-Empfehlung verwerfen\n"
@@ -927,6 +1074,10 @@ async def _async_run():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("confirm", confirm_handler))
     app.add_handler(CommandHandler("add", add_handler))
+    app.add_handler(CommandHandler("watch", watch_handler))
+    app.add_handler(CommandHandler("watchlist", watchlist_handler))
+    app.add_handler(CommandHandler("watchremove", watchremove_handler))
+    app.add_handler(CommandHandler("watchclear", watchclear_handler))
     app.add_handler(CommandHandler("close", close_handler))
     app.add_handler(CommandHandler("dividend", dividend_handler))
     app.add_handler(CommandHandler("positions", positions_handler))
