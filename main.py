@@ -5,6 +5,7 @@ Monitors markets and triggers analysis when important events happen.
 """
 
 import os
+import re
 import time
 import logging
 import signal
@@ -31,7 +32,7 @@ from core import (
     maybe_auto_kill,
 )
 from memory import log_trade, MEMPALACE_AVAILABLE
-from notifier import send_notification, send_daily_summary, send_alert
+from notifier import send_notification, send_daily_summary, send_alert, send_actionable
 from telegram_listener import start_listener_thread
 
 
@@ -99,17 +100,43 @@ def _heartbeat_watchdog():
             logger.error("Watchdog tick failed: %s", exc)
 
 
-_ACTIONABLE_PREFIXES = ("ENTRY", "EXIT", "BUY", "SELL", "KAUFEN", "VERKAUFEN", "CLOSE")
+# Strict grammar: first non-empty line MUST start with an action verb followed by
+# a ticker and a separator. Markdown preamble or "Internal Analysis" blocks fail
+# this match silently. Synonyms (BUY/KAUFEN/SELL/VERKAUFEN/CLOSE) get normalized
+# to canonical actions for the schema validator.
+_ACTION_GRAMMAR = re.compile(
+    r"^(?P<action>ENTRY|EXIT|ADD|REDUCE|CLOSE|BUY|SELL|KAUFEN|VERKAUFEN)"
+    r"\s*[:|]\s*(?P<ticker>[A-Z0-9.\-\^]{1,12})\s*[|@]\s*(?P<rest>.+)",
+    re.IGNORECASE,
+)
+
+_ACTION_NORMALIZE = {
+    "BUY": "ENTRY", "KAUFEN": "ENTRY",
+    "SELL": "EXIT", "VERKAUFEN": "EXIT", "CLOSE": "EXIT",
+}
 
 
-def _is_actionable(analysis: str) -> bool:
-    """True only if Claude's verdict requires user action. PASS/HALTEN → False (no notify)."""
+def _parse_actionable(analysis: str) -> dict | None:
+    """Parse Claude's verdict line into a structured dict, or None if non-actionable.
+
+    Returns {"action": ENTRY|EXIT|ADD|REDUCE, "ticker": ..., "reason": ...}
+    Drops PASS/HALTEN/HOLD verdicts and anything that doesn't match the grammar
+    (markdown preamble, multi-line analysis, etc.).
+    """
     if not analysis:
-        return False
-    first = analysis.strip().split("\n", 1)[0].strip().upper().lstrip("*• `")
-    if first.startswith("PASS") or first.startswith("HALTEN") or first.startswith("HOLD"):
-        return False
-    return any(first.startswith(p) for p in _ACTIONABLE_PREFIXES)
+        return None
+    first = analysis.strip().split("\n", 1)[0].strip().lstrip("*•` ")
+    if first.upper().startswith(("PASS", "HALTEN", "HOLD")):
+        return None
+    m = _ACTION_GRAMMAR.match(first)
+    if not m:
+        return None
+    raw = m.group("action").upper()
+    return {
+        "action": _ACTION_NORMALIZE.get(raw, raw),
+        "ticker": m.group("ticker").upper(),
+        "reason": m.group("rest").strip()[:200],
+    }
 
 
 def _morning_prep_done_today() -> bool:
@@ -568,11 +595,21 @@ def run_opening_check(market: str):
             logger.info("%s open check: %s", market.upper(), analysis)
             return
 
-        if _is_actionable(analysis):
-            send_daily_summary(f"🔔 *{label} OPEN CHECK*\n\n{analysis}")
-            logger.info("✅ %s open check sent (action flagged)", market.upper())
+        if "(keine Text-Analyse)" in analysis:
+            logger.info("%s open: tool-only call, Telegram already sent by tool handler",
+                        market.upper())
         else:
-            logger.info("%s open: non-actionable verdict, no notification: %s", market.upper(), analysis[:80])
+            parsed = _parse_actionable(analysis)
+            if parsed:
+                send_actionable(
+                    parsed["action"], parsed["ticker"],
+                    size=None, reason=parsed["reason"],
+                    extras={"Open": label},
+                )
+                logger.info("✅ %s open check sent (action flagged)", market.upper())
+            else:
+                logger.info("%s open: non-actionable verdict, no notification: %s",
+                            market.upper(), analysis[:80])
 
         _mark_opening_check_done(market)
     except Exception as e:
@@ -613,24 +650,65 @@ def run_event_check():
 
         analysis = analyze_portfolio(mode="event", event_context=event_context)
 
-        # Always forward Claude's verdict. Event prompt enforces ENTRY/EXIT/PASS format —
-        # all three are actionable info for the full-trust user. Skip only if:
-        #   - cooldown skipped the call
-        #   - Claude called a tool without text (the tool itself sent Telegram)
+        # Tool-call path (recommend_entry/recommend_add) already sent its own rich
+        # Telegram from analyzer.py. Cooldown / API-skip just logs. Otherwise parse
+        # Claude's text verdict into the schema and forward as ONE actionable msg.
         if analysis.startswith("⚠️ Analysis skipped"):
             logger.info("Event analysis skipped: %s", analysis)
         elif "(keine Text-Analyse)" in analysis:
             logger.info("Event: tool-only call, Telegram already sent by tool handler")
-        elif _is_actionable(analysis):
-            alert_msg = f"🚨 *WATCH LEVEL HIT*\n" + "\n".join(f"• {d}" for d in event_descriptions)
-            send_notification(alert_msg)
-            send_daily_summary(analysis)
-            logger.info("✅ Event verdict sent: %s", analysis.split('\n')[0][:80])
         else:
-            logger.info("Event non-actionable, suppressed: %s", analysis.split('\n')[0][:80])
+            parsed = _parse_actionable(analysis)
+            if parsed:
+                send_actionable(
+                    parsed["action"], parsed["ticker"],
+                    size=None, reason=parsed["reason"],
+                    extras={"Watch": event_context[:80]},
+                )
+                logger.info("✅ Event verdict sent: %s", analysis.split('\n')[0][:80])
+            else:
+                logger.info("Event non-actionable, suppressed: %s", analysis.split('\n')[0][:80])
 
     except Exception:
         logger.exception("Event check failed")
+
+
+_SLTP_DEDUP_BUCKETS = {
+    # 1× per day per trade — pure noise warning shouldn't re-fire on every 15min tick
+    "STOP_LOSS_WARNING": 86400,
+    "TRAILING_STOP_MOVED": 900,    # 1× per 15min per trade — chatty during runs
+    "TRAILING_ACTIVATED": 86400,
+    "BREAK_EVEN_SHIFT": 86400,
+    # Default 0 = once-per-trade (HITs, TIME_STOP, PARTIAL_TP)
+}
+
+
+def _maybe_send_sltp(alert: dict, message: str) -> None:
+    """SL/TP alert with per-trade dedup. Tick-storm protection: same alert during a
+    15min stale-data window doesn't double-fire. Caller passes pre-rendered message."""
+    bucket = _SLTP_DEDUP_BUCKETS.get(alert.get("type"), 0)
+    key = (
+        f"{alert.get('type')}:{int(time.time() // bucket)}" if bucket
+        else f"{alert.get('type')}:once"
+    )
+    with portfolio_lock:
+        pf = load_portfolio()
+        trade = next(
+            (t for t in pf.get("open_trades", [])
+             if (t.get("ticker") or "").upper() == (alert.get("ticker") or "").upper()),
+            None,
+        )
+        if trade is None:
+            send_notification(message)
+            return
+        keys = trade.setdefault("alerted_keys", [])
+        if key in keys:
+            logger.debug("SL/TP alert deduped: %s %s", alert.get("ticker"), key)
+            return
+        keys.append(key)
+        trade["alerted_keys"] = keys[-50:]
+        save_portfolio(pf)
+    send_notification(message)
 
 
 def run_price_check():
@@ -643,7 +721,7 @@ def run_price_check():
     try:
         # Check stop-loss and take-profit for open trades
         sl_tp_alerts = check_stop_loss_take_profit()
-        
+
         for alert in sl_tp_alerts:
             if alert["type"] == "STOP_LOSS_HIT":
                 message = f"""🚨 *STOP-LOSS HIT: {alert['ticker']}*
@@ -654,8 +732,8 @@ Now: ${alert['current_price']:.2f}
 P&L: {alert['pnl_pct']:.1f}%
 
 ⚠️ *CLOSE POSITION NOW*"""
-                send_notification(message)
-                
+                _maybe_send_sltp(alert, message)
+
                 # Log to MemPalace
                 if MEMPALACE_AVAILABLE:
                     log_trade(alert, "STOP_HIT", f"Stop-Loss getriggert bei ${alert['current_price']:.2f}")
@@ -670,7 +748,7 @@ Now: ${alert['current_price']:.2f}
 P&L: +{alert['pnl_pct']:.1f}%
 
 💰 *TAKE PROFITS*"""
-                send_notification(message)
+                _maybe_send_sltp(alert, message)
 
                 if MEMPALACE_AVAILABLE:
                     action = "TP1_HIT" if alert.get("partial") else "TP_HIT"
@@ -686,7 +764,7 @@ P&L: +{alert['pnl_pct']:.1f}%
                     f"💰 *VERKAUFE {alert['shares_sold']} Stk auf TR jetzt*\n"
                     f"_Rest {alert['shares_remaining']} Stk läuft mit BE-SL + Trailing weiter._"
                 )
-                send_notification(message)
+                _maybe_send_sltp(alert, message)
                 if MEMPALACE_AVAILABLE:
                     log_trade(alert, "PARTIAL_TP", f"Partial-TP @ €{alert['current_price']:.2f}, "
                               f"sold {alert['shares_sold']}, remain {alert['shares_remaining']}")
@@ -700,30 +778,30 @@ P&L: +{alert['pnl_pct']:.1f}%
                     f"P&L: {alert['pnl_pct']:+.1f}%\n\n"
                     f"⚠️ *POSITION AUF TR SCHLIESSEN*\n_Tote Trades binden Heat — Kapital frei für neue Setups._"
                 )
-                send_notification(message)
+                _maybe_send_sltp(alert, message)
                 if MEMPALACE_AVAILABLE:
                     log_trade(alert, "TIME_STOP", f"Time-stop hit nach {alert['held_days']}d")
 
             elif alert["type"] == "BREAK_EVEN_SHIFT":
-                send_notification(
+                _maybe_send_sltp(alert, (
                     f"🛡️ *Stop auf Break-Even: {alert['ticker']}*\n\n"
                     f"Neuer Stop: ${alert['new_stop']:.2f}\n"
                     f"_Rest-Position läuft risikofrei weiter._"
-                )
+                ))
 
             elif alert["type"] == "TRAILING_ACTIVATED":
-                send_notification(
+                _maybe_send_sltp(alert, (
                     f"📐 *Trailing aktiviert: {alert['ticker']}*\n\n"
                     f"Trail: {alert['trail_pct']}% (1.5× ATR {alert['atr_pct']}%)\n"
                     f"_Runner-Schutz: SL zieht ab jetzt automatisch nach._"
-                )
+                ))
 
             elif alert["type"] == "TRAILING_STOP_MOVED":
-                send_notification(
+                _maybe_send_sltp(alert, (
                     f"📈 *Trailing-Stop nachgezogen: {alert['ticker']}*\n\n"
                     f"Neuer Stop: ${alert['new_stop']:.2f}\n"
                     f"Preis: ${alert['current_price']:.2f}"
-                )
+                ))
 
             elif alert["type"] == "STOP_LOSS_WARNING":
                 message = f"""⚠️ *Approaching Stop: {alert['ticker']}*
@@ -733,7 +811,7 @@ Now: ${alert['current_price']:.2f}
 Distance: {alert['distance_pct']:.1f}%
 
 _Watch closely_"""
-                send_notification(message)
+                _maybe_send_sltp(alert, message)
         
         # Price alerts → Claude analysis → only notify if actionable (BUY/SELL)
         # Skipped under kill-switch (no new entries; SL/TP loop above keeps running).
@@ -751,17 +829,21 @@ _Watch closely_"""
 
             analysis = analyze_portfolio(mode="event", event_context=event_context)
 
-            # Always forward Claude's verdict (ENTRY/EXIT/PASS). Full-trust user needs
-            # to see the decision, not just silent "no keyword matched".
             if analysis.startswith("⚠️ Analysis skipped"):
                 logger.info("Price alert analysis skipped: %s", analysis)
             elif "(keine Text-Analyse)" in analysis:
                 logger.info("Price alert: tool-only call, Telegram already sent by tool handler")
-            elif _is_actionable(analysis):
-                send_notification(f"💹 *PREIS-ALERT*\n\n{event_context}\n\n{analysis}")
-                logger.info("✅ Price alert verdict sent: %s", analysis.split('\n')[0][:80])
             else:
-                logger.info("Price alert non-actionable, suppressed: %s", analysis.split('\n')[0][:80])
+                parsed = _parse_actionable(analysis)
+                if parsed:
+                    send_actionable(
+                        parsed["action"], parsed["ticker"],
+                        size=None, reason=parsed["reason"],
+                        extras={"Move": event_context[:80]},
+                    )
+                    logger.info("✅ Price alert verdict sent: %s", analysis.split('\n')[0][:80])
+                else:
+                    logger.info("Price alert non-actionable, suppressed: %s", analysis.split('\n')[0][:80])
     except Exception:
         logger.exception("Price check failed")
 
@@ -832,28 +914,53 @@ def run_news_check():
 
             ctx = f"GEO NEWS: {headline} | Commodity-Play: {comms}"
             analysis = analyze_portfolio(mode="event", event_context=ctx, force=True)
-            if _is_actionable(analysis):
-                send_notification(
-                    f"📰 *GEO NEWS ALERT*\n\n_{headline}_\n\n🎯 Relevante Titel: `{comms}`"
+            parsed = _parse_actionable(analysis)
+            if parsed:
+                send_actionable(
+                    parsed["action"], parsed["ticker"],
+                    size=None, reason=parsed["reason"],
+                    extras={"GEO": headline[:80], "Setup": comms},
                 )
-                send_daily_summary(analysis)
             else:
-                logger.info("GEO news non-actionable, suppressed: %s", (analysis or "").split('\n')[0][:80])
+                logger.info("GEO news non-actionable, suppressed: %s",
+                            (analysis or "").split('\n')[0][:80])
 
-        # Stock news: always route to Claude. Output filter (_is_actionable) suppresses
-        # PASS/HALTEN so user only sees ENTRY/EXIT. Dropping news at input cost real
-        # signal (e.g. INL.DE earnings +20% without active watch-level).
+        # Stock news pre-gate: skip Claude call when ticker has neither open position
+        # nor active watch_level — no thesis to verify, no position to manage, no
+        # actionable verdict possible. Disable via NEWS_REQUIRE_OPEN_OR_WATCH=False.
+        if stocks and config.NEWS_REQUIRE_OPEN_OR_WATCH:
+            _pf = load_portfolio()
+            _relevant = (
+                {(t.get("ticker") or "").upper() for t in _pf.get("open_trades", [])}
+                | {(w.get("ticker") or "").upper() for w in _pf.get("watch_levels", [])}
+            )
+            _filtered = [
+                s for s in stocks
+                if (s.get("source_ticker") or "").upper() in _relevant
+            ]
+            if not _filtered:
+                logger.info("Stock news on irrelevant tickers, skipping Claude: %s",
+                            [s.get("source_ticker") for s in stocks])
+                stocks = []
+            else:
+                stocks = _filtered
+
         if stocks:
             headlines = " | ".join(e["headline"] for e in stocks[:3])
             tickers = list({e["source_ticker"] for e in stocks})
             logger.info("📰 STOCK NEWS (%d): %s", len(stocks), headlines[:120])
             ctx = f"NEWS: {headlines}"
             analysis = analyze_portfolio(mode="event", event_context=ctx)
-            if _is_actionable(analysis):
-                send_notification(f"📰 *NEWS ALERT* — {', '.join(tickers)}\n\n_{headlines}_")
-                send_daily_summary(analysis)
+            parsed = _parse_actionable(analysis)
+            if parsed:
+                send_actionable(
+                    parsed["action"], parsed["ticker"],
+                    size=None, reason=parsed["reason"],
+                    extras={"News": headlines[:80]},
+                )
             else:
-                logger.info("Stock news non-actionable, suppressed: %s", (analysis or "").split('\n')[0][:80])
+                logger.info("Stock news non-actionable, suppressed: %s",
+                            (analysis or "").split('\n')[0][:80])
 
     except Exception:
         logger.exception("News check failed")

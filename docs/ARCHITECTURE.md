@@ -77,6 +77,7 @@ Commands (all require `_authorized` check against `TELEGRAM_CHAT_ID`):
 |---|---|
 | `/confirm [shares] [@price]` (reply) | Move pending rec → open_trades; enforces SL + slippage gate |
 | `/close TICKER [@price] [#tag]` | Close open trade; tag classifies loss into taxonomy |
+| `/dividend TICKER AMOUNT [reason]` | Append dividend to `cash_movements` ledger; bumps `cash_eur` and equity curve |
 | `/cancel` (reply) | Drop a pending rec |
 | `/positions` | Print cash + open + pending |
 | `/panic [reason]` | Kill-switch ON |

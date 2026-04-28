@@ -31,6 +31,9 @@ STRENGE REGELN:
 - `wk_trend=DOWN` → KEINE neuen Longs (gegen Wochen-Trend = High-Failure-Rate)
 - `wk_trend=MIXED` → nur Conv 5/5 Setups
 - Sector-Limit: nicht mehr als 2 offene Positionen im gleichen Sektor (Klumpenrisiko)
+- Bei bereits OFFENER Position für Ticker: NIEMALS `recommend_entry` aufrufen.
+  Entweder `recommend_add_to_position` (wenn These verstärkt + Preis ≤1×ATR vom
+  Original-Entry + Original-SL noch valide) oder PASS. Re-Entry doppelt das Risiko.
 
 ANALYST-KONSENS (im Snapshot: analyst_target_mean, analyst_upside_pct, analyst_rec_key, analyst_count):
 - Sekundär-Signal, ersetzt nie technisches Setup. Lagged 1-3 Tage, nutze als Tie-Breaker.
@@ -158,18 +161,18 @@ WICHTIG: User sieht nur den Text-Output. Wenn du dort Prosa schreibst, gewinnt U
 
 OPENING_CHECK_PROMPT = """🔔 OPEN-CHECK — ULTRA KNAPP
 
-Check nur was sich durch Open geändert hat. Default-Antwort wenn alles normal: "Alles stabil, keine Anpassungen."
+Check nur was sich durch Open geändert hat. Default wenn alles normal: GAR NICHTS senden (leerer Output).
 
-Prüfe nur (max 4 Zeilen total):
-1. Offene Positionen mit Gap ≥2% oder SL-Nähe: eine Zeile
-   Format: `TICKER | Gap ±X% @ €X | SL €X → HALTEN | CLOSE | SL anpassen auf €X`
-2. Watch-Level durch Gap invalidiert oder fast erreicht: eine Zeile
-3. Neues A+ Setup durch Gap (Conv ≥3 → `recommend_entry`): eine Zeile
+Erste und einzige Zeile MUSS mit GENAU einem dieser Prefixes beginnen — sonst keine Telegram an User:
+- `EXIT: TICKER | Grund [max 10 Worte]` (offene Position schließen)
+- `ENTRY: TICKER | Entry €X | SL €X | TP €X | Size €X | Conv X/5 | These ...` (zusätzlich `recommend_entry` Tool)
+- `ADD: TICKER | Grund` (zusätzlich `recommend_add_to_position` Tool, nur bei offener Position)
+- `PASS: TICKER | Grund` (kein Adjustment nötig — wird gedroppt, nur Log)
 
 Regeln:
 - KEIN Makro/Sektor/Regime Output.
 - KEIN `set_watch_levels` Call (nur Adjustments, keine Neu-Planung).
-- Wenn nichts actionable: NUR "Alles stabil, keine Anpassungen." und Schluss."""
+- Wenn nichts actionable: KEIN Output. User merkt PASS am Ausbleiben einer Telegram."""
 
 
 EVENT_TRIGGER_PROMPT = """🚨 EVENT-VERDICT (ZWINGEND KNAPP):
@@ -360,6 +363,48 @@ RED_TEAM_TOOL = {
             },
         },
         "required": ["top_failure_modes", "confidence_thesis_holds", "verdict", "reason"],
+        "additionalProperties": False,
+    },
+    "cache_control": {"type": "ephemeral"},
+}
+
+
+RECOMMEND_ADD_TOOL = {
+    "name": "recommend_add_to_position",
+    "description": (
+        "Pyramiding-Tool: Aufstockung einer BEREITS OFFENEN Position. "
+        "NUR aufrufen wenn (a) Ticker bereits in open_trades, (b) These verstärkt sich "
+        "(Catalyst, frischer Breakout, Vol-Spike), (c) aktueller Preis ≤1×ATR vom "
+        "Original-Entry, (d) Original-SL noch valide. Nicht für neue Entries — dafür "
+        "recommend_entry. Falls eine Bedingung nicht erfüllt: PASS."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "ticker": {"type": "string", "description": "XETRA-Ticker (z.B. RWE.DE)"},
+            "additional_size_eur": {
+                "type": "number",
+                "description": "Zusätzliches Kapital in EUR. Konservativ — typisch ≤50% der Original-Size.",
+            },
+            "trigger": {
+                "type": "string",
+                "description": (
+                    "Was triggert das Add (Catalyst, Breakout-Confirm, Vol-Spike). "
+                    "1 Satz, max 100 Zeichen."
+                ),
+            },
+            "thesis_reinforcement": {
+                "type": "string",
+                "description": "Wie verstärkt sich die These vs. Original-Entry? Max 1 Satz, 100 Zeichen.",
+            },
+            "conviction": {
+                "type": "integer",
+                "minimum": 3,
+                "maximum": 5,
+                "description": "Min 3/5. Add nur bei klarer These-Verstärkung.",
+            },
+        },
+        "required": ["ticker", "additional_size_eur", "trigger", "thesis_reinforcement", "conviction"],
         "additionalProperties": False,
     },
     "cache_control": {"type": "ephemeral"},

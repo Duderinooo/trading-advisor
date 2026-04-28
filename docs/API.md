@@ -78,6 +78,21 @@ Alle Commands werden im **Chat mit deinem Bot** gesendet. Nur die in `TELEGRAM_C
 
 Buchung: P&L berechnet, `closed_trades` aktualisiert, Cash zurück, Brier-Score für Kalibrierung.
 
+### `/dividend TICKER AMOUNT [grund]` — Dividende verbuchen
+
+```
+/dividend RWE.DE 12.50 Q1 2026 Dividende
+/dividend MSF.DE 4.20
+```
+
+Trade Republic zahlt Dividenden direkt auf Cash aus. Da der Bot kein Broker-API hat, muss der Eintrag manuell erfolgen, sonst driftet `cash_eur` vom realen TR-Cash weg und die Equity-Curve unterzeichnet die Performance.
+
+- **Ticker-Pflicht:** muss in `open_trades` oder `closed_trades` existieren (Tippfehler-Schutz).
+- **AMOUNT:** positiver EUR-Betrag (Bruchteile erlaubt, z.B. `4.20`).
+- **grund:** rest-of-args optional → in `note`.
+
+Buchung: Eintrag in `cash_movements`-Ledger (`{date, amount, kind: "dividend", ticker, note}`), `cash_eur += amount`. Equity-Curve und Drawdown-State zählen Movements chronologisch zusammen mit `closed_trades` — Win-Rate / Brier / Calibration bleiben unberührt (Dividenden sind kein Trade).
+
 ### `/cancel` — Pending-Empfehlung verwerfen
 
 ```
@@ -181,6 +196,7 @@ Negative Edge → size = 0 → kein Trade.
   "closed_trades": [ /* gleiche Shape + exit_price, pnl_eur, pnl_pct, brier, outcome */ ],
   "pending_recommendations": [ /* warten auf /confirm */ ],
   "watch_levels": [ /* Bot-gesetzte Breakout-Level */ ],
+  "cash_movements": [ /* Dividenden etc., {date, amount, kind, ticker, note} */ ],
   "cash_eur": 905.84,
   "total_capital_eur": 1000.00,
   "last_updated": "2026-04-24 10:15",

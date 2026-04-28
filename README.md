@@ -17,6 +17,7 @@ Telegram (nach Start):
 - `/positions` — Portfolio + Pending
 - `/confirm` (reply) — Empfehlung übernehmen
 - `/close TICKER` — Position schließen
+- `/dividend TICKER AMOUNT [grund]` — Dividende verbuchen
 - `/cancel` (reply) — Pending verwerfen
 - `/help` — alle Befehle
 
@@ -121,7 +122,7 @@ core/
   market_data.py      yfinance-Wrapper + Cache
   prompts.py          System + User-Prompts, Tool-Schemas
   api_usage.py        Rate-Limiting
-telegram_listener.py  /confirm /close /positions /cancel /help
+telegram_listener.py  /confirm /close /dividend /positions /cancel /help
 notifier.py           Telegram-Send
 memory.py             MemPalace-Integration
 macro.py              Econ-Calendar

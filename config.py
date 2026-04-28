@@ -203,6 +203,20 @@ RISK_OFF_BLOCKS_LONGS = True
 RED_TEAM_ENABLED = True
 RED_TEAM_MIN_CONFIDENCE = 0.55  # confidence-of-thesis < 0.55 → block
 
+# Setup-quality gate blocks → log+dashboard only, no Telegram (Audit 2026-04-27,
+# RWE.DE triple-message bug). Only portfolio-wide safety pages the user.
+GATE_BLOCK_NOTIFY_WHITELIST = {"risk_halt"}
+
+# Stock-news pre-gate: skip Claude call when ticker has neither open position
+# nor active morning watch_level — no thesis to verify, no position to manage,
+# no actionable verdict possible. Set False to restore the CLAUDE.md "filter at
+# output, not input" rule (every news headline goes to Claude).
+NEWS_REQUIRE_OPEN_OR_WATCH = True
+
+# ADD-tool invariants: pyramiding only allowed when (a) price still within X×ATR
+# of original entry, (b) added size won't push position over MAX_POSITION_SIZE_PERCENT.
+ADD_MAX_PRICE_DRIFT_ATR = 1.0
+
 # Valid mistake taxonomy tags (guide classes: prediction/timing/execution/external)
 MISTAKE_TAGS = {
     "thesis_wrong",    # prediction error

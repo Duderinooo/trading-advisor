@@ -107,6 +107,127 @@ def _parse_close_args(args: list[str]) -> tuple[str | None, float | None, str | 
     return ticker, exit_price, tag
 
 
+async def _handle_add_confirm(
+    update: Update,
+    rec: dict,
+    rec_idx: int,
+    pending: list,
+    portfolio: dict,
+    ticker_arg: str | None,
+    price_override: float | None,
+    shares_override: float | None,
+) -> None:
+    """ADD-confirm: pyramid into existing position. Caller holds portfolio_lock."""
+    ticker = (rec.get("ticker") or "").upper()
+    add_size_eur = float(rec.get("additional_size_eur") or 0)
+
+    open_trade = next(
+        (t for t in portfolio.get("open_trades", [])
+         if (t.get("ticker") or "").upper() == ticker),
+        None,
+    )
+    if open_trade is None:
+        pending.pop(rec_idx)
+        portfolio["pending_recommendations"] = pending
+        save_portfolio(portfolio)
+        await update.message.reply_text(
+            f"❌ ADD verworfen: keine offene Position für {ticker} mehr.",
+        )
+        return
+
+    # Live-pull when no @price (consistent with entry-flow). Avoid stale rec time.
+    fill_price: float | None = price_override
+    if fill_price is None:
+        try:
+            live = get_market_data([ticker]).get(ticker, {})
+            lp = live.get("price") if isinstance(live, dict) else None
+            if isinstance(lp, (int, float)) and lp > 0:
+                fill_price = float(lp)
+        except Exception:
+            logger.exception("ADD live-price fetch failed")
+    if not fill_price or fill_price <= 0:
+        await update.message.reply_text(
+            f"❌ Kein gültiger Preis für ADD {ticker}. `@PREIS` angeben.",
+        )
+        return
+
+    # Risk-halt re-check at confirm time
+    halt = risk_halt_status(portfolio)
+    if halt["halt"]:
+        await update.message.reply_text(
+            "⛔ *Risk-Halt aktiv — ADD blockiert*\n"
+            + "\n".join(f"• {r}" for r in halt["reasons"]),
+            parse_mode="Markdown",
+        )
+        return
+
+    if shares_override is not None:
+        added_shares = float(shares_override)
+        actual_added = round(added_shares * fill_price, 2)
+    else:
+        added_shares = round(add_size_eur / fill_price, 4) if fill_price > 0 else 0.0
+        if added_shares <= 0:
+            added_shares = 1.0
+        actual_added = round(added_shares * fill_price, 2)
+
+    cash = float(portfolio.get("cash_eur", 0) or 0)
+    if actual_added > cash + 0.01:
+        max_shares = round(cash / fill_price, 4) if fill_price > 0 else 0
+        await update.message.reply_text(
+            f"⚠️ Nicht genug Cash für ADD: brauche €{actual_added:.2f}, habe €{cash:.2f}.\n"
+            f"Max möglich: {max_shares} Stück.",
+        )
+        return
+
+    # Weighted-avg entry: aggregates positions so SL/TP math + Brier on aggregate.
+    old_shares = float(open_trade.get("shares", 0) or 0)
+    old_size = float(open_trade.get("size_eur", 0) or 0)
+    old_entry = float(open_trade.get("entry_price", 0) or 0)
+    new_shares = round(old_shares + added_shares, 4)
+    new_size = round(old_size + actual_added, 2)
+    new_entry = round(new_size / new_shares, 4) if new_shares > 0 else fill_price
+
+    open_trade["shares"] = new_shares
+    open_trade["size_eur"] = new_size
+    open_trade["entry_price"] = new_entry
+    open_trade.setdefault("add_history", []).append({
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "added_shares": added_shares,
+        "added_size_eur": actual_added,
+        "fill_price": fill_price,
+        "trigger": rec.get("trigger"),
+        "thesis_reinforcement": rec.get("thesis_reinforcement"),
+        "conviction": rec.get("conviction"),
+    })
+
+    portfolio["cash_eur"] = round(cash - actual_added, 2)
+    pending.pop(rec_idx)
+    portfolio["pending_recommendations"] = pending
+    save_portfolio(portfolio)
+
+    if MEMPALACE_AVAILABLE:
+        try:
+            log_trade(open_trade, "ADDED", rec.get("thesis_reinforcement", ""))
+        except Exception:
+            logger.exception("MemPalace log_trade ADD failed")
+
+    sl = open_trade.get("stop_loss")
+    sl_str = f"€{sl:.2f}" if sl else "–"
+    tp = open_trade.get("take_profit")
+    tp_str = (
+        " / ".join(f"€{t:.2f}" for t in tp) if isinstance(tp, list)
+        else (f"€{tp:.2f}" if tp else "–")
+    )
+    await update.message.reply_text(
+        f"✅ *{ticker} aufgestockt*\n"
+        f"+{added_shares:g} × €{fill_price:.2f} = €{actual_added:.2f}\n"
+        f"Neu: {new_shares:g} Stk | Avg-Entry €{new_entry:.4f} | Σ €{new_size:.2f}\n"
+        f"SL: {sl_str} | TP: {tp_str}\n"
+        f"Cash: €{portfolio['cash_eur']:.2f}",
+        parse_mode="Markdown",
+    )
+
+
 async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _authorized(update):
         return
@@ -165,6 +286,16 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     return
             except ValueError:
                 pass
+
+        # ADD-Flow: pyramiding into existing position. Weighted-avg entry, no new
+        # open_trades entry, original SL/TP preserved. Slippage gate is skipped
+        # because ADD has no rec_entry baseline (Claude says "add at market").
+        if rec.get("kind") == "add":
+            await _handle_add_confirm(
+                update, rec, rec_idx, pending, portfolio,
+                ticker_arg, price_override, shares_override,
+            )
+            return
 
         rec_entry = float(rec.get("entry_price", 0) or 0)
         # Live-price pull when user didn't supply @price.

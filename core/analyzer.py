@@ -14,7 +14,7 @@ from anthropic import Anthropic
 from dotenv import load_dotenv
 
 import config
-from notifier import send_notification as _notify
+from notifier import send_notification as _notify, send_actionable
 from memory import (
     log_trade, log_analysis, build_history_context, MEMPALACE_AVAILABLE,
 )
@@ -24,7 +24,7 @@ from core.api_usage import can_make_api_call, increment_usage
 from core.gate_log import log_gate
 from core.prompts import (
     STRATEGY_SYSTEM, MORNING_PREP_PROMPT, OPENING_CHECK_PROMPT, EVENT_TRIGGER_PROMPT,
-    WATCH_LEVELS_TOOL, RECOMMEND_ENTRY_TOOL,
+    WATCH_LEVELS_TOOL, RECOMMEND_ENTRY_TOOL, RECOMMEND_ADD_TOOL,
     RED_TEAM_SYSTEM, RED_TEAM_TOOL,
 )
 from core.portfolio import (
@@ -283,21 +283,25 @@ def analyze_portfolio(mode: str = "standard", event_context: str = None, force: 
         system_prompt = STRATEGY_SYSTEM + "\n\n" + MORNING_PREP_PROMPT
         system_prompt += (
             "\n\nWICHTIG: Rufe IMMER `set_watch_levels` auf (auch mit leerer Liste). "
-            "Bei A+-Setup mit Conviction ≥3/5: AUCH `recommend_entry` aufrufen."
+            "Bei A+-Setup mit Conviction ≥3/5: AUCH `recommend_entry` aufrufen. "
+            "Bei verstärkter These einer bestehenden offenen Position: `recommend_add_to_position`."
         )
         context_intro = "MORNING"
-        tools = [WATCH_LEVELS_TOOL, RECOMMEND_ENTRY_TOOL]
+        tools = [WATCH_LEVELS_TOOL, RECOMMEND_ENTRY_TOOL, RECOMMEND_ADD_TOOL]
     elif mode == "opening":
         system_prompt = STRATEGY_SYSTEM + "\n\n" + OPENING_CHECK_PROMPT
         context_intro = f"OPEN-CHECK {event_context or ''}".strip()
-        tools = [RECOMMEND_ENTRY_TOOL]
+        tools = [RECOMMEND_ENTRY_TOOL, RECOMMEND_ADD_TOOL]
     elif mode == "event":
         system_prompt = STRATEGY_SYSTEM + "\n\n" + EVENT_TRIGGER_PROMPT
-        system_prompt += "\n\nBei ENTRY-Empfehlung mit Conviction ≥3/5: `recommend_entry` aufrufen."
+        system_prompt += (
+            "\n\nBei ENTRY-Empfehlung mit Conviction ≥3/5: `recommend_entry` aufrufen. "
+            "Bei verstärkter These einer offenen Position (Catalyst, Vol-Spike): `recommend_add_to_position`."
+        )
         context_intro = f"🚨 EVENT: {event_context}"
         # Watch-Levels sind Morning-Domain. Event-Mode darf sie nicht überschreiben
         # (Bug 2026-04-27: News-Event-Call rief set_watch_levels([]) und löschte 5 Morning-Levels).
-        tools = [RECOMMEND_ENTRY_TOOL]
+        tools = [RECOMMEND_ENTRY_TOOL, RECOMMEND_ADD_TOOL]
     else:
         system_prompt = STRATEGY_SYSTEM
         context_intro = "Standard-Analyse"
@@ -368,17 +372,20 @@ def analyze_portfolio(mode: str = "standard", event_context: str = None, force: 
         )
     elif mode == "opening":
         format_header = (
-            "🚨 OUTPUT-REGEL (ZWINGEND): Erste und einzige Zeile:\n"
-            "  • `Alles stabil, keine Anpassungen.` (wenn nichts ändert sich)\n"
-            "  • Oder GENAU eine Zeile pro actionable Item.\n"
-            "KEIN Internal Analysis Block.\n\n"
+            "🚨 OUTPUT-REGEL (ZWINGEND): Erste Zeile MUSS mit GENAU einem Prefix beginnen:\n"
+            "  • `EXIT: TICKER | Grund [max 10 Worte]`\n"
+            "  • `ENTRY: TICKER | Entry €X | SL €X | TP €X | Size €X | Conv X/5 | These ...` (+ recommend_entry Tool)\n"
+            "  • `ADD: TICKER | Grund` (+ recommend_add_to_position Tool, nur bei offener Position)\n"
+            "  • `PASS: TICKER | Grund` (kein Adjustment — wird gedroppt)\n"
+            "Wenn nichts actionable: KEIN Output. KEIN Internal Analysis Block.\n\n"
         )
     elif mode == "event":
         format_header = (
             "🚨 OUTPUT-REGEL (ZWINGEND): Genau EINE Zeile, beginnend mit:\n"
-            "  • `ENTRY: ...`  (bei A+ Setup mit Conv ≥3, zusätzlich recommend_entry Tool)\n"
-            "  • `EXIT: ...`   (offene Position schließen)\n"
-            "  • `PASS: TICKER | Grund`  (kein Edge — kurz warum)\n"
+            "  • `ENTRY: TICKER | Entry €X | SL €X | TP €X | Size €X | Conv X/5 | These ...` (+ recommend_entry Tool, Conv ≥3)\n"
+            "  • `EXIT: TICKER @ €X | Grund`\n"
+            "  • `ADD: TICKER | Grund` (+ recommend_add_to_position Tool, nur bei offener Position)\n"
+            "  • `PASS: TICKER | Grund` (kein Edge — kurz warum)\n"
             "KEIN Internal Analysis Block, KEIN Reasoning-Text. User braucht Entscheidung, nicht Begründung.\n\n"
         )
 
@@ -591,6 +598,7 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
     text_parts = []
     new_levels = None
     entry_recommendation = None
+    add_recommendation = None
     tool_use_blocks = []
 
     for block in response.content:
@@ -603,6 +611,8 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 new_levels = (block.input or {}).get("levels", [])
             elif name == "recommend_entry":
                 entry_recommendation = block.input or {}
+            elif name == "recommend_add_to_position":
+                add_recommendation = block.input or {}
             tool_use_blocks.append(block)
 
     # 2-Turn-Flow: tool calls without text → send tool_result back for summary.
@@ -614,6 +624,9 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             elif tb.name == "recommend_entry":
                 rec_ticker = (entry_recommendation or {}).get("ticker", "?")
                 result_text = f"Entry-Empfehlung für {rec_ticker} gespeichert."
+            elif tb.name == "recommend_add_to_position":
+                add_ticker = (add_recommendation or {}).get("ticker", "?")
+                result_text = f"Add-Empfehlung für {add_ticker} gespeichert."
             else:
                 result_text = "OK"
             tool_result_content.append({
@@ -648,6 +661,25 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
     rec = None
     message_id: int | None = None
 
+    if entry_recommendation:
+        # Already-open silent drop: Claude got confused and called recommend_entry on
+        # a ticker we already hold. Re-entry doubles position risk and can't pass the
+        # /confirm flow cleanly. Pyramiding goes through recommend_add_to_position.
+        # (Bug 2026-04-27: RWE.DE re-entry rec triggered news+entry+blocked triple-msg.)
+        _t = (entry_recommendation.get("ticker") or "").upper()
+        _open_tickers = {
+            (tr.get("ticker") or "").upper()
+            for tr in load_portfolio().get("open_trades", [])
+        }
+        if _t in _open_tickers:
+            log_gate(
+                _t, "already_open", True,
+                "ticker has open position — re-entry suppressed (use recommend_add_to_position)",
+                {},
+            )
+            logger.info("Entry suppressed: %s already open (Claude should use recommend_add)", _t)
+            entry_recommendation = None
+
     if entry_recommendation and mode == "event":
         # Sonnet→Haiku-Pattern: Event-Mode (Haiku) darf nur entries empfehlen, deren
         # Ticker bereits ein aktives Morning-Watch-Level hat. Sonnet baut die Thesen,
@@ -669,10 +701,6 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 "no morning watch_level for event-mode entry",
                 {"ticker": _t},
             )
-            _notify(
-                f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
-                f"Event-Mode-Entry ohne Morning-Watch-Level. Sonnet-Morgen muss These erst eingefroren haben."
-            )
             entry_recommendation = None
         else:
             # Stamp the morning thesis on the rec so downstream (telegram alert,
@@ -689,7 +717,8 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             reason = " | ".join(_halt["reasons"])
             logger.warning("Entry BLOCKED by risk halt: %s", reason)
             log_gate(entry_recommendation.get("ticker", "?"), "risk_halt", True, reason, _halt.get("metrics"))
-            _notify(f"⛔ *ENTRY BLOCKIERT* ({entry_recommendation.get('ticker','?')})\n{reason}")
+            if "risk_halt" in config.GATE_BLOCK_NOTIFY_WHITELIST:
+                _notify(f"⛔ *ENTRY BLOCKIERT* ({entry_recommendation.get('ticker','?')})\n{reason}")
             entry_recommendation = None
 
     if entry_recommendation and config.RISK_OFF_BLOCKS_LONGS and regime.startswith("RISK_OFF"):
@@ -699,10 +728,6 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             log_gate(
                 entry_recommendation.get("ticker", "?"), "regime", True,
                 f"RISK_OFF + LONG (regime={regime})", {"regime": regime},
-            )
-            _notify(
-                f"⛔ *ENTRY BLOCKIERT* ({entry_recommendation.get('ticker','?')})\n"
-                f"Regime={regime} → keine neuen Longs (conservative bias)."
             )
             entry_recommendation = None
 
@@ -726,10 +751,6 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 entry_recommendation.get("ticker", "?"), "no_entry_zone", True,
                 f"window {_blocked_window}", {"window": _blocked_window},
             )
-            _notify(
-                f"⛔ *ENTRY BLOCKIERT* ({entry_recommendation.get('ticker','?')})\n"
-                f"No-Entry-Zone {_blocked_window} — Auction/EOD-Chop, schlechte Fills."
-            )
             entry_recommendation = None
 
     if entry_recommendation:
@@ -750,10 +771,6 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 log_gate(_t, "sl_distance", True,
                          f"SL {_sl_dist_atr:.2f}×ATR < {config.MIN_SL_DISTANCE_ATR}",
                          {"sl_dist_atr": round(_sl_dist_atr, 2), "kind": "tight"})
-                _notify(
-                    f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
-                    f"SL {_sl_dist_atr:.2f}×ATR < {config.MIN_SL_DISTANCE_ATR} → Whipsaw-Risk."
-                )
                 entry_recommendation = None
             elif _sl_dist_atr > config.MAX_SL_DISTANCE_ATR:
                 logger.warning(
@@ -763,10 +780,6 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 log_gate(_t, "sl_distance", True,
                          f"SL {_sl_dist_atr:.2f}×ATR > {config.MAX_SL_DISTANCE_ATR}",
                          {"sl_dist_atr": round(_sl_dist_atr, 2), "kind": "wide"})
-                _notify(
-                    f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
-                    f"SL {_sl_dist_atr:.2f}×ATR > {config.MAX_SL_DISTANCE_ATR} → Risk pro Trade gesprengt."
-                )
                 entry_recommendation = None
 
     if entry_recommendation:
@@ -799,11 +812,6 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 f"edge {_edge:.3f} < {config.MIN_EXPECTED_EDGE}",
                 {"edge": round(_edge, 3), "p_raw": _p_raw, "p_adj": _p_adj, "haircut": _haircut},
             )
-            _notify(
-                f"⛔ *ENTRY BLOCKIERT* ({entry_recommendation.get('ticker','?')})\n"
-                f"Edge {_edge:.3f} < {config.MIN_EXPECTED_EDGE} (p·b−(1−p))"
-                + (f" | p_win {_p_raw}→{_p_adj:.2f} (Brier-Haircut {_haircut:+.2f})" if _haircut > 0 else "")
-            )
             entry_recommendation = None
 
     if entry_recommendation:
@@ -823,11 +831,6 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 log_gate(_t, "sector", True,
                          f"{_sector} {len(_current)}/{config.MAX_POSITIONS_PER_SECTOR}",
                          {"sector": _sector, "current": _current})
-                _notify(
-                    f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
-                    f"Sektor `{_sector}` bereits voll: {len(_current)}/{config.MAX_POSITIONS_PER_SECTOR} "
-                    f"({', '.join(_current)}). Cluster-Risiko."
-                )
                 entry_recommendation = None
 
     if entry_recommendation:
@@ -894,10 +897,6 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
         if _direction == "LONG" and _wk == "DOWN":
             logger.warning("Entry BLOCKED by weekly-trend gate: %s LONG vs wk_trend=DOWN", _t)
             log_gate(_t, "weekly_trend", True, "LONG vs wk_trend=DOWN", {"wk_trend": _wk})
-            _notify(
-                f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
-                f"Weekly-Trend DOWN — kein Long gegen primären Trend."
-            )
             entry_recommendation = None
 
     if entry_recommendation:
@@ -916,11 +915,6 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 log_gate(_t, "earnings", True,
                          f"earnings in {_w['days_until']}d",
                          {"days_until": _w["days_until"], "earnings_date": _w["earnings_date"]})
-                _notify(
-                    f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
-                    f"Earnings in {_w['days_until']} Tag(en) ({_w['earnings_date']}). "
-                    f"Gap-Risiko zu hoch — auf Post-Earnings-Drift warten."
-                )
                 entry_recommendation = None
 
     if entry_recommendation:
@@ -939,11 +933,6 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 log_gate(_t, "relative_strength", True,
                          f"rs_20d {_rs:+.1f}pp < {config.MIN_RS_20D_VS_INDEX_PCT}pp",
                          {"rs_20d": _rs, "setup": _setup})
-                _notify(
-                    f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
-                    f"Relative-Strength {_rs:+.1f}pp vs Index < {config.MIN_RS_20D_VS_INDEX_PCT}pp. "
-                    f"Lagger im Aufwärtstrend — kein Long. Override: setup_type=mean_reversion/reversal_oversold/gap_fill."
-                )
                 entry_recommendation = None
 
     if entry_recommendation:
@@ -960,11 +949,6 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 log_gate(_t, "breakout_volume", True,
                          f"vol_ratio {_vr:.2f} < {config.MIN_BREAKOUT_VOLUME_RATIO}",
                          {"vol_ratio": _vr})
-                _notify(
-                    f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
-                    f"Breakout-Setup ohne Volumen-Bestätigung (vol_ratio {_vr:.2f} < {config.MIN_BREAKOUT_VOLUME_RATIO}). "
-                    f"Fake-Breakout-Risk."
-                )
                 entry_recommendation = None
 
     if entry_recommendation:
@@ -985,11 +969,6 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             log_gate(_t, "confluence", True,
                      f"score {_conf['score']}/10 < {_min_conf}",
                      {"score": _conf["score"], "min": _min_conf, "missing": _conf.get("missing") or []})
-            _notify(
-                f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
-                f"Confluence-Score {_conf['score']}/10 < {_min_conf} (setup={_setup}). "
-                f"Fehlend: {', '.join(_conf.get('missing') or [])}"
-            )
             entry_recommendation = None
         else:
             entry_recommendation["confluence_score"] = _conf["score"]
@@ -1014,12 +993,6 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                     log_gate(_t, "correlation", True,
                              f"{len(_high)} corr ≥ {config.MAX_CORRELATION}",
                              {"high_corrs": _high})
-                    _notify(
-                        f"⛔ *ENTRY BLOCKIERT* ({_t})\n"
-                        f"Korrelation ≥{config.MAX_CORRELATION} mit {len(_high)} bestehenden Positionen: "
-                        + ", ".join(f"{h}={c:.2f}" for h, c in _high.items())
-                        + f". Cluster-Risk über Sektor-Cap hinaus."
-                    )
                     entry_recommendation = None
                 elif _corrs:
                     entry_recommendation["correlations"] = _corrs
@@ -1159,16 +1132,15 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             )
 
         # Anchor message for reply-based /confirm. User replies `/confirm 3` on this post.
+        # Schema header (🎯 ACTION | TICKER | SIZE) matches send_actionable() format so
+        # all actionable telegrams visually rhyme. Rich body needed for /confirm flow.
         message_id = _notify(
-            f"🎯 *ENTRY EMPFEHLUNG: {_ticker}*\n\n"
-            f"Entry: €{_entry:.2f} | SL: €{_sl:.2f}\n"
-            f"TP: {_tp_str}\n"
-            f"Kauf: {_shares_str} à €{_entry:.2f} = €{_actual_size:.2f} "
-            f"({_pct_cap:.1f}% Kapital, Cash €{_cash:.0f})\n"
-            f"Risk bei SL: €{_risk_eur:.2f} ({_risk_pct:.2f}% Kapital) | Conv: {_conv}/5\n"
-            f"Hold: {_hmin}-{_hmax} Tage{_trail_line}\n"
+            f"🎯 *ENTRY* | `{_ticker}` | {_shares_str} à €{_entry:.2f} = €{_actual_size:.2f}\n"
+            f"Grund: {_thesis}\n"
+            f"Conv {_conv}/5\n"
+            f"SL €{_sl:.2f} | TP {_tp_str} | Risk €{_risk_eur:.2f} ({_risk_pct:.2f}% Kap.) | "
+            f"Hold {_hmin}-{_hmax}d | Cash €{_cash:.0f}{_trail_line}"
             f"{_rt_block}\n"
-            f"💡 _{_thesis}_\n\n"
             f"_Reply `/confirm` (auto={_shares_str}) oder `/confirm <stück> @<preis>` für override._"
         )
         if message_id:
@@ -1176,6 +1148,101 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
         if MEMPALACE_AVAILABLE:
             log_trade(rec, "RECOMMENDED", rec.get("thesis", ""))
         logger.info("Entry recommendation: %s @ €%.2f (msg_id=%s)", _ticker, _entry, message_id)
+
+    # --- ADD recommendation handling (pyramiding into existing position) ---
+    add_rec_persisted = None
+    if add_recommendation:
+        _at = (add_recommendation.get("ticker") or "").upper()
+        _add_size = float(add_recommendation.get("additional_size_eur") or 0)
+        _add_pf = load_portfolio()
+        _open_pos = next(
+            (tr for tr in _add_pf.get("open_trades", [])
+             if (tr.get("ticker") or "").upper() == _at),
+            None,
+        )
+        if not _open_pos:
+            log_gate(_at, "add_no_position", True,
+                     "ADD on ticker without open position", {})
+            logger.info("ADD suppressed: %s has no open position", _at)
+        elif _add_size <= 0:
+            log_gate(_at, "add_invalid_size", True,
+                     f"additional_size_eur={_add_size}", {})
+            logger.info("ADD suppressed: %s invalid size %s", _at, _add_size)
+        else:
+            _orig_entry = float(_open_pos.get("entry_price") or 0)
+            _orig_size = float(_open_pos.get("size_eur") or 0)
+            _orig_sl = float(_open_pos.get("stop_loss") or 0)
+            _md = market_data.get(_at) or {}
+            _curr = _md.get("price")
+            _atr = _md.get("atr14")
+            _capital = float(_add_pf.get("total_capital_eur", config.BUDGET_EUR) or config.BUDGET_EUR)
+            _max_pos_eur = _capital * config.MAX_POSITION_SIZE_PERCENT / 100.0
+
+            _drift_ok = True
+            if isinstance(_curr, (int, float)) and isinstance(_atr, (int, float)) and _atr > 0:
+                _drift = abs(float(_curr) - _orig_entry)
+                if _drift > _atr * config.ADD_MAX_PRICE_DRIFT_ATR:
+                    log_gate(_at, "add_price_drift", True,
+                             f"|curr-orig| {_drift:.2f} > {config.ADD_MAX_PRICE_DRIFT_ATR}×ATR ({_atr:.2f})",
+                             {"curr": _curr, "orig": _orig_entry, "atr": _atr})
+                    logger.info(
+                        "ADD suppressed: %s price drift €%.2f > %.1f×ATR (%.2f) — fresh entry expected",
+                        _at, _drift, config.ADD_MAX_PRICE_DRIFT_ATR, _atr,
+                    )
+                    _drift_ok = False
+
+            _sl_ok = True
+            if _drift_ok and isinstance(_curr, (int, float)) and _orig_sl > 0:
+                if float(_curr) <= _orig_sl:
+                    log_gate(_at, "add_sl_breached", True,
+                             f"price {_curr} ≤ original SL {_orig_sl}",
+                             {"curr": _curr, "orig_sl": _orig_sl})
+                    logger.info("ADD suppressed: %s current %.2f ≤ original SL %.2f",
+                                _at, _curr, _orig_sl)
+                    _sl_ok = False
+
+            _size_ok = True
+            if _drift_ok and _sl_ok and _orig_size + _add_size > _max_pos_eur:
+                log_gate(_at, "add_oversize", True,
+                         f"orig €{_orig_size:.2f} + add €{_add_size:.2f} > max €{_max_pos_eur:.2f}",
+                         {"orig_size": _orig_size, "add_size": _add_size, "max_pos_eur": _max_pos_eur})
+                logger.info(
+                    "ADD suppressed: %s would push size €%.2f over %s%% cap (€%.2f)",
+                    _at, _orig_size + _add_size, config.MAX_POSITION_SIZE_PERCENT, _max_pos_eur,
+                )
+                _size_ok = False
+
+            if _drift_ok and _sl_ok and _size_ok:
+                _trigger = (add_recommendation.get("trigger") or "")[:120]
+                _reinforce = (add_recommendation.get("thesis_reinforcement") or "")[:120]
+                _add_conv = add_recommendation.get("conviction")
+                add_msg_id = send_actionable(
+                    "ADD",
+                    _at,
+                    f"+€{_add_size:.0f}",
+                    reason=_trigger or _reinforce or "Setup-Verstärkung",
+                    conviction=_add_conv if isinstance(_add_conv, int) else None,
+                    extras={
+                        "Verstärkung": _reinforce,
+                        "Bestand": f"€{_orig_size:.0f} @ €{_orig_entry:.2f}",
+                        "SL": f"€{_orig_sl:.2f}",
+                    },
+                )
+                add_rec_persisted = {
+                    "kind": "add",
+                    "ticker": _at,
+                    "additional_size_eur": _add_size,
+                    "trigger": _trigger,
+                    "thesis_reinforcement": _reinforce,
+                    "conviction": _add_conv,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "status": "pending",
+                    "message_id": add_msg_id,
+                }
+                log_gate(_at, "add_all_passed", False, "ADD approved",
+                         {"add_size": _add_size, "orig_size": _orig_size})
+                logger.info("ADD recommendation: %s +€%.2f (msg_id=%s)",
+                            _at, _add_size, add_msg_id)
 
     if MEMPALACE_AVAILABLE:
         log_analysis(analysis_text, mode, event_context)
@@ -1265,6 +1332,8 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             logger.info("Watch levels updated: %d level(s) registered", len(filtered))
         if rec is not None:
             fresh.setdefault("pending_recommendations", []).append(rec)
+        if add_rec_persisted is not None:
+            fresh.setdefault("pending_recommendations", []).append(add_rec_persisted)
         fresh["last_analysis"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         save_portfolio(fresh)
 

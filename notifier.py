@@ -174,6 +174,47 @@ def send_alert(title: str, message: str):
     send_notification(f"⚠️ *{title}*\n\n{message}")
 
 
+_VALID_ACTIONS = {"ENTRY", "EXIT", "ADD", "REDUCE", "CLOSE"}
+
+
+def send_actionable(
+    action: str,
+    ticker: str,
+    size: str | None,
+    reason: str,
+    *,
+    conviction: int | None = None,
+    extras: dict | None = None,
+) -> int | None:
+    """Schema-validated actionable trade signal.
+
+    Schema: 🎯 ACTION | TICKER | SIZE\\nGrund: REASON\\nConv X/5\\nextras...
+
+    Returns first message_id on success, None when validation drops the message
+    (logged as warning so the caller can grep what was suppressed).
+    """
+    a = (action or "").upper().strip()
+    if a not in _VALID_ACTIONS:
+        logger.warning("send_actionable rejected: action=%r not in %s", action, sorted(_VALID_ACTIONS))
+        return None
+    t = (ticker or "").upper().strip()
+    if not t or not (reason or "").strip():
+        logger.warning("send_actionable rejected: ticker=%r reason=%r", ticker, reason)
+        return None
+    reason_clean = reason.strip()[:200]
+    size_part = f" | {size}" if size else ""
+    conv_part = (
+        f"\nConv {conviction}/5"
+        if isinstance(conviction, int) and 1 <= conviction <= 5
+        else ""
+    )
+    extras_part = ""
+    if extras:
+        extras_part = "\n" + " | ".join(f"{k} {v}" for k, v in extras.items() if v)
+    msg = f"🎯 *{a}* | `{t}`{size_part}\nGrund: {reason_clean}{conv_part}{extras_part}"
+    return send_notification(msg)
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     send_notification("🤖 Trading Advisor bot is now running!")
