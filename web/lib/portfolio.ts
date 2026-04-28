@@ -13,6 +13,7 @@ export async function readPortfolio(): Promise<Portfolio> {
     open_trades: data.open_trades ?? [],
     closed_trades: data.closed_trades ?? [],
     watch_levels: data.watch_levels ?? [],
+    pending_recommendations: data.pending_recommendations ?? [],
     cash_eur: data.cash_eur ?? 0,
     total_capital_eur: data.total_capital_eur ?? 0,
     last_analysis: data.last_analysis,

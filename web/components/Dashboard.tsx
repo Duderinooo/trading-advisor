@@ -5,8 +5,11 @@ import type { Portfolio } from "@/lib/types";
 import {
   computeEquityCurve,
   computeHitStats,
+  computeSetupTypeStats,
   currentEquity,
   openExposure,
+  portfolioHeat,
+  todayRealizedLoss,
 } from "@/lib/compute";
 import { Card, Kpi } from "@/components/Card";
 import EquityChart from "@/components/EquityChart";
@@ -22,6 +25,10 @@ import WhatIfShock from "@/components/WhatIfShock";
 import ThesisDecay from "@/components/ThesisDecay";
 import MistakeTrend from "@/components/MistakeTrend";
 import BacktestReport from "@/components/BacktestReport";
+import PendingRecommendations from "@/components/PendingRecommendations";
+import SetupTypeBreakdown from "@/components/SetupTypeBreakdown";
+import HealthStatus from "@/components/HealthStatus";
+import BotActivityTimeline from "@/components/BotActivityTimeline";
 
 const REFRESH_MS = 30_000;
 
@@ -62,6 +69,12 @@ export default function Dashboard({ initial }: { initial: Portfolio }) {
     () => computeHitStats(portfolio.closed_trades),
     [portfolio.closed_trades],
   );
+  const setupStats = useMemo(
+    () => computeSetupTypeStats(portfolio.closed_trades),
+    [portfolio.closed_trades],
+  );
+  const dailyLoss = useMemo(() => todayRealizedLoss(portfolio), [portfolio]);
+  const heat = useMemo(() => portfolioHeat(portfolio), [portfolio]);
   const peak = curve.length ? curve[curve.length - 1].peak : equity;
   const dd = curve.length ? curve[curve.length - 1].dd_pct : 0;
   const totalReturn =
@@ -152,6 +165,21 @@ export default function Dashboard({ initial }: { initial: Portfolio }) {
           />
         </div>
 
+        <Card title="Health">
+          <HealthStatus
+            killSwitch={
+              portfolio.kill_switch ?? portfolio.kill_switch_active
+            }
+            killSwitchReason={portfolio.kill_switch_reason}
+            ddHalt={portfolio.dd_halt_active}
+            dailyLossPct={dailyLoss.pct}
+            heatPct={heat.pct}
+            openCount={portfolio.open_trades.length}
+            pendingCount={(portfolio.pending_recommendations ?? []).length}
+            watchCount={portfolio.watch_levels.length}
+          />
+        </Card>
+
         <Card title="Equity Curve">
           <EquityChart data={curve} />
         </Card>
@@ -195,12 +223,24 @@ export default function Dashboard({ initial }: { initial: Portfolio }) {
           <MistakeTrend closed={portfolio.closed_trades} />
         </Card>
 
+        <Card title="Setup-Type Performance (closed trades)">
+          <SetupTypeBreakdown stats={setupStats} />
+        </Card>
+
         <Card title="Gate-Attribution">
           <GateAttribution />
         </Card>
 
+        <Card title="Bot-Aktivität (chronologisch)">
+          <BotActivityTimeline />
+        </Card>
+
         <Card title="Backtest-Replay (gates × closed trades)">
           <BacktestReport />
+        </Card>
+
+        <Card title="Pending Recommendations">
+          <PendingRecommendations recs={portfolio.pending_recommendations} />
         </Card>
 
         <Card title="Watch Levels">

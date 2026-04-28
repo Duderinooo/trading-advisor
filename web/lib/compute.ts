@@ -8,6 +8,7 @@ import type {
   MistakeTrendPoint,
   OpenTrade,
   Portfolio,
+  SetupTypeStats,
   ShockResult,
   ThesisDecayFlag,
 } from "./types";
@@ -138,11 +139,61 @@ export function computeHitStats(closed: ClosedTrade[]): HitStats | null {
   };
 }
 
+export function computeSetupTypeStats(closed: ClosedTrade[]): SetupTypeStats[] {
+  const buckets = new Map<string, ClosedTrade[]>();
+  for (const t of closed) {
+    if (t.partial) continue;
+    const key = t.setup_type ?? "untagged";
+    const arr = buckets.get(key) ?? [];
+    arr.push(t);
+    buckets.set(key, arr);
+  }
+  const out: SetupTypeStats[] = [];
+  for (const [setup_type, trades] of buckets) {
+    const total = trades.length;
+    const wins = trades.filter((t) => (t.pnl_pct ?? 0) > 0).length;
+    const sumPnlPct = trades.reduce((s, t) => s + (t.pnl_pct ?? 0), 0);
+    const sumPnlEur = trades.reduce((s, t) => s + (t.pnl_eur ?? 0), 0);
+    out.push({
+      setup_type,
+      total,
+      wins,
+      win_rate: total > 0 ? Math.round((wins / total) * 1000) / 10 : 0,
+      avg_pnl_pct: total > 0 ? Math.round((sumPnlPct / total) * 100) / 100 : 0,
+      total_pnl_eur: Math.round(sumPnlEur * 100) / 100,
+    });
+  }
+  out.sort((a, b) => b.total - a.total);
+  return out;
+}
+
 export function currentEquity(p: Portfolio): number {
   let eq = p.total_capital_eur;
   for (const t of p.closed_trades) eq += Number(t.pnl_eur ?? 0);
   for (const m of p.cash_movements ?? []) eq += Number(m.amount ?? 0);
   return Math.round(eq * 100) / 100;
+}
+
+export function todayRealizedLoss(p: Portfolio): { eur: number; pct: number } {
+  const today = new Date().toISOString().slice(0, 10);
+  const todayClosed = p.closed_trades.filter(
+    (t) => (t.exit_date ?? "").startsWith(today),
+  );
+  const eur = todayClosed.reduce((s, t) => s + Number(t.pnl_eur ?? 0), 0);
+  const cap = p.total_capital_eur > 0 ? p.total_capital_eur : 1;
+  return { eur: Math.round(eur * 100) / 100, pct: (eur / cap) * 100 };
+}
+
+export function portfolioHeat(p: Portfolio): { eur: number; pct: number } {
+  let heat = 0;
+  for (const t of p.open_trades) {
+    const sl = Number(t.stop_loss ?? 0);
+    const entry = Number(t.entry_price ?? 0);
+    const sh = Number(t.shares ?? 0);
+    if (entry > sl && sl > 0 && sh > 0) heat += (entry - sl) * sh;
+  }
+  const cap = p.total_capital_eur > 0 ? p.total_capital_eur : 1;
+  return { eur: Math.round(heat * 100) / 100, pct: (heat / cap) * 100 };
 }
 
 export function openExposure(p: Portfolio): number {

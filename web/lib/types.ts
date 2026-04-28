@@ -5,6 +5,26 @@ export type RedTeamReview = {
   reason: string;
 };
 
+export type AddHistoryEntry = {
+  date: string;
+  added_shares: number;
+  added_size_eur: number;
+  fill_price: number;
+  trigger?: string;
+  thesis_reinforcement?: string;
+  conviction?: number;
+  source?: string;
+};
+
+export type UpdateHistoryEntry = {
+  date: string;
+  old_sl?: number | null;
+  new_sl?: number | null;
+  old_tp?: number | number[] | null;
+  new_tp?: number | number[] | null;
+  reason?: string;
+};
+
 export type OpenTrade = {
   ticker: string;
   entry_price: number;
@@ -23,6 +43,8 @@ export type OpenTrade = {
   hold_days_max?: number;
   hold_days_min?: number;
   red_team_review?: RedTeamReview;
+  add_history?: AddHistoryEntry[];
+  update_history?: UpdateHistoryEntry[];
 };
 
 export type ClosedTrade = {
@@ -57,6 +79,37 @@ export type WatchLevel = {
   type: string;
   trigger_price: number;
   note?: string;
+  thesis?: string;
+  valid_until?: string;
+  source?: string;
+};
+
+export type PendingRecommendation = {
+  kind?: "add" | "update" | "exit";
+  ticker: string;
+  timestamp?: string;
+  status?: string;
+  message_id?: number | null;
+  // ENTRY (kind absent)
+  entry_price?: number;
+  stop_loss?: number;
+  take_profit?: number | number[];
+  size_eur?: number;
+  conviction?: number;
+  thesis?: string;
+  setup_type?: string;
+  hold_days_min?: number;
+  hold_days_max?: number;
+  // ADD
+  additional_size_eur?: number;
+  trigger?: string;
+  thesis_reinforcement?: string;
+  // UPDATE
+  new_stop_loss?: number | null;
+  new_take_profit?: number | number[] | null;
+  reason?: string;
+  // EXIT
+  urgency?: "now" | "today" | "eod";
 };
 
 export type Heartbeat = {
@@ -85,6 +138,7 @@ export type Portfolio = {
   open_trades: OpenTrade[];
   closed_trades: ClosedTrade[];
   watch_levels: WatchLevel[];
+  pending_recommendations?: PendingRecommendation[];
   cash_eur: number;
   total_capital_eur: number;
   cash_movements?: CashMovement[];
@@ -154,6 +208,15 @@ export type EquityPoint = {
   equity: number;
   peak: number;
   dd_pct: number;
+};
+
+export type SetupTypeStats = {
+  setup_type: string;
+  total: number;
+  wins: number;
+  win_rate: number;
+  avg_pnl_pct: number;
+  total_pnl_eur: number;
 };
 
 export type HitStats = {
