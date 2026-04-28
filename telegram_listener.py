@@ -361,6 +361,121 @@ async def add_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def _handle_update_confirm(
+    update: Update,
+    rec: dict,
+    rec_idx: int,
+    pending: list,
+    portfolio: dict,
+) -> None:
+    """Apply Claude-recommended SL/TP update to existing open_trade. Caller holds lock."""
+    ticker = (rec.get("ticker") or "").upper()
+    open_trade = next(
+        (t for t in portfolio.get("open_trades", [])
+         if (t.get("ticker") or "").upper() == ticker),
+        None,
+    )
+    if open_trade is None:
+        pending.pop(rec_idx)
+        portfolio["pending_recommendations"] = pending
+        save_portfolio(portfolio)
+        await update.message.reply_text(
+            f"❌ UPDATE verworfen: keine offene Position für {ticker} mehr.",
+        )
+        return
+
+    new_sl = rec.get("new_stop_loss")
+    new_tp = rec.get("new_take_profit")
+    if new_sl is None and new_tp is None:
+        await update.message.reply_text(
+            f"❌ UPDATE leer: weder neuer SL noch TP gesetzt für {ticker}.",
+        )
+        return
+
+    old_sl = open_trade.get("stop_loss")
+    old_tp = open_trade.get("take_profit")
+    if new_sl is not None:
+        open_trade["stop_loss"] = float(new_sl)
+    if new_tp is not None:
+        # Normalize to list[float] for consistency with TP1/TP2 logic
+        open_trade["take_profit"] = (
+            [float(x) for x in new_tp] if isinstance(new_tp, list) else [float(new_tp)]
+        )
+    open_trade.setdefault("update_history", []).append({
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "old_sl": old_sl,
+        "new_sl": new_sl,
+        "old_tp": old_tp,
+        "new_tp": new_tp,
+        "reason": rec.get("reason"),
+    })
+
+    pending.pop(rec_idx)
+    portfolio["pending_recommendations"] = pending
+    save_portfolio(portfolio)
+
+    if MEMPALACE_AVAILABLE:
+        try:
+            log_trade(open_trade, "UPDATED", rec.get("reason", ""))
+        except Exception:
+            logger.exception("MemPalace log_trade UPDATE failed")
+
+    new_sl_str = f"€{float(new_sl):.2f}" if new_sl is not None else "(unverändert)"
+    new_tp_str = (
+        " / ".join(f"€{t:.2f}" for t in open_trade["take_profit"])
+        if isinstance(open_trade["take_profit"], list) else "?"
+    )
+    old_sl_str = f"€{old_sl:.2f}" if isinstance(old_sl, (int, float)) else "–"
+    old_tp_str = (
+        " / ".join(f"€{t:.2f}" for t in old_tp) if isinstance(old_tp, list)
+        else (f"€{old_tp:.2f}" if isinstance(old_tp, (int, float)) else "–")
+    )
+    await update.message.reply_text(
+        f"🔧 *{ticker} SL/TP aktualisiert*\n"
+        f"SL: {old_sl_str} → {new_sl_str}\n"
+        f"TP: {old_tp_str} → {new_tp_str}\n"
+        f"Grund: _{rec.get('reason', '–')}_",
+        parse_mode="Markdown",
+    )
+
+
+async def _handle_exit_confirm(
+    update: Update,
+    rec: dict,
+    rec_idx: int,
+    pending: list,
+    portfolio: dict,
+) -> None:
+    """User accepts Claude-recommended exit. We don't auto-close — user has to
+    sell on TR first (we don't have broker API). After TR fill, user runs
+    /close TICKER @PREIS [#tag]. /confirm here just acknowledges + primes."""
+    ticker = (rec.get("ticker") or "").upper()
+    open_trade = next(
+        (t for t in portfolio.get("open_trades", [])
+         if (t.get("ticker") or "").upper() == ticker),
+        None,
+    )
+    if open_trade is None:
+        pending.pop(rec_idx)
+        portfolio["pending_recommendations"] = pending
+        save_portfolio(portfolio)
+        await update.message.reply_text(
+            f"ℹ️ EXIT-Rec für {ticker} verworfen — Position bereits geschlossen.",
+        )
+        return
+
+    pending.pop(rec_idx)
+    portfolio["pending_recommendations"] = pending
+    save_portfolio(portfolio)
+
+    await update.message.reply_text(
+        f"✅ *EXIT bestätigt: {ticker}*\n"
+        f"Verkaufe jetzt auf TR. Nach Fill: `/close {ticker} @PREIS`\n"
+        f"_(optional bei Verlust: `#thesis_wrong / #timing_late / #news_shock` etc.)_",
+        parse_mode="Markdown",
+    )
+
+
 async def _handle_add_confirm(
     update: Update,
     rec: dict,
@@ -549,6 +664,19 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 update, rec, rec_idx, pending, portfolio,
                 ticker_arg, price_override, shares_override,
             )
+            return
+
+        # UPDATE-Flow: Sonnet/Haiku raised SL or TP based on new market info.
+        # Apply directly to open_trade. No fill required.
+        if rec.get("kind") == "update":
+            await _handle_update_confirm(update, rec, rec_idx, pending, portfolio)
+            return
+
+        # EXIT-Flow: Claude-recommended exit. Doesn't actually close (user closes
+        # on TR + sends /close). Just removes the rec from pending and replies
+        # with the /close command primed.
+        if rec.get("kind") == "exit":
+            await _handle_exit_confirm(update, rec, rec_idx, pending, portfolio)
             return
 
         rec_entry = float(rec.get("entry_price", 0) or 0)

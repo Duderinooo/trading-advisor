@@ -374,6 +374,81 @@ RED_TEAM_TOOL = {
 }
 
 
+UPDATE_TARGETS_TOOL = {
+    "name": "update_position_targets",
+    "description": (
+        "SL/TP einer LAUFENDEN Position anpassen wenn sich Marktbedingungen ändern "
+        "(neuer Catalyst, Resistance hochgezogen, Earnings-Beat raised TP, "
+        "These weiterhin stark aber Strukturlevel bewegt). "
+        "Gilt NICHT für mechanisches Trailing — das passiert automatisch in events.py. "
+        "Hier nur diskretionäre Anpassungen mit Begründung. "
+        "Mindestens new_stop_loss ODER new_take_profit gesetzt — beide optional separat."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "ticker": {"type": "string", "description": "XETRA-Ticker"},
+            "new_stop_loss": {
+                "type": "number",
+                "description": (
+                    "Neuer SL-Preis. Muss < entry_price (LONG-only). "
+                    "Nur höher als alter SL erlaubt (Locking-in profit OR initial breakeven shift)."
+                ),
+            },
+            "new_take_profit": {
+                "type": ["array", "number"],
+                "items": {"type": "number"},
+                "description": (
+                    "Neuer TP. Single value oder [TP1, TP2]. Muss > entry_price (LONG-only)."
+                ),
+            },
+            "reason": {
+                "type": "string",
+                "description": "1-Satz Begründung warum (Catalyst, neuer Resistance, etc.). Max 120 Zeichen.",
+            },
+        },
+        "required": ["ticker", "reason"],
+        "additionalProperties": False,
+    },
+    "cache_control": {"type": "ephemeral"},
+}
+
+
+RECOMMEND_EXIT_TOOL = {
+    "name": "recommend_exit",
+    "description": (
+        "Strukturierte EXIT-Empfehlung für laufende Position. Landet in pending_recommendations + "
+        "wird per Telegram mit /confirm gesendet (wie ENTRY-Flow). "
+        "User exekutiert manuell auf TR. NUR aufrufen bei Thesis-Bruch / These invalid / "
+        "harter Reject mit Confirmation / RSI bearish divergence / Pre-Earnings-Defense. "
+        "NICHT aufrufen für: 'TP nicht erreicht aber lange unterwegs' (mechanisches TIME_STOP) "
+        "oder mechanisches Trailing (events.py macht das selbst)."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "ticker": {"type": "string"},
+            "reason": {
+                "type": "string",
+                "description": "Pflicht. Klare 1-Satz Begründung warum jetzt raus. Max 120 Zeichen.",
+            },
+            "urgency": {
+                "type": "string",
+                "enum": ["now", "today", "eod"],
+                "description": (
+                    "now = sofort schließen (SL-near, news-shock). "
+                    "today = im Lauf des Tages (thesis-degradation). "
+                    "eod = bei Schlusskurs (graceful exit, kein urgency-Catalyst)."
+                ),
+            },
+        },
+        "required": ["ticker", "reason", "urgency"],
+        "additionalProperties": False,
+    },
+    "cache_control": {"type": "ephemeral"},
+}
+
+
 RECOMMEND_ADD_TOOL = {
     "name": "recommend_add_to_position",
     "description": (

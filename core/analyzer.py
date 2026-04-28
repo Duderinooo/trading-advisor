@@ -25,6 +25,7 @@ from core.gate_log import log_gate
 from core.prompts import (
     STRATEGY_SYSTEM, MORNING_PREP_PROMPT, OPENING_CHECK_PROMPT, EVENT_TRIGGER_PROMPT,
     WATCH_LEVELS_TOOL, RECOMMEND_ENTRY_TOOL, RECOMMEND_ADD_TOOL,
+    UPDATE_TARGETS_TOOL, RECOMMEND_EXIT_TOOL,
     RED_TEAM_SYSTEM, RED_TEAM_TOOL,
 )
 from core.portfolio import (
@@ -282,26 +283,40 @@ def analyze_portfolio(mode: str = "standard", event_context: str = None, force: 
     if mode == "morning":
         system_prompt = STRATEGY_SYSTEM + "\n\n" + MORNING_PREP_PROMPT
         system_prompt += (
-            "\n\nWICHTIG: Rufe IMMER `set_watch_levels` auf (auch mit leerer Liste). "
-            "Bei A+-Setup mit Conviction ≥3/5: AUCH `recommend_entry` aufrufen. "
-            "Bei verstärkter These einer bestehenden offenen Position: `recommend_add_to_position`."
+            "\n\nWICHTIG: Rufe IMMER `set_watch_levels` auf (auch mit leerer Liste — empty=behält bestehende). "
+            "Bei A+-Setup mit Conv ≥3/5: AUCH `recommend_entry` aufrufen. "
+            "Bei verstärkter These bestehender Position: `recommend_add_to_position`. "
+            "Pro offene Position: prüfe ob SL/TP noch passen → `update_position_targets` "
+            "(z.B. neuer Resistance, Goldman-target raise). "
+            "Bei Thesis-Bruch / Earnings-Defense: `recommend_exit`."
         )
         context_intro = "MORNING"
-        tools = [WATCH_LEVELS_TOOL, RECOMMEND_ENTRY_TOOL, RECOMMEND_ADD_TOOL]
+        tools = [
+            WATCH_LEVELS_TOOL, RECOMMEND_ENTRY_TOOL, RECOMMEND_ADD_TOOL,
+            UPDATE_TARGETS_TOOL, RECOMMEND_EXIT_TOOL,
+        ]
     elif mode == "opening":
         system_prompt = STRATEGY_SYSTEM + "\n\n" + OPENING_CHECK_PROMPT
         context_intro = f"OPEN-CHECK {event_context or ''}".strip()
-        tools = [RECOMMEND_ENTRY_TOOL, RECOMMEND_ADD_TOOL]
+        tools = [
+            RECOMMEND_ENTRY_TOOL, RECOMMEND_ADD_TOOL,
+            UPDATE_TARGETS_TOOL, RECOMMEND_EXIT_TOOL,
+        ]
     elif mode == "event":
         system_prompt = STRATEGY_SYSTEM + "\n\n" + EVENT_TRIGGER_PROMPT
         system_prompt += (
-            "\n\nBei ENTRY-Empfehlung mit Conviction ≥3/5: `recommend_entry` aufrufen. "
-            "Bei verstärkter These einer offenen Position (Catalyst, Vol-Spike): `recommend_add_to_position`."
+            "\n\nBei ENTRY-Empfehlung mit Conv ≥3/5: `recommend_entry`. "
+            "Bei verstärkter These offener Position: `recommend_add_to_position`. "
+            "Bei SL/TP-Anpassung wegen Catalyst: `update_position_targets`. "
+            "Bei Thesis-Bruch: `recommend_exit`."
         )
         context_intro = f"🚨 EVENT: {event_context}"
         # Watch-Levels sind Morning-Domain. Event-Mode darf sie nicht überschreiben
         # (Bug 2026-04-27: News-Event-Call rief set_watch_levels([]) und löschte 5 Morning-Levels).
-        tools = [RECOMMEND_ENTRY_TOOL, RECOMMEND_ADD_TOOL]
+        tools = [
+            RECOMMEND_ENTRY_TOOL, RECOMMEND_ADD_TOOL,
+            UPDATE_TARGETS_TOOL, RECOMMEND_EXIT_TOOL,
+        ]
     else:
         system_prompt = STRATEGY_SYSTEM
         context_intro = "Standard-Analyse"
@@ -599,6 +614,8 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
     new_levels = None
     entry_recommendation = None
     add_recommendation = None
+    update_targets = None
+    exit_recommendation = None
     tool_use_blocks = []
 
     for block in response.content:
@@ -613,6 +630,10 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 entry_recommendation = block.input or {}
             elif name == "recommend_add_to_position":
                 add_recommendation = block.input or {}
+            elif name == "update_position_targets":
+                update_targets = block.input or {}
+            elif name == "recommend_exit":
+                exit_recommendation = block.input or {}
             tool_use_blocks.append(block)
 
     # 2-Turn-Flow: tool calls without text → send tool_result back for summary.
@@ -627,6 +648,12 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             elif tb.name == "recommend_add_to_position":
                 add_ticker = (add_recommendation or {}).get("ticker", "?")
                 result_text = f"Add-Empfehlung für {add_ticker} gespeichert."
+            elif tb.name == "update_position_targets":
+                upd_ticker = (update_targets or {}).get("ticker", "?")
+                result_text = f"SL/TP-Update für {upd_ticker} gespeichert."
+            elif tb.name == "recommend_exit":
+                exit_ticker = (exit_recommendation or {}).get("ticker", "?")
+                result_text = f"Exit-Empfehlung für {exit_ticker} gespeichert."
             else:
                 result_text = "OK"
             tool_result_content.append({
@@ -1235,6 +1262,148 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 logger.info("ADD recommendation: %s +€%.2f (msg_id=%s)",
                             _at, _add_size, add_msg_id)
 
+    # --- UPDATE_POSITION_TARGETS handling ---
+    update_persisted = None
+    if update_targets:
+        _ut = (update_targets.get("ticker") or "").upper()
+        _new_sl = update_targets.get("new_stop_loss")
+        _new_tp = update_targets.get("new_take_profit")
+        _ureason = (update_targets.get("reason") or "").strip()[:120]
+        _upf = load_portfolio()
+        _upos = next(
+            (tr for tr in _upf.get("open_trades", [])
+             if (tr.get("ticker") or "").upper() == _ut),
+            None,
+        )
+        if not _upos:
+            log_gate(_ut, "update_no_position", True,
+                     "update_position_targets without open position", {})
+            logger.info("Update suppressed: %s no open position", _ut)
+        elif _new_sl is None and _new_tp is None:
+            log_gate(_ut, "update_empty", True, "neither SL nor TP set", {})
+            logger.info("Update suppressed: %s neither SL nor TP set", _ut)
+        elif not _ureason:
+            log_gate(_ut, "update_no_reason", True, "reason empty", {})
+            logger.info("Update suppressed: %s no reason", _ut)
+        else:
+            _orig_entry = float(_upos.get("entry_price") or 0)
+            _orig_sl = float(_upos.get("stop_loss") or 0)
+            _sl_ok = True
+            if _new_sl is not None:
+                _new_sl = float(_new_sl)
+                # SL must stay below entry (LONG-only) and only move UP (lock-in profit
+                # OR breakeven). Moving SL down = loosening protection, never allowed
+                # via Claude recommendation — would violate full-trust safety.
+                if _new_sl >= _orig_entry:
+                    log_gate(_ut, "update_sl_above_entry", True,
+                             f"new_sl {_new_sl} >= entry {_orig_entry}",
+                             {"new_sl": _new_sl, "entry": _orig_entry})
+                    logger.info("Update suppressed: %s SL above entry", _ut)
+                    _sl_ok = False
+                elif _orig_sl > 0 and _new_sl < _orig_sl:
+                    log_gate(_ut, "update_sl_lowered", True,
+                             f"new_sl {_new_sl} < orig_sl {_orig_sl} — loosening forbidden",
+                             {"new_sl": _new_sl, "orig_sl": _orig_sl})
+                    logger.info("Update suppressed: %s SL lowered (loosening forbidden)", _ut)
+                    _sl_ok = False
+            _tp_ok = True
+            _tp_norm = None
+            if _new_tp is not None:
+                _tp_norm = _new_tp if isinstance(_new_tp, list) else [_new_tp]
+                _tp_norm = [float(x) for x in _tp_norm]
+                if any(x <= _orig_entry for x in _tp_norm):
+                    log_gate(_ut, "update_tp_below_entry", True,
+                             f"tp {_tp_norm} has value ≤ entry {_orig_entry}",
+                             {"new_tp": _tp_norm, "entry": _orig_entry})
+                    logger.info("Update suppressed: %s TP ≤ entry", _ut)
+                    _tp_ok = False
+
+            if _sl_ok and _tp_ok:
+                _orig_tp = _upos.get("take_profit")
+                _orig_tp_str = (
+                    " / ".join(f"€{t:.2f}" for t in _orig_tp) if isinstance(_orig_tp, list)
+                    else (f"€{_orig_tp:.2f}" if isinstance(_orig_tp, (int, float)) else "–")
+                )
+                _new_tp_str = (
+                    " / ".join(f"€{t:.2f}" for t in _tp_norm) if _tp_norm
+                    else "(unverändert)"
+                )
+                _new_sl_str = f"€{_new_sl:.2f}" if _new_sl is not None else "(unverändert)"
+                _orig_sl_str = f"€{_orig_sl:.2f}" if _orig_sl > 0 else "–"
+                upd_msg_id = _notify(
+                    f"🔧 *UPDATE* | `{_ut}`\n"
+                    f"Grund: {_ureason}\n"
+                    f"SL: {_orig_sl_str} → {_new_sl_str}\n"
+                    f"TP: {_orig_tp_str} → {_new_tp_str}\n"
+                    f"_Reply `/confirm` um zu übernehmen oder `/cancel`._"
+                )
+                update_persisted = {
+                    "kind": "update",
+                    "ticker": _ut,
+                    "new_stop_loss": _new_sl,
+                    "new_take_profit": _tp_norm,
+                    "reason": _ureason,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "status": "pending",
+                    "message_id": upd_msg_id,
+                }
+                log_gate(_ut, "update_all_passed", False, "SL/TP update approved", {
+                    "new_sl": _new_sl, "new_tp": _tp_norm,
+                })
+                logger.info("Update recommendation: %s SL=%s TP=%s (msg_id=%s)",
+                            _ut, _new_sl, _tp_norm, upd_msg_id)
+
+    # --- RECOMMEND_EXIT handling ---
+    exit_persisted = None
+    if exit_recommendation:
+        _et = (exit_recommendation.get("ticker") or "").upper()
+        _ereason = (exit_recommendation.get("reason") or "").strip()[:120]
+        _eurg = (exit_recommendation.get("urgency") or "today").lower()
+        if _eurg not in {"now", "today", "eod"}:
+            _eurg = "today"
+        _epf = load_portfolio()
+        _epos = next(
+            (tr for tr in _epf.get("open_trades", [])
+             if (tr.get("ticker") or "").upper() == _et),
+            None,
+        )
+        if not _epos:
+            log_gate(_et, "exit_no_position", True,
+                     "recommend_exit without open position", {})
+            logger.info("Exit suppressed: %s no open position", _et)
+        elif not _ereason:
+            log_gate(_et, "exit_no_reason", True, "reason empty", {})
+            logger.info("Exit suppressed: %s no reason", _et)
+        else:
+            _orig_entry = float(_epos.get("entry_price") or 0)
+            _orig_size = float(_epos.get("size_eur") or 0)
+            _curr_price = (market_data.get(_et) or {}).get("price")
+            _curr_str = f"€{_curr_price:.2f}" if isinstance(_curr_price, (int, float)) else "–"
+            _pnl_pct = (
+                ((_curr_price - _orig_entry) / _orig_entry * 100)
+                if isinstance(_curr_price, (int, float)) and _orig_entry > 0 else None
+            )
+            _pnl_str = f"{_pnl_pct:+.2f}%" if _pnl_pct is not None else "?"
+            _urgency_emoji = {"now": "🚨", "today": "⚠️", "eod": "🕐"}.get(_eurg, "⚠️")
+            exit_msg_id = _notify(
+                f"🎯 *EXIT* | `{_et}` | {_urgency_emoji} {_eurg}\n"
+                f"Grund: {_ereason}\n"
+                f"Bestand: €{_orig_size:.0f} @ €{_orig_entry:.2f} | Jetzt: {_curr_str} ({_pnl_str})\n"
+                f"_Reply `/confirm` um auf TR zu schließen, dann `/close {_et} @PREIS [#tag]`._"
+            )
+            exit_persisted = {
+                "kind": "exit",
+                "ticker": _et,
+                "reason": _ereason,
+                "urgency": _eurg,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "status": "pending",
+                "message_id": exit_msg_id,
+            }
+            log_gate(_et, "exit_all_passed", False, "exit recommended", {"urgency": _eurg})
+            logger.info("Exit recommendation: %s urgency=%s (msg_id=%s)",
+                        _et, _eurg, exit_msg_id)
+
     if MEMPALACE_AVAILABLE:
         log_analysis(analysis_text, mode, event_context)
 
@@ -1347,6 +1516,10 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             fresh.setdefault("pending_recommendations", []).append(rec)
         if add_rec_persisted is not None:
             fresh.setdefault("pending_recommendations", []).append(add_rec_persisted)
+        if update_persisted is not None:
+            fresh.setdefault("pending_recommendations", []).append(update_persisted)
+        if exit_persisted is not None:
+            fresh.setdefault("pending_recommendations", []).append(exit_persisted)
         fresh["last_analysis"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         save_portfolio(fresh)
 
