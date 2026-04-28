@@ -32,7 +32,7 @@ from core import (
     maybe_auto_kill,
 )
 from memory import log_trade, MEMPALACE_AVAILABLE
-from notifier import send_notification, send_daily_summary, send_alert, send_actionable
+from notifier import send_notification, send_daily_summary, send_alert, send_actionable, _word_truncate
 from telegram_listener import start_listener_thread
 
 
@@ -114,6 +114,32 @@ _ACTION_NORMALIZE = {
     "BUY": "ENTRY", "KAUFEN": "ENTRY",
     "SELL": "EXIT", "VERKAUFEN": "EXIT", "CLOSE": "EXIT",
 }
+
+
+def _enrich_extras_for_add(parsed: dict, base_extras: dict) -> dict:
+    """When Claude emits 'ADD: ...' as TEXT (e.g. tool-call gates blocked or Sonnet-lazy),
+    look up the open trade and surface Bestand/SL so user has actionable context.
+    Without this, ADD text-mode shows just '🎯 ADD | TICKER' with no size hint."""
+    if (parsed or {}).get("action") != "ADD":
+        return base_extras
+    portfolio = load_portfolio()
+    open_trade = next(
+        (t for t in portfolio.get("open_trades", [])
+         if (t.get("ticker") or "").upper() == parsed["ticker"]),
+        None,
+    )
+    if not open_trade:
+        return base_extras
+    enriched = dict(base_extras)
+    enriched["Bestand"] = (
+        f"€{float(open_trade.get('size_eur') or 0):.0f} "
+        f"@ €{float(open_trade.get('entry_price') or 0):.2f}"
+    )
+    sl = open_trade.get("stop_loss")
+    if sl:
+        enriched["SL"] = f"€{float(sl):.2f}"
+    enriched["Hinweis"] = "Size+Preis via /add command bestimmen"
+    return enriched
 
 
 def _parse_actionable(analysis: str) -> dict | None:
@@ -560,7 +586,25 @@ def run_morning_prep():
             logger.info("Morning prep deferred: %s", analysis)
             return
         if "(keine text-analyse)" in stripped or not stripped:
-            logger.info("Morning brief: tool-only call, skipping forward")
+            # Sonnet emitted only tool-calls (set_watch_levels / recommend_entry) without
+            # text. Build a deterministic status heartbeat so user has explicit feedback
+            # whether bot ran + 0-watchlevel-day is intentional vs system-broken.
+            pf = load_portfolio()
+            wcount = len(pf.get("watch_levels", []))
+            ocount = len(pf.get("open_trades", []))
+            pcount = len(pf.get("pending_recommendations", []))
+            if wcount > 0:
+                reason = f"{wcount} Watchlevel(s) für heute aktiv"
+            elif ocount > 0:
+                reason = "Keine neuen A+ Setups, laufende Positionen halten"
+            else:
+                reason = "Keine A+ Setups, kein Watchlevel, kein offener Trade"
+            send_notification(
+                f"🌅 *Morning OK* | {datetime.now().strftime('%H:%M')}\n"
+                f"Watchlevels: {wcount} | Positionen: {ocount} | Pending: {pcount}\n"
+                f"Status: {reason}"
+            )
+            logger.info("Morning brief: tool-only call, status heartbeat sent")
         else:
             send_daily_summary(analysis)
             logger.info("✅ Morning prep sent")
@@ -601,10 +645,10 @@ def run_opening_check(market: str):
         else:
             parsed = _parse_actionable(analysis)
             if parsed:
+                extras = _enrich_extras_for_add(parsed, {"Open": label})
                 send_actionable(
                     parsed["action"], parsed["ticker"],
-                    size=None, reason=parsed["reason"],
-                    extras={"Open": label},
+                    size=None, reason=parsed["reason"], extras=extras,
                 )
                 logger.info("✅ %s open check sent (action flagged)", market.upper())
             else:
@@ -660,10 +704,12 @@ def run_event_check():
         else:
             parsed = _parse_actionable(analysis)
             if parsed:
+                extras = _enrich_extras_for_add(
+                    parsed, {"Watch": _word_truncate(event_context, 150)},
+                )
                 send_actionable(
                     parsed["action"], parsed["ticker"],
-                    size=None, reason=parsed["reason"],
-                    extras={"Watch": event_context[:80]},
+                    size=None, reason=parsed["reason"], extras=extras,
                 )
                 logger.info("✅ Event verdict sent: %s", analysis.split('\n')[0][:80])
             else:
@@ -836,10 +882,12 @@ _Watch closely_"""
             else:
                 parsed = _parse_actionable(analysis)
                 if parsed:
+                    extras = _enrich_extras_for_add(
+                        parsed, {"Move": _word_truncate(event_context, 150)},
+                    )
                     send_actionable(
                         parsed["action"], parsed["ticker"],
-                        size=None, reason=parsed["reason"],
-                        extras={"Move": event_context[:80]},
+                        size=None, reason=parsed["reason"], extras=extras,
                     )
                     logger.info("✅ Price alert verdict sent: %s", analysis.split('\n')[0][:80])
                 else:
@@ -916,10 +964,13 @@ def run_news_check():
             analysis = analyze_portfolio(mode="event", event_context=ctx, force=True)
             parsed = _parse_actionable(analysis)
             if parsed:
+                extras = _enrich_extras_for_add(
+                    parsed,
+                    {"GEO": _word_truncate(headline, 150), "Setup": comms},
+                )
                 send_actionable(
                     parsed["action"], parsed["ticker"],
-                    size=None, reason=parsed["reason"],
-                    extras={"GEO": headline[:80], "Setup": comms},
+                    size=None, reason=parsed["reason"], extras=extras,
                 )
             else:
                 logger.info("GEO news non-actionable, suppressed: %s",
@@ -953,10 +1004,12 @@ def run_news_check():
             analysis = analyze_portfolio(mode="event", event_context=ctx)
             parsed = _parse_actionable(analysis)
             if parsed:
+                extras = _enrich_extras_for_add(
+                    parsed, {"News": _word_truncate(headlines, 150)},
+                )
                 send_actionable(
                     parsed["action"], parsed["ticker"],
-                    size=None, reason=parsed["reason"],
-                    extras={"News": headlines[:80]},
+                    size=None, reason=parsed["reason"], extras=extras,
                 )
             else:
                 logger.info("Stock news non-actionable, suppressed: %s",

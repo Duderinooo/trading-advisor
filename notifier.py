@@ -177,6 +177,17 @@ def send_alert(title: str, message: str):
 _VALID_ACTIONS = {"ENTRY", "EXIT", "ADD", "REDUCE", "CLOSE"}
 
 
+def _word_truncate(s: str, limit: int) -> str:
+    """Cut at last word boundary ≤ limit. Avoids 'bestätigt Aufwä' mid-word cuts
+    that look like display-corruption to the user (Audit 2026-04-28)."""
+    if not s or len(s) <= limit:
+        return s or ""
+    cut = s[:limit]
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut + "…"
+
+
 def send_actionable(
     action: str,
     ticker: str,
@@ -201,7 +212,7 @@ def send_actionable(
     if not t or not (reason or "").strip():
         logger.warning("send_actionable rejected: ticker=%r reason=%r", ticker, reason)
         return None
-    reason_clean = reason.strip()[:200]
+    reason_clean = _word_truncate(reason.strip(), 250)
     size_part = f" | {size}" if size else ""
     conv_part = (
         f"\nConv {conviction}/5"
@@ -210,7 +221,9 @@ def send_actionable(
     )
     extras_part = ""
     if extras:
-        extras_part = "\n" + " | ".join(f"{k} {v}" for k, v in extras.items() if v)
+        extras_part = "\n" + " | ".join(
+            f"{k} {_word_truncate(str(v), 120)}" for k, v in extras.items() if v
+        )
     msg = f"🎯 *{a}* | `{t}`{size_part}\nGrund: {reason_clean}{conv_part}{extras_part}"
     return send_notification(msg)
 

@@ -1175,8 +1175,6 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             _md = market_data.get(_at) or {}
             _curr = _md.get("price")
             _atr = _md.get("atr14")
-            _capital = float(_add_pf.get("total_capital_eur", config.BUDGET_EUR) or config.BUDGET_EUR)
-            _max_pos_eur = _capital * config.MAX_POSITION_SIZE_PERCENT / 100.0
 
             _drift_ok = True
             if isinstance(_curr, (int, float)) and isinstance(_atr, (int, float)) and _atr > 0:
@@ -1201,18 +1199,11 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                                 _at, _curr, _orig_sl)
                     _sl_ok = False
 
-            _size_ok = True
-            if _drift_ok and _sl_ok and _orig_size + _add_size > _max_pos_eur:
-                log_gate(_at, "add_oversize", True,
-                         f"orig €{_orig_size:.2f} + add €{_add_size:.2f} > max €{_max_pos_eur:.2f}",
-                         {"orig_size": _orig_size, "add_size": _add_size, "max_pos_eur": _max_pos_eur})
-                logger.info(
-                    "ADD suppressed: %s would push size €%.2f over %s%% cap (€%.2f)",
-                    _at, _orig_size + _add_size, config.MAX_POSITION_SIZE_PERCENT, _max_pos_eur,
-                )
-                _size_ok = False
-
-            if _drift_ok and _sl_ok and _size_ok:
+            # Oversize-cap was broken when existing position > MAX_POSITION_SIZE_PERCENT
+            # (legacy entries via /confirm bypass that cap). Full-trust user + drift/sl
+            # gates + Claude conviction sufficient. User can /add manually with smaller
+            # size if Claude over-bets (Audit 2026-04-28 RWE.DE €242 / 24% block).
+            if _drift_ok and _sl_ok:
                 _trigger = (add_recommendation.get("trigger") or "")[:120]
                 _reinforce = (add_recommendation.get("thesis_reinforcement") or "")[:120]
                 _add_conv = add_recommendation.get("conviction")

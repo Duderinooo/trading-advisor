@@ -107,6 +107,117 @@ def _parse_close_args(args: list[str]) -> tuple[str | None, float | None, str | 
     return ticker, exit_price, tag
 
 
+async def add_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Manual add to existing position. Format: /add TICKER STK X @PREIS
+
+    Example: /add RWE.DE STK 2 @61.60
+    Pyramides into existing open_trade with weighted-avg entry. Original SL/TP
+    stay. No pending-rec needed (skips Claude validation — user is full-trust).
+    Risk-halt + cash check still apply.
+    """
+    if not _authorized(update):
+        return
+    args = ctx.args or []
+    ticker = None
+    shares = None
+    price = None
+    for tok in args:
+        upper = tok.upper()
+        if upper == "STK":
+            continue
+        if tok.startswith("@"):
+            try:
+                price = float(tok[1:].replace(",", "."))
+            except ValueError:
+                pass
+            continue
+        normalized = tok.replace(",", ".")
+        if _NUMBER_RE.match(normalized):
+            shares = float(normalized)
+            continue
+        if _TICKER_RE.match(upper) and any(c.isalpha() for c in upper):
+            ticker = upper
+    if not ticker or not shares or not price or shares <= 0 or price <= 0:
+        await update.message.reply_text(
+            "Format: `/add TICKER STK X @PREIS`\n"
+            "Beispiel: `/add RWE.DE STK 2 @61.60`",
+            parse_mode="Markdown",
+        )
+        return
+
+    actual_added = round(shares * price, 2)
+
+    with portfolio_lock:
+        portfolio = load_portfolio()
+        open_trade = next(
+            (t for t in portfolio.get("open_trades", [])
+             if (t.get("ticker") or "").upper() == ticker),
+            None,
+        )
+        if open_trade is None:
+            await update.message.reply_text(
+                f"❌ Keine offene Position für {ticker}. /add nur für Pyramiding.",
+            )
+            return
+
+        halt = risk_halt_status(portfolio)
+        if halt["halt"]:
+            await update.message.reply_text(
+                "⛔ *Risk-Halt aktiv — /add blockiert*\n"
+                + "\n".join(f"• {r}" for r in halt["reasons"]),
+                parse_mode="Markdown",
+            )
+            return
+
+        cash = float(portfolio.get("cash_eur", 0) or 0)
+        if actual_added > cash + 0.01:
+            await update.message.reply_text(
+                f"⚠️ Nicht genug Cash: brauche €{actual_added:.2f}, habe €{cash:.2f}.",
+            )
+            return
+
+        old_shares = float(open_trade.get("shares", 0) or 0)
+        old_size = float(open_trade.get("size_eur", 0) or 0)
+        new_shares = round(old_shares + shares, 4)
+        new_size = round(old_size + actual_added, 2)
+        new_entry = round(new_size / new_shares, 4) if new_shares > 0 else price
+
+        open_trade["shares"] = new_shares
+        open_trade["size_eur"] = new_size
+        open_trade["entry_price"] = new_entry
+        open_trade.setdefault("add_history", []).append({
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "added_shares": shares,
+            "added_size_eur": actual_added,
+            "fill_price": price,
+            "source": "manual_/add",
+        })
+        portfolio["cash_eur"] = round(cash - actual_added, 2)
+        save_portfolio(portfolio)
+
+    if MEMPALACE_AVAILABLE:
+        try:
+            log_trade(open_trade, "ADDED_MANUAL", f"manual /add +{shares} @ €{price}")
+        except Exception:
+            logger.exception("MemPalace log_trade /add failed")
+
+    sl = open_trade.get("stop_loss")
+    sl_str = f"€{sl:.2f}" if sl else "–"
+    tp = open_trade.get("take_profit")
+    tp_str = (
+        " / ".join(f"€{t:.2f}" for t in tp) if isinstance(tp, list)
+        else (f"€{tp:.2f}" if tp else "–")
+    )
+    await update.message.reply_text(
+        f"✅ *{ticker} aufgestockt (manual /add)*\n"
+        f"+{shares:g} × €{price:.2f} = €{actual_added:.2f}\n"
+        f"Neu: {new_shares:g} Stk | Avg-Entry €{new_entry:.4f} | Σ €{new_size:.2f}\n"
+        f"SL: {sl_str} | TP: {tp_str}\n"
+        f"Cash: €{portfolio['cash_eur']:.2f}",
+        parse_mode="Markdown",
+    )
+
+
 async def _handle_add_confirm(
     update: Update,
     rec: dict,
@@ -799,6 +910,7 @@ async def help_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/confirm 3` (reply) — 3 Stück, rec-Preis\n"
         "`/confirm 3 @172.50` (reply) — 3 Stück, Preis €172.50\n"
         "`/confirm NVD.DE 3 @172.50` — standalone\n"
+        "`/add TICKER STK X @PREIS` — manuell aufstocken (z.B. `/add RWE.DE STK 2 @61.60`)\n"
         "`/close TICKER [@preis] [#tag]` — Position schließen (bei Verlust: #tag = Grund)\n"
         "`/dividend TICKER AMOUNT [grund]` — Dividende verbuchen (Cash + Equity-Curve)\n"
         "`/cancel` (reply) — Pending-Empfehlung verwerfen\n"
@@ -814,6 +926,7 @@ async def help_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def _async_run():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("confirm", confirm_handler))
+    app.add_handler(CommandHandler("add", add_handler))
     app.add_handler(CommandHandler("close", close_handler))
     app.add_handler(CommandHandler("dividend", dividend_handler))
     app.add_handler(CommandHandler("positions", positions_handler))
