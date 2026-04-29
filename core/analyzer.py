@@ -742,7 +742,16 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             usage=getattr(response2, "usage", None),
         )
 
-    analysis_text = "\n".join(t for t in text_parts if t).strip() or "(keine Text-Analyse)"
+    # Dedupe consecutive identical lines: Sonnet sometimes emits the same
+    # status line in multiple text-blocks (e.g. RWE.DE | … HALTEN twice when
+    # tool_use is sandwiched between). User-visible noise.
+    _raw_text = "\n".join(t for t in text_parts if t).strip()
+    _dedup: list[str] = []
+    for _ln in _raw_text.split("\n"):
+        if _dedup and _ln.strip() == _dedup[-1].strip():
+            continue
+        _dedup.append(_ln)
+    analysis_text = "\n".join(_dedup) or "(keine Text-Analyse)"
 
     # Build the rec BEFORE notification so we can attach the Telegram message_id.
     rec = None
