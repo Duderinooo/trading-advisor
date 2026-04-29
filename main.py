@@ -555,16 +555,17 @@ def _check_stale_theses():
             save_portfolio(portfolio)
 
 
-def run_morning_prep():
-    """Run morning analysis to prepare for the trading day."""
-    if _morning_prep_done_today():
+def run_morning_prep(force: bool = False):
+    """Run morning analysis. force=True overrides date-dedup + kill-switch
+    (manual /morning trigger)."""
+    if not force and _morning_prep_done_today():
         return
-    if kill_switch_active(load_portfolio()):
+    if not force and kill_switch_active(load_portfolio()):
         logger.info("Morning prep skipped: kill-switch active")
         _mark_morning_prep_done()
         return
 
-    logger.info("☀️ Running morning prep...")
+    logger.info("☀️ Running morning prep%s...", " (forced)" if force else "")
 
     try:
         _check_stale_theses()

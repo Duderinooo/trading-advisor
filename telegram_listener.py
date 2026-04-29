@@ -1214,7 +1214,10 @@ async def morning_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             pf = load_portfolio()
             pf.pop("last_morning_prep_date", None)
             save_portfolio(pf)
-        await asyncio.get_event_loop().run_in_executor(None, run_morning_prep)
+        # force=True bypasses kill-switch gate — manual /morning is intentional.
+        await asyncio.get_event_loop().run_in_executor(
+            None, lambda: run_morning_prep(force=True)
+        )
         pf = load_portfolio()
         levels = pf.get("watch_levels", [])
         await update.message.reply_text(
