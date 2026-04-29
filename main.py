@@ -56,34 +56,6 @@ logging.getLogger("yfinance").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext").setLevel(logging.WARNING)
 
-# ERROR/CRITICAL → Telegram. User explicitly asked: "logs müssten manuell von mir
-# verwertet werden, alles andere ist useless." Dedup via notifier._alert_lock so
-# a tight error-loop can't spam (10min window per title).
-class _TelegramErrorHandler(logging.Handler):
-    _IGNORE_LOGGERS = (
-        "notifier",        # feedback loop — notifier failures must not re-alert
-        "telegram",        # bot.send_message ERRORs already logged at notifier
-        "httpx",           # 3rd-party HTTP noise
-        "yfinance",        # market-data ERRORs are handled per-call in core.market_data
-        "urllib3",
-        "requests",
-    )
-
-    def emit(self, record: logging.LogRecord) -> None:
-        # Avoid feedback loops: notifier failures must not trigger send_alert.
-        if record.name.startswith(self._IGNORE_LOGGERS):
-            return
-        try:
-            msg = self.format(record)
-            title = f"[{record.name}] {(record.getMessage() or '')[:60]}"
-            send_alert(title, msg[:1500])
-        except Exception:
-            pass  # never let logging crash the app
-
-_tg_err_handler = _TelegramErrorHandler(level=logging.ERROR)
-_tg_err_handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
-_root_logger.addHandler(_tg_err_handler)
-
 # yfinance ERROR-spam: ETFs/Commodities ohne Fundamentals 404'en erwartbar,
 # transiente "possibly delisted" sind Yahoo-API-Hickups (vergehen von selbst).
 # Beide Cases werden im market_data.py per try/except behandelt — Logger-Noise unnötig.
