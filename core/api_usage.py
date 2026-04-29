@@ -55,18 +55,23 @@ def increment_usage(forced: bool = False):
         json.dump(data, f)
 
 
-def can_make_api_call(force: bool = False) -> tuple[bool, str]:
+def can_make_api_call(force: bool = False, bypass_cooldown: bool = False) -> tuple[bool, str]:
     """Check if we should make an API call. Returns (allowed, reason).
 
     - Hard daily cap (safety).
     - Regular cooldown between calls.
     - `force` bypasses the regular cooldown but has its own softer cooldown
       so a news-flood can't burn the daily cap in minutes.
+    - `bypass_cooldown` skips even the forced-cooldown (manual /morning etc.).
+      Daily cap still enforced.
     """
     calls_today = get_daily_usage()
 
     if calls_today >= config.MAX_ANALYSES_PER_DAY:
         return False, f"Daily cap reached ({config.MAX_ANALYSES_PER_DAY})"
+
+    if bypass_cooldown:
+        return True, "OK (cooldown bypassed)"
 
     if force:
         data = get_usage_data()

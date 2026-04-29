@@ -226,7 +226,12 @@ def _run_red_team(rec: dict, snap: dict | None, regime: str, model: str) -> dict
 
 # ---------- Main orchestrator ----------
 
-def analyze_portfolio(mode: str = "standard", event_context: str = None, force: bool = False) -> str:
+def analyze_portfolio(
+    mode: str = "standard",
+    event_context: str = None,
+    force: bool = False,
+    bypass_cooldown: bool = False,
+) -> str:
     """Run portfolio analysis with Claude.
 
     Modes:
@@ -236,9 +241,12 @@ def analyze_portfolio(mode: str = "standard", event_context: str = None, force: 
     - "standard": Regular analysis
 
     force: Bypass regular cooldown for high-priority situations.
+    bypass_cooldown: Manual override (/morning) — skip even forced-cooldown.
     """
     is_high_priority = mode in ("morning", "opening", "event") or force
-    allowed, reason = can_make_api_call(force=is_high_priority)
+    allowed, reason = can_make_api_call(
+        force=is_high_priority, bypass_cooldown=bypass_cooldown
+    )
     if not allowed:
         return f"⚠️ Analysis skipped: {reason}"
 

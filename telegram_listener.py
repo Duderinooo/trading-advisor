@@ -1221,10 +1221,24 @@ async def morning_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         pf = load_portfolio()
         levels = pf.get("watch_levels", [])
         tr = pf.get("last_morning_trace") or {}
+        # Detect skipped analyze_portfolio (daily-cap, etc.): trace ts older than 90s.
+        tr_fresh = False
+        if tr.get("ts"):
+            try:
+                from datetime import datetime as _dt
+                age = (_dt.now() - _dt.strptime(tr["ts"], "%Y-%m-%d %H:%M:%S")).total_seconds()
+                tr_fresh = age < 90
+            except Exception:
+                pass
         trace_lines = [
             f"✅ Morning Prep fertig. {len(levels)} Watch-Level gesetzt."
         ]
-        if tr:
+        if not tr_fresh:
+            trace_lines.append(
+                "⚠️ Kein frischer Trace — analyze_portfolio wurde übersprungen "
+                "(daily-cap? check bot.log)."
+            )
+        if tr_fresh:
             trace_lines.append(
                 f"Trace: tool_called={tr.get('tool_called')} "
                 f"raw={tr.get('raw_levels_count')} "

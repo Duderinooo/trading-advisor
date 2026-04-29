@@ -557,7 +557,7 @@ def _check_stale_theses():
 
 def run_morning_prep(force: bool = False):
     """Run morning analysis. force=True overrides date-dedup + kill-switch
-    (manual /morning trigger)."""
+    + forced-call cooldown (manual /morning trigger)."""
     if not force and _morning_prep_done_today():
         return
     if not force and kill_switch_active(load_portfolio()):
@@ -639,7 +639,11 @@ def run_morning_prep(force: bool = False):
         logger.exception("Dividend pre-check failed")
 
     try:
-        analysis = analyze_portfolio(mode="morning")
+        # force=True (manual /morning) bypasses both forced-call cooldown
+        # AND date-dedup. Auto-runs (force=False) keep cooldown to protect daily cap.
+        analysis = analyze_portfolio(
+            mode="morning", force=force, bypass_cooldown=force
+        )
         # Always forward Sonnet's morning verdict — daily alive-ping confirms bot ran.
         # "Keine Setups heute." is one line, fine as heartbeat. Skip only on the
         # tool-only-no-text edge case (nothing to forward).
