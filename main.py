@@ -461,6 +461,64 @@ def is_us_open_check_time() -> bool:
     )
 
 
+_EXIT_REMINDER_THRESHOLDS_MIN = {"now": 120, "today": 360, "eod": 60}
+
+
+def _check_exit_reminders():
+    """Resend Telegram for pending EXIT-recs that the user hasn't actioned in time.
+    Bot doesn't auto-close (no broker API) — if user ignores `EXIT now`, position
+    rots. This nudges. Each rec gets max 1 reminder (idempotent via flag)."""
+    if not is_market_hours():
+        return
+    today = str(date.today())
+    with portfolio_lock:
+        portfolio = load_portfolio()
+        pending = portfolio.get("pending_recommendations", []) or []
+        if not pending:
+            return
+        now = datetime.now()
+        dirty = False
+        for rec in pending:
+            if rec.get("kind") != "exit":
+                continue
+            if rec.get("reminder_sent_date") == today:
+                continue
+            ts = rec.get("timestamp")
+            if not ts:
+                continue
+            try:
+                rec_dt = datetime.strptime(ts, "%Y-%m-%d %H:%M")
+            except ValueError:
+                continue
+            urgency = (rec.get("urgency") or "today").lower()
+            threshold = _EXIT_REMINDER_THRESHOLDS_MIN.get(urgency, 360)
+            age_min = (now - rec_dt).total_seconds() / 60.0
+            if urgency == "eod":
+                # 1h before XETRA close (17:30) regardless of age
+                close_min = 17 * 60 + 30
+                cutoff_min = close_min - threshold
+                if now.hour * 60 + now.minute < cutoff_min:
+                    continue
+            elif age_min < threshold:
+                continue
+            ticker = rec.get("ticker", "?")
+            reason = (rec.get("reason") or "")[:120]
+            urg_emoji = {"now": "🚨", "today": "⚠️", "eod": "🕐"}.get(urgency, "⚠️")
+            send_notification(
+                f"⏰ *EXIT-REMINDER* | `{ticker}` | {urg_emoji} {urgency}\n"
+                f"Vor {int(age_min)} Min empfohlen, noch nicht actioned.\n"
+                f"Grund: {reason}\n"
+                f"_Auf TR schließen + `/close {ticker} @PREIS`._"
+            )
+            rec["reminder_sent_date"] = today
+            dirty = True
+            logger.warning("EXIT-reminder sent: %s urgency=%s age=%dmin",
+                           ticker, urgency, int(age_min))
+        if dirty:
+            portfolio["pending_recommendations"] = pending
+            save_portfolio(portfolio)
+
+
 def _check_stale_theses():
     """Alert on positions held longer than `hold_days_max` from rec.
     Why: thesis horizon is 3-7d for swing; positions drifting beyond signal a hope-trade.
@@ -1065,9 +1123,22 @@ def main():
         now = datetime.now()
 
         # Persist heartbeat to portfolio.json so the web dashboard can show
-        # last-tick age + API spend without re-implementing fs scans.
+        # last-tick age + API spend + live unrealized P&L without re-implementing
+        # fs scans. yfinance has its own 60s cache so per-tick pulls are cheap.
         try:
             from core import get_daily_usage
+            _live_prices: dict[str, float] = {}
+            try:
+                _open = load_portfolio().get("open_trades", []) or []
+                _tickers = [t["ticker"] for t in _open if t.get("ticker")]
+                if _tickers and is_market_hours():
+                    _md = get_market_data(_tickers)
+                    for _tk, _data in _md.items():
+                        _p = _data.get("price") if isinstance(_data, dict) else None
+                        if isinstance(_p, (int, float)) and _p > 0:
+                            _live_prices[_tk] = float(_p)
+            except Exception:
+                logger.exception("Live-price snapshot failed (heartbeat)")
             with portfolio_lock:
                 _pf = load_portfolio()
                 _pf["heartbeat"] = {
@@ -1075,6 +1146,7 @@ def main():
                     "market_hours": is_market_hours(),
                     "api_calls_today": get_daily_usage(),
                     "api_cap": config.MAX_ANALYSES_PER_DAY,
+                    "prices": _live_prices,
                 }
                 save_portfolio(_pf)
         except Exception:
@@ -1111,6 +1183,10 @@ def main():
                 run_price_check()
                 run_event_check()
                 run_news_check()
+                try:
+                    _check_exit_reminders()
+                except Exception:
+                    logger.exception("Exit-reminder check failed")
             elif is_weekend_news_window():
                 # Sunday evening: news-only scan, no price/event checks (markets closed)
                 run_news_check()

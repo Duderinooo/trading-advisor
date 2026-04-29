@@ -15,7 +15,13 @@ function fmtTpHistory(tp: number | number[] | null | undefined) {
   return tp.toFixed(2);
 }
 
-export default function OpenTrades({ trades }: { trades: OpenTrade[] }) {
+export default function OpenTrades({
+  trades,
+  livePrices,
+}: {
+  trades: OpenTrade[];
+  livePrices?: Record<string, number>;
+}) {
   const [openHistory, setOpenHistory] = useState<Record<string, boolean>>({});
 
   if (trades.length === 0) {
@@ -34,6 +40,8 @@ export default function OpenTrades({ trades }: { trades: OpenTrade[] }) {
             <th className="py-2 pr-3">Entry</th>
             <th className="py-2 pr-3">Shares</th>
             <th className="py-2 pr-3">Size €</th>
+            <th className="py-2 pr-3">Live</th>
+            <th className="py-2 pr-3">P&amp;L</th>
             <th className="py-2 pr-3">SL</th>
             <th className="py-2 pr-3">TP</th>
             <th className="py-2 pr-3">Conv</th>
@@ -56,6 +64,23 @@ export default function OpenTrades({ trades }: { trades: OpenTrade[] }) {
             const histCount = adds.length + updates.length;
             const key = `${t.ticker}-${i}`;
             const isOpen = openHistory[key] ?? false;
+            const live = livePrices?.[t.ticker];
+            const pnlEur =
+              live != null && t.entry_price > 0
+                ? (live - t.entry_price) * t.shares
+                : null;
+            const pnlPct =
+              live != null && t.entry_price > 0
+                ? ((live - t.entry_price) / t.entry_price) * 100
+                : null;
+            const pnlTone =
+              pnlEur == null
+                ? "text-zinc-500"
+                : pnlEur > 0
+                  ? "text-emerald-400"
+                  : pnlEur < 0
+                    ? "text-rose-400"
+                    : "text-zinc-300";
             return (
               <Fragment key={key}>
                 <tr className="border-b border-zinc-900/60 hover:bg-zinc-900/30">
@@ -87,6 +112,14 @@ export default function OpenTrades({ trades }: { trades: OpenTrade[] }) {
                   <td className="py-2 pr-3">{t.entry_price.toFixed(2)}</td>
                   <td className="py-2 pr-3">{t.shares}</td>
                   <td className="py-2 pr-3">{size.toFixed(2)}</td>
+                  <td className="py-2 pr-3 text-zinc-200">
+                    {live != null ? live.toFixed(2) : "—"}
+                  </td>
+                  <td className={`py-2 pr-3 ${pnlTone}`}>
+                    {pnlEur != null && pnlPct != null
+                      ? `${pnlEur >= 0 ? "+" : ""}${pnlEur.toFixed(2)} (${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%)`
+                      : "—"}
+                  </td>
                   <td className="py-2 pr-3 text-rose-400">
                     {t.stop_loss.toFixed(2)}
                   </td>
@@ -103,7 +136,7 @@ export default function OpenTrades({ trades }: { trades: OpenTrade[] }) {
                 </tr>
                 {isOpen && (
                   <tr className="border-b border-zinc-900/60">
-                    <td colSpan={10} className="py-2 px-3 bg-zinc-950/50">
+                    <td colSpan={12} className="py-2 px-3 bg-zinc-950/50">
                       <div className="space-y-2 text-xs">
                         {adds.length > 0 && (
                           <div>

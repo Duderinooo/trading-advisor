@@ -22,6 +22,7 @@ from macro import today_events as _today_macro_events, format_events as _format_
 
 from core.api_usage import can_make_api_call, increment_usage
 from core.gate_log import log_gate
+from core.call_log import log_claude_call
 from core.prompts import (
     STRATEGY_SYSTEM, MORNING_PREP_PROMPT, OPENING_CHECK_PROMPT, EVENT_TRIGGER_PROMPT,
     WATCH_LEVELS_TOOL, RECOMMEND_ENTRY_TOOL, RECOMMEND_ADD_TOOL,
@@ -189,9 +190,12 @@ def _run_red_team(rec: dict, snap: dict | None, regime: str, model: str) -> dict
 
     increment_usage(forced=False)
 
+    _rt_tool_calls = []
+    _rt_data = None
     for block in resp.content:
         if getattr(block, "type", None) == "tool_use" and getattr(block, "name", None) == "submit_critique":
-            data = block.input or {}
+            _rt_data = block.input or {}
+            _rt_tool_calls.append({"name": "submit_critique", "input": _rt_data})
             usage = getattr(resp, "usage", None)
             if usage is not None:
                 logger.info(
@@ -201,7 +205,21 @@ def _run_red_team(rec: dict, snap: dict | None, regime: str, model: str) -> dict
                     getattr(usage, "cache_read_input_tokens", None),
                     getattr(usage, "cache_creation_input_tokens", None),
                 )
-            return data
+
+    log_claude_call(
+        mode="red_team",
+        model=model,
+        turn=1,
+        system_prompt=RED_TEAM_SYSTEM,
+        user_message=user_msg,
+        text_response="",
+        tool_calls=_rt_tool_calls,
+        usage=getattr(resp, "usage", None),
+        extra={"target_ticker": payload.get("ticker")},
+    )
+
+    if _rt_data is not None:
+        return _rt_data
     logger.warning("Red-team returned no tool_use block — skipping critique")
     return None
 
@@ -636,6 +654,22 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 exit_recommendation = block.input or {}
             tool_use_blocks.append(block)
 
+    # Persistent log for /brain inspection page (one entry per call, swallows errors)
+    log_claude_call(
+        mode=mode,
+        model=model,
+        turn=1,
+        system_prompt=system_prompt,
+        user_message=analysis_request,
+        text_response="\n".join(t for t in text_parts if t),
+        tool_calls=[
+            {"name": tb.name, "input": tb.input or {}}
+            for tb in tool_use_blocks
+        ],
+        usage=getattr(response, "usage", None),
+        extra={"event_context": event_context} if event_context else None,
+    )
+
     # 2-Turn-Flow: tool calls without text → send tool_result back for summary.
     if tool_use_blocks and response.stop_reason == "tool_use" and not text_parts:
         tool_result_content = []
@@ -678,9 +712,21 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
         increment_usage(forced=is_high_priority)
         _log_usage(response2, turn=2)
 
+        _t2_text_parts: list[str] = []
         for block in response2.content:
             if getattr(block, "type", None) == "text":
                 text_parts.append(block.text)
+                _t2_text_parts.append(block.text)
+        log_claude_call(
+            mode=mode,
+            model=model,
+            turn=2,
+            system_prompt=system_prompt,
+            user_message="(turn-2 follow-up: tool_results + 'Kurze Zusammenfassung bitte.')",
+            text_response="\n".join(_t2_text_parts),
+            tool_calls=[],
+            usage=getattr(response2, "usage", None),
+        )
 
     analysis_text = "\n".join(t for t in text_parts if t).strip() or "(keine Text-Analyse)"
 

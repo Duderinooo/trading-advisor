@@ -117,6 +117,7 @@ export type Heartbeat = {
   market_hours: boolean;
   api_calls_today: number;
   api_cap: number;
+  prices?: Record<string, number>;
 };
 
 export type CorrelationMatrix = {
@@ -208,6 +209,29 @@ export type EquityPoint = {
   equity: number;
   peak: number;
   dd_pct: number;
+};
+
+export type ClaudeToolCall = {
+  name: string;
+  input: Record<string, unknown>;
+};
+
+export type ClaudeCall = {
+  ts: string;
+  mode: string;
+  model: string;
+  turn: number;
+  tokens: {
+    input: number | null;
+    output: number | null;
+    cache_read: number;
+    cache_write: number;
+  };
+  system_hash: string;
+  user_message: string;
+  text_response: string;
+  tool_calls: ClaudeToolCall[];
+  extra?: Record<string, unknown>;
 };
 
 export type SetupTypeStats = {

@@ -101,6 +101,12 @@ export default function Dashboard({ initial }: { initial: Portfolio }) {
         </div>
         <div className="flex items-center gap-3">
           <a
+            href="/brain"
+            className="text-xs px-3 py-1.5 rounded border border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700"
+          >
+            Brain →
+          </a>
+          <a
             href="/logs"
             className="text-xs px-3 py-1.5 rounded border border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700"
           >
@@ -248,7 +254,10 @@ export default function Dashboard({ initial }: { initial: Portfolio }) {
         </Card>
 
         <Card title="Open Trades">
-          <OpenTrades trades={portfolio.open_trades} />
+          <OpenTrades
+            trades={portfolio.open_trades}
+            livePrices={portfolio.heartbeat?.prices}
+          />
         </Card>
 
         <Card title="Closed Trades (recent 25)">
