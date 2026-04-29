@@ -559,6 +559,10 @@ def run_morning_prep():
     """Run morning analysis to prepare for the trading day."""
     if _morning_prep_done_today():
         return
+    if kill_switch_active(load_portfolio()):
+        logger.info("Morning prep skipped: kill-switch active")
+        _mark_morning_prep_done()
+        return
 
     logger.info("☀️ Running morning prep...")
 
@@ -669,10 +673,12 @@ def run_morning_prep():
         _mark_morning_prep_done()
     except (ConnectionError, TimeoutError, OSError) as e:
         logger.exception("Morning prep failed (network/IO)")
-        send_alert("Morning Prep Error", str(e))
+        send_alert("Morning Prep Error", f"{e}\n\nKein Auto-Retry. Manuell: /morning")
+        _mark_morning_prep_done()
     except Exception as e:
         logger.exception("Morning prep failed (unexpected)")
-        send_alert("Morning Prep Error", str(e))
+        send_alert("Morning Prep Error", f"{e}\n\nKein Auto-Retry. Manuell: /morning")
+        _mark_morning_prep_done()
 
 
 def run_opening_check(market: str):
@@ -682,6 +688,10 @@ def run_opening_check(market: str):
         return
 
     portfolio = load_portfolio()
+    if kill_switch_active(portfolio):
+        logger.info("%s open check skipped: kill-switch active", market.upper())
+        _mark_opening_check_done(market)
+        return
     if not portfolio.get("open_trades") and not portfolio.get("watch_levels"):
         logger.info("%s open check skipped — no open trades or watch levels", market.upper())
         _mark_opening_check_done(market)
@@ -716,7 +726,8 @@ def run_opening_check(market: str):
         _mark_opening_check_done(market)
     except Exception as e:
         logger.exception("%s open check failed", market.upper())
-        send_alert(f"{market.upper()} Open Check Error", str(e))
+        send_alert(f"{market.upper()} Open Check Error", f"{e}\n\nKein Auto-Retry heute.")
+        _mark_opening_check_done(market)
 
 
 def run_event_check():

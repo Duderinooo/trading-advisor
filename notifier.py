@@ -4,6 +4,8 @@ import os
 import re
 import asyncio
 import logging
+import threading
+import time
 
 from telegram import Bot
 from telegram.error import TelegramError
@@ -11,6 +13,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+# Alert dedup: drop repeats of same title within window. Defends against
+# bugs that spam send_alert in a tight retry loop (incident 2026-04-29:
+# cache_control bug + missing mark-done sent 15× same error in minutes).
+_ALERT_DEDUP_WINDOW_SEC = 600  # 10 min
+_alert_last_seen: dict[str, float] = {}
+_alert_lock = threading.Lock()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -170,7 +179,14 @@ def send_daily_summary(summary: str):
 
 
 def send_alert(title: str, message: str):
-    """Send a general alert."""
+    """Send a general alert. Dedup by title within _ALERT_DEDUP_WINDOW_SEC."""
+    now = time.monotonic()
+    with _alert_lock:
+        last = _alert_last_seen.get(title)
+        if last is not None and (now - last) < _ALERT_DEDUP_WINDOW_SEC:
+            logger.warning("send_alert suppressed (dedup): %s", title)
+            return
+        _alert_last_seen[title] = now
     send_notification(f"⚠️ *{title}*\n\n{message}")
 
 
