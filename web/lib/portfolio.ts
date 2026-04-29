@@ -28,6 +28,10 @@ export async function readPortfolio(): Promise<Portfolio> {
     dd_halt_active: data.dd_halt_active,
     heartbeat: data.heartbeat,
     correlation_matrix: data.correlation_matrix,
+    last_morning_trace: data.last_morning_trace,
+    last_event_trace: data.last_event_trace,
+    last_opening_trace_xetra: data.last_opening_trace_xetra,
+    last_opening_trace_us: data.last_opening_trace_us,
   };
 }
 

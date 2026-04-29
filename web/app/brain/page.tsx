@@ -1,8 +1,11 @@
+import AnalyzeTraceCard from "@/components/AnalyzeTraceCard";
 import BrainTable from "@/components/BrainTable";
+import { readPortfolio } from "@/lib/portfolio";
 
 export const dynamic = "force-dynamic";
 
-export default function BrainPage() {
+export default async function BrainPage() {
+  const portfolio = await readPortfolio();
   return (
     <>
       <header className="border-b border-zinc-800 px-6 py-4 flex items-center justify-between flex-wrap gap-3">
@@ -29,6 +32,7 @@ export default function BrainPage() {
         </div>
       </header>
       <main className="p-6 max-w-7xl mx-auto">
+        <AnalyzeTraceCard portfolio={portfolio} />
         <BrainTable />
       </main>
     </>

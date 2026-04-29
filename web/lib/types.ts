@@ -135,6 +135,27 @@ export type CashMovement = {
   note?: string;
 };
 
+export type AnalyzeTrace = {
+  ts: string;
+  mode: string;
+  tool_called: boolean;
+  tool_input_keys: string[];
+  raw_levels_count: number;
+  raw_tickers: string[];
+  stop_reason: string | null;
+  output_tokens: number | null;
+  max_tokens_budget: number;
+  truncated: boolean;
+  malformed_tool_input: boolean;
+  sonnet_text: string;
+  dropped_excluded?: number;
+  dropped_self_sabotage?: number;
+  final_count?: number;
+  kept_existing?: number;
+  new_set?: number;
+  final_tickers?: string[];
+};
+
 export type Portfolio = {
   open_trades: OpenTrade[];
   closed_trades: ClosedTrade[];
@@ -153,6 +174,10 @@ export type Portfolio = {
   dd_halt_active?: boolean;
   heartbeat?: Heartbeat;
   correlation_matrix?: CorrelationMatrix;
+  last_morning_trace?: AnalyzeTrace;
+  last_event_trace?: AnalyzeTrace;
+  last_opening_trace_xetra?: AnalyzeTrace;
+  last_opening_trace_us?: AnalyzeTrace;
 };
 
 export type GateBlock = {
