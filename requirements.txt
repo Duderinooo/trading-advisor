@@ -1,0 +1,7 @@
+anthropic>=0.39.0
+yfinance>=0.2.40
+python-telegram-bot>=21.0
+python-dotenv>=1.0.0
+pandas>=2.0.0
+mempalace>=3.3.0
+feedparser>=6.0.10

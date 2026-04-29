@@ -1,0 +1,6 @@
+wing: trading_advisor
+rooms:
+- name: configuration
+  description: Files related to configuration
+  keywords:
+  - configuration
