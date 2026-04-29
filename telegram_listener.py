@@ -1220,9 +1220,25 @@ async def morning_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         pf = load_portfolio()
         levels = pf.get("watch_levels", [])
-        await update.message.reply_text(
+        tr = pf.get("last_morning_trace") or {}
+        trace_lines = [
             f"✅ Morning Prep fertig. {len(levels)} Watch-Level gesetzt."
-        )
+        ]
+        if tr:
+            trace_lines.append(
+                f"Trace: tool_called={tr.get('tool_called')} "
+                f"raw={tr.get('raw_levels_count')} "
+                f"final={tr.get('final_count')} "
+                f"stop={tr.get('stop_reason')} "
+                f"out_tok={tr.get('output_tokens')}/{tr.get('max_tokens_budget')}"
+            )
+            if tr.get("malformed_tool_input"):
+                trace_lines.append("⚠️ Tool-Input malformed (no 'levels' key) — likely truncated")
+            if tr.get("truncated"):
+                trace_lines.append("⚠️ Output truncated at max_tokens")
+            if tr.get("sonnet_text"):
+                trace_lines.append(f"Sonnet: _{tr['sonnet_text'][:200]}_")
+        await update.message.reply_text("\n".join(trace_lines))
     except Exception as e:
         logger.exception("Manual morning prep failed")
         await update.message.reply_text(f"❌ Morning Prep Fehler: {e}")
