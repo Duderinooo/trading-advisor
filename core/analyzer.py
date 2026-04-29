@@ -224,6 +224,100 @@ def _run_red_team(rec: dict, snap: dict | None, regime: str, model: str) -> dict
     return None
 
 
+# ---------- Trace builder (per-mode pipeline visibility) ----------
+
+_TRACE_KEY_BY_MODE = {
+    "morning": "last_morning_trace",
+    "event": "last_event_trace",
+    # opening uses event_context to pick xetra/us slot; resolved at call site.
+}
+
+
+def _build_trace(
+    mode: str,
+    response,
+    *,
+    watch_tool_called: bool,
+    watch_tool_raw_input: dict | None,
+    new_levels: list | None,
+    text_parts: list[str],
+    max_tokens: int,
+) -> dict:
+    """Capture pipeline state for /brain dashboard + Telegram /morning reply.
+
+    Mirrors what we wish we'd had on 2026-04-29 when set_watch_levels({}) silently
+    masked a max_tokens truncation as 'no setups today' for 3 days.
+    """
+    _stop = getattr(response, "stop_reason", None)
+    _usage = getattr(response, "usage", None)
+    _out_tok = getattr(_usage, "output_tokens", None) if _usage else None
+    malformed = (
+        watch_tool_called
+        and watch_tool_raw_input is not None
+        and "levels" not in watch_tool_raw_input
+    )
+    return {
+        "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "mode": mode,
+        "tool_called": watch_tool_called,
+        "tool_input_keys": sorted(watch_tool_raw_input.keys()) if watch_tool_raw_input else [],
+        "raw_levels_count": len(new_levels) if new_levels is not None else 0,
+        "raw_tickers": [(lvl.get("ticker") or "?") for lvl in (new_levels or [])],
+        "stop_reason": _stop,
+        "output_tokens": _out_tok,
+        "max_tokens_budget": max_tokens,
+        "truncated": _stop == "max_tokens",
+        "malformed_tool_input": malformed,
+        "sonnet_text": ("\n".join(t for t in text_parts if t))[:400],
+    }
+
+
+def _log_trace_warnings(trace: dict) -> None:
+    """Emit INFO summary + ERROR-level for the failure-modes that masked the
+    2026-04-29 watchlevel outage (no tool call / malformed input / truncated)."""
+    mode = trace.get("mode") or "?"
+    logger.info(
+        "TRACE [%s]: tool_called=%s raw_levels=%d stop=%s out_tok=%s/%s truncated=%s malformed=%s text_preview=%r",
+        mode,
+        trace["tool_called"],
+        trace["raw_levels_count"],
+        trace["stop_reason"],
+        trace["output_tokens"],
+        trace["max_tokens_budget"],
+        trace["truncated"],
+        trace["malformed_tool_input"],
+        trace["sonnet_text"][:120],
+    )
+    # Morning is the only mode that *requires* set_watch_levels — others may legitimately
+    # call no watch-tool (recommend_entry / recommend_exit / no action).
+    if mode == "morning" and not trace["tool_called"]:
+        logger.error("TRACE [%s]: set_watch_levels NOT called", mode)
+    elif trace["malformed_tool_input"]:
+        logger.error(
+            "TRACE [%s]: tool input malformed (keys=%s) — likely truncated",
+            mode, trace["tool_input_keys"],
+        )
+    elif trace["truncated"]:
+        logger.error(
+            "TRACE [%s]: response truncated at max_tokens=%d — bump budget or shorten prompt",
+            mode, trace["max_tokens_budget"],
+        )
+
+
+def _trace_key(mode: str, event_context: str | None) -> str | None:
+    """Pick portfolio.json key for the trace. Opening splits xetra/us via context."""
+    if mode in _TRACE_KEY_BY_MODE:
+        return _TRACE_KEY_BY_MODE[mode]
+    if mode == "opening":
+        ctx = (event_context or "").upper()
+        if "XETRA" in ctx:
+            return "last_opening_trace_xetra"
+        if " US " in f" {ctx} " or ctx.startswith("US"):
+            return "last_opening_trace_us"
+        return "last_opening_trace"
+    return None
+
+
 # ---------- Main orchestrator ----------
 
 def analyze_portfolio(
@@ -1513,55 +1607,23 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
         except Exception:
             logger.exception("Correlation snapshot failed")
 
-    # Morning watchlevel trace — every stage logged + persisted for /brain + dashboard.
-    # User-requested: "I see empty list for 3 days, want to know if function ran +
-    # why no levels". Trace makes the pipeline visible end-to-end.
-    morning_trace: dict | None = None
-    if mode == "morning":
-        _stop = getattr(response, "stop_reason", None)
-        _usage = getattr(response, "usage", None)
-        _out_tok = getattr(_usage, "output_tokens", None) if _usage else None
-        _malformed = (
-            watch_tool_called
-            and watch_tool_raw_input is not None
-            and "levels" not in watch_tool_raw_input
+    # Per-mode trace — every stage logged + persisted for /brain + dashboard.
+    # User-requested 2026-04-29: "Dann sehen wir wurde nicht gesetzt weil gab keine
+    # guten" — trace makes pipeline visible end-to-end. Originally morning-only;
+    # generalized to opening/event after the same truncation failure-mode could
+    # silently mask their tool-calls too (max_tokens=200/300 even tighter).
+    trace: dict | None = None
+    trace_key = _trace_key(mode, event_context)
+    if trace_key is not None:
+        trace = _build_trace(
+            mode, response,
+            watch_tool_called=watch_tool_called,
+            watch_tool_raw_input=watch_tool_raw_input,
+            new_levels=new_levels,
+            text_parts=text_parts,
+            max_tokens=max_tokens,
         )
-        morning_trace = {
-            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "tool_called": watch_tool_called,
-            "tool_input_keys": sorted(watch_tool_raw_input.keys()) if watch_tool_raw_input else [],
-            "raw_levels_count": len(new_levels) if new_levels is not None else 0,
-            "raw_tickers": [(lvl.get("ticker") or "?") for lvl in (new_levels or [])],
-            "stop_reason": _stop,
-            "output_tokens": _out_tok,
-            "max_tokens_budget": max_tokens,
-            "truncated": _stop == "max_tokens",
-            "malformed_tool_input": _malformed,
-            "sonnet_text": ("\n".join(t for t in text_parts if t))[:400],
-        }
-        logger.info(
-            "MORNING TRACE: tool_called=%s raw_levels=%d stop=%s out_tok=%s/%s truncated=%s malformed=%s text_preview=%r",
-            morning_trace["tool_called"],
-            morning_trace["raw_levels_count"],
-            morning_trace["stop_reason"],
-            morning_trace["output_tokens"],
-            morning_trace["max_tokens_budget"],
-            morning_trace["truncated"],
-            morning_trace["malformed_tool_input"],
-            morning_trace["sonnet_text"][:120],
-        )
-        if not watch_tool_called:
-            logger.error("MORNING TRACE: set_watch_levels NOT called by Sonnet")
-        elif _malformed:
-            logger.error(
-                "MORNING TRACE: set_watch_levels called with malformed input (no 'levels' key, got keys=%s) — likely truncated",
-                sorted(watch_tool_raw_input.keys()),
-            )
-        elif _stop == "max_tokens":
-            logger.error(
-                "MORNING TRACE: response truncated at max_tokens=%d — bump budget or shorten prompt",
-                max_tokens,
-            )
+        _log_trace_warnings(trace)
 
     # Reload-merge save: protects concurrent writes from the Telegram listener
     # (e.g. /confirm that moves a pending_rec into open_trades).
@@ -1569,15 +1631,15 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
         fresh = load_portfolio()
         if corr_matrix is not None:
             fresh["correlation_matrix"] = corr_matrix
-        if morning_trace is not None:
-            fresh["last_morning_trace"] = morning_trace
+        if trace is not None and trace_key is not None:
+            fresh[trace_key] = trace
         if new_levels is not None:
             filtered = [lvl for lvl in new_levels if lvl.get("ticker") not in excluded]
             dropped = len(new_levels) - len(filtered)
             if dropped:
                 logger.warning("Dropped %d watch level(s) on excluded tickers", dropped)
-                if morning_trace is not None:
-                    morning_trace["dropped_excluded"] = dropped
+                if trace is not None:
+                    trace["dropped_excluded"] = dropped
 
             # Self-sabotage filter: drop resistance_reject whose trigger sits between
             # an open trade's entry and TP1. Such a level fires on the natural tag-and-
@@ -1612,8 +1674,8 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                     continue
                 _conflict_filtered.append(lvl)
             filtered = _conflict_filtered
-            if morning_trace is not None and _dropped_self_sabotage:
-                morning_trace["dropped_self_sabotage"] = _dropped_self_sabotage
+            if trace is not None and _dropped_self_sabotage:
+                trace["dropped_self_sabotage"] = _dropped_self_sabotage
 
             # Merge-by-ticker instead of full replace: Sonnet returning [] used to
             # WIPE all morning levels (Bug 2026-04-28: 08:00 set_watch_levels([]) →
@@ -1636,11 +1698,11 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                         "Watch levels: Sonnet returned 0 new levels — keeping %d existing",
                         len(existing),
                     )
-                if morning_trace is not None:
-                    morning_trace["final_count"] = len(existing)
-                    morning_trace["kept_existing"] = len(existing)
-                    morning_trace["new_set"] = 0
-                    morning_trace["final_tickers"] = [
+                if trace is not None:
+                    trace["final_count"] = len(existing)
+                    trace["kept_existing"] = len(existing)
+                    trace["new_set"] = 0
+                    trace["final_tickers"] = [
                         (lvl.get("ticker") or "?") for lvl in existing
                     ]
             else:
@@ -1655,11 +1717,11 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                     "Watch levels merged: %d kept (other tickers) + %d new = %d total",
                     len(kept), len(filtered), len(merged),
                 )
-                if morning_trace is not None:
-                    morning_trace["final_count"] = len(merged)
-                    morning_trace["kept_existing"] = len(kept)
-                    morning_trace["new_set"] = len(filtered)
-                    morning_trace["final_tickers"] = [
+                if trace is not None:
+                    trace["final_count"] = len(merged)
+                    trace["kept_existing"] = len(kept)
+                    trace["new_set"] = len(filtered)
+                    trace["final_tickers"] = [
                         (lvl.get("ticker") or "?") for lvl in merged
                     ]
         if rec is not None:
