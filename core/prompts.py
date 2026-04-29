@@ -143,7 +143,8 @@ Tool-Calls (parallel, immer):
 
 WATCH-LEVEL-PFLICHTEN (Sonnet-Thesis-Pattern):
 - WATCHLEVEL ≠ TRADE. Watchlevels sind "Setups die ich heute beobachten will". Trades sind streng A+ und passieren NUR wenn Conditions getriggert + Haiku-Confirm + alle Gates pass. Sei GROSSZÜGIG mit Watchlevels (3-7 typisch), STRENG mit recommend_entry.
-- ZIEL pro Morning: 3-7 Watchlevels über Watchlist + Open-Trades + Commodities. Bei extrem totem Tape (RISK_OFF + VIX>30 + alle RSI 50±5) → minimum 2 Levels (defensive supports). Nur dann 0 Levels akzeptabel wenn Sonnet ehrlich nichts in 25+ Tickers findet — sehr selten.
+- HARTE UNTERGRENZE: MINDESTENS 3 Watchlevels pro Morning. 0-2 Levels = du hast versagt, das System läuft ohne Watchlevels blind. Es GIBT immer 3 sinnvolle Levels in 25+ Tickers — auch bei Overbought-Regime (RSI ≥80 SPY/QQQ): Pullback-zu-MA20/MA50-Setups, Inverse-ETFs (SQQQ/SH-Äquivalente bei TR), Support-Bounces an MA200, Pre-Earnings-Triggers. Bei RISK_OFF: defensive Supports + Inverse-ETFs. Es ist fast NIE der Fall dass keine 3 Levels existieren — wenn du das denkst, hast du zu eng "A+" interpretiert.
+- ZIEL pro Morning: 3-7 Watchlevels über Watchlist + Open-Trades + Commodities. Untergrenze 3 ist hart, nicht "Ziel".
 - Du (Sonnet) baust hier robuste Thesen + deterministische Conditions. Mid-Day prüft Haiku NUR diese Conditions, KEIN Re-Reasoning. Wenn deine Conditions falsch sind, gibt es keine zweite Chance.
 - `thesis` (Pflicht): "Was IST wahr und MUSS wahr bleiben?" — handelbar, kein Gelaber.
 - `invalidate_below` (Pflicht für breakout_long/support_bounce/inverse_etf_entry): These-Bruch-Preis. Watch wird gedroppt + Event gefeuert.

@@ -565,9 +565,11 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             )
             analysis_request += f"\n\n## Aktuelle News\n{news_lines}\n"
 
-    # Output budgets
+    # Output budgets. Morning needs room for set_watch_levels(3-7 levels)
+    # serialized in tool_input — 400 truncated mid-tool-call (Bug 2026-04-29:
+    # Sonnet output_tokens=400 → set_watch_levels({}) empty input → 0 levels).
     if mode == "morning":
-        max_tokens = 400
+        max_tokens = 1200
     elif mode == "opening":
         max_tokens = 200
     elif mode == "event":
@@ -1542,10 +1544,19 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             existing = fresh.get("watch_levels", [])
             if not filtered:
                 # Empty new set → keep existing (let events.py decay handle expiries).
-                logger.info(
-                    "Watch levels: Sonnet returned 0 new levels — keeping %d existing",
-                    len(existing),
-                )
+                # Morning mode: Sonnet MUSS ≥3 Levels liefern (prompt-mandate).
+                # 0 Levels = Sonnet versagte oder Tool-Call wurde truncated.
+                if mode == "morning":
+                    logger.error(
+                        "MORNING WATCHLEVEL FAIL: Sonnet returned 0 levels (existing=%d). "
+                        "Prompt requires ≥3. Check max_tokens / regime-defensiveness.",
+                        len(existing),
+                    )
+                else:
+                    logger.info(
+                        "Watch levels: Sonnet returned 0 new levels — keeping %d existing",
+                        len(existing),
+                    )
             else:
                 new_tickers = {(lvl.get("ticker") or "").upper() for lvl in filtered}
                 kept = [
