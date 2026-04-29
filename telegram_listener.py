@@ -9,6 +9,7 @@ import re
 import logging
 import threading
 import asyncio
+import functools
 from datetime import datetime, timedelta
 
 from telegram import Update
@@ -37,6 +38,44 @@ def _authorized(update: Update) -> bool:
     if not update.effective_chat or not TELEGRAM_CHAT_ID:
         return False
     return str(update.effective_chat.id) == str(TELEGRAM_CHAT_ID)
+
+
+def telegram_handler(fn):
+    """Wrap a CommandHandler coroutine with two safety nets:
+
+    1. Null-message guard: Telegram delivers Update objects without `.message`
+       for edited_message / channel_post / reactions / inline_query. Without
+       this guard, calling `update.message.reply_text(...)` AttributeErrors
+       silently. (Bug 2026-04-28: /add ran twice because first call crashed
+       on `update.message=None` after restart-buffered update, leaving state
+       partially mutated and user with no Telegram feedback.)
+    2. Generic exception → reply: surface crashes to the chat instead of
+       silent log-only failure. State changes BEFORE the crash already saved
+       (handlers commit under portfolio_lock) — user needs to know.
+    """
+    @functools.wraps(fn)
+    async def wrapped(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        if update.message is None:
+            logger.debug(
+                "Update without .message in %s (effective_message type=%s) — skipped",
+                fn.__name__,
+                type(update.effective_message).__name__ if update.effective_message else "None",
+            )
+            return
+        try:
+            return await fn(update, ctx)
+        except Exception as e:
+            logger.exception("Handler %s crashed", fn.__name__)
+            try:
+                cmd = fn.__name__.removesuffix("_handler")
+                await update.message.reply_text(
+                    f"⚠️ Internal error in /{cmd}: `{type(e).__name__}: {e}`\n"
+                    "_State-Änderungen vor dem Crash sind bereits gespeichert. Log prüfen._",
+                    parse_mode="Markdown",
+                )
+            except Exception:
+                pass
+    return wrapped
 
 
 _NUMBER_RE = re.compile(r"^\d+(?:\.\d+)?$")
@@ -110,6 +149,7 @@ def _parse_close_args(args: list[str]) -> tuple[str | None, float | None, str | 
 _WATCH_TYPES = {"breakout_long", "support_bounce", "resistance_reject", "inverse_etf_entry"}
 
 
+@telegram_handler
 async def watch_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Manually add a watch-level. Format: /watch TICKER TYPE @PREIS [thesis...]
 
@@ -181,6 +221,7 @@ async def watch_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+@telegram_handler
 async def watchremove_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Remove watch-level(s) for a ticker. Format: /watchremove TICKER"""
     if not _authorized(update):
@@ -209,6 +250,7 @@ async def watchremove_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+@telegram_handler
 async def watchclear_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Hard-wipe ALL watch-levels. Confirm with arg 'yes'."""
     if not _authorized(update):
@@ -228,6 +270,7 @@ async def watchclear_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🗑️ Alle {n} Watchlevels entfernt.")
 
 
+@telegram_handler
 async def watchlist_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Show all active watch-levels."""
     if not _authorized(update):
@@ -250,6 +293,7 @@ async def watchlist_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
+@telegram_handler
 async def add_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Manual add to existing position. Format: /add TICKER STK X @PREIS
 
@@ -597,6 +641,7 @@ async def _handle_add_confirm(
     )
 
 
+@telegram_handler
 async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _authorized(update):
         return
@@ -841,6 +886,7 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+@telegram_handler
 async def close_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _authorized(update):
         return
@@ -972,6 +1018,7 @@ def _parse_dividend_args(args: list[str]) -> tuple[str | None, float | None, str
     return ticker, amount, " ".join(reason_tokens).strip()
 
 
+@telegram_handler
 async def dividend_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _authorized(update):
         return
@@ -1018,6 +1065,7 @@ async def dividend_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+@telegram_handler
 async def positions_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _authorized(update):
         return
@@ -1079,6 +1127,7 @@ async def positions_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
+@telegram_handler
 async def cancel_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _authorized(update):
         return
@@ -1115,6 +1164,7 @@ async def cancel_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"❌ Empfehlung {removed.get('ticker')} verworfen.")
 
 
+@telegram_handler
 async def panic_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _authorized(update):
         return
@@ -1128,6 +1178,7 @@ async def panic_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+@telegram_handler
 async def resume_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _authorized(update):
         return
@@ -1135,6 +1186,7 @@ async def resume_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Kill-Switch AUS. Trading wieder aktiv.")
 
 
+@telegram_handler
 async def killstatus_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _authorized(update):
         return
@@ -1148,6 +1200,7 @@ async def killstatus_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Kill-Switch AUS.")
 
 
+@telegram_handler
 async def morning_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Manual re-run of morning prep (re-populates watch_levels)."""
     if not _authorized(update):
@@ -1172,6 +1225,7 @@ async def morning_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Morning Prep Fehler: {e}")
 
 
+@telegram_handler
 async def help_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _authorized(update):
         return
@@ -1198,8 +1252,30 @@ async def help_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def _global_error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
+    """Last-resort safety net for anything that escapes per-handler @telegram_handler.
+    Logs the error + tries to ping the user (best-effort)."""
+    err = ctx.error
+    logger.exception("Telegram global error handler caught: %r", err)
+    try:
+        chat_id = TELEGRAM_CHAT_ID
+        if chat_id and ctx.bot is not None:
+            await ctx.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"⚠️ *Telegram-Listener-Crash*\n"
+                    f"`{type(err).__name__}: {err}`\n"
+                    f"_Bot weiter aktiv. Log prüfen._"
+                ),
+                parse_mode="Markdown",
+            )
+    except Exception:
+        pass
+
+
 async def _async_run():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_error_handler(_global_error_handler)
     app.add_handler(CommandHandler("confirm", confirm_handler))
     app.add_handler(CommandHandler("add", add_handler))
     app.add_handler(CommandHandler("watch", watch_handler))
