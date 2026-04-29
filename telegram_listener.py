@@ -1183,7 +1183,16 @@ async def resume_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _authorized(update):
         return
     set_kill_switch(False)
-    await update.message.reply_text("✅ Kill-Switch AUS. Trading wieder aktiv.")
+    # If morning prep got skipped today by the kill-switch gate, watch_levels stays
+    # empty until tomorrow 08:00 unless user re-runs it. Hint so day isn't wasted.
+    pf = load_portfolio()
+    today = datetime.now().strftime("%Y-%m-%d")
+    morning_done = pf.get("last_morning_prep_date") == today
+    levels = pf.get("watch_levels", []) or []
+    msg = "✅ Kill-Switch AUS. Trading wieder aktiv."
+    if morning_done and not levels:
+        msg += "\n\n💡 Tipp: `/morning` um Watchlevels zu seedlen — sonst bleibt Tag ohne Setups (Auto-Morgen läuft erst morgen 08:00)."
+    await update.message.reply_text(msg)
 
 
 @telegram_handler

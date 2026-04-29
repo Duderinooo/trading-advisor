@@ -20,7 +20,19 @@ All writers acquire `core.portfolio.portfolio_lock` (`RLock`). Both the main loo
 4. **TR supports Bruchstücke (fractional shares)**: `shares` is `float`, rounded to 4 decimals. Do not cast to `int`.
 5. **Actionable-only Telegram**: event/price/news verdicts are sent only if `_is_actionable(analysis)` (prefix ENTRY/EXIT/BUY/SELL/KAUFEN/VERKAUFEN/CLOSE). PASS/HALTEN/HOLD are logged and dropped to avoid noise.
    - **Filter at output, not input.** Do NOT drop news/events before they reach Claude "to save cost" — Claude must see all stock/geo news to decide if an entry exists. A dropped news cycle missed Intel earnings +20% previously. The output-level `_is_actionable` check already suppresses PASS/HALTEN noise.
-6. **Kill-switch** blocks new entries and event/news Claude calls, but leaves SL/TP monitoring running. Never let `run_price_check` skip SL checks under the kill-switch — open positions must still auto-exit.
+6. **Kill-switch** blocks new entries and event/news Claude calls, but leaves SL/TP monitoring running. Never let `run_price_check` skip SL checks under the kill-switch — open positions must still auto-exit. `run_morning_prep` and `run_opening_check` also skip silently under kill-switch and mark themselves done so they don't retry until the next day (incident 2026-04-29: 15× retry-spam when kill-switch was off but cache_control bug caused error path).
+
+## Manual override semantics (2026-04-29)
+
+- `analyze_portfolio(force=False, bypass_cooldown=False)`:
+  - `force=True` is auto-set for `mode in ("morning","opening","event")` — uses the *forced-call* cooldown (`MIN_MINUTES_BETWEEN_FORCED_ANALYSES = 15`) instead of the regular cooldown. Daily cap still enforced.
+  - `bypass_cooldown=True` skips even the forced-cooldown. Only `MAX_ANALYSES_PER_DAY` blocks. Use only for explicit user-triggered runs.
+- `run_morning_prep(force=False)`:
+  - `force=True` (used by Telegram `/morning` handler) bypasses three things together: `last_morning_prep_date` dedup, `kill_switch_active` skip, *and* the forced-call cooldown (passes `bypass_cooldown=force` into `analyze_portfolio`).
+  - Auto-runs from the main loop pass `force=False` and remain strict.
+- `run_opening_check(market)` has no `force` flag — auto only, no manual trigger.
+
+The asymmetry is intentional: `/morning` is the recovery lever for a missed or empty morning prep (e.g. cache_control regression, regime-defensiveness false-positive). All other paths must honor cooldowns.
 
 ## Execution-quality gates (guide-aligned, order matters)
 

@@ -181,7 +181,11 @@ def send_daily_summary(summary: str):
 def send_alert(title: str, message: str):
     """Send a general alert. Dedup by title within _ALERT_DEDUP_WINDOW_SEC."""
     now = time.monotonic()
+    _stale_cutoff = now - 2 * _ALERT_DEDUP_WINDOW_SEC
     with _alert_lock:
+        # Prune entries past 2× window — keeps dict bounded across long runs.
+        for k in [k for k, t in _alert_last_seen.items() if t < _stale_cutoff]:
+            del _alert_last_seen[k]
         last = _alert_last_seen.get(title)
         if last is not None and (now - last) < _ALERT_DEDUP_WINDOW_SEC:
             logger.warning("send_alert suppressed (dedup): %s", title)
