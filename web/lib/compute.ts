@@ -42,6 +42,36 @@ export function computeEquityCurve(p: Portfolio): EquityPoint[] {
       dd_pct: Math.round(dd_pct * 100) / 100,
     });
   }
+
+  // Live point: realized equity + unrealized PnL from open trades using
+  // heartbeat.live_quotes (ls-tc) → heartbeat.prices fallback. Refreshes as
+  // the dashboard polls /api/portfolio every 30s.
+  const liveQuotes = p.heartbeat?.live_quotes ?? {};
+  const fallbackPrices = p.heartbeat?.prices ?? {};
+  let unrealized = 0;
+  let liveCount = 0;
+  for (const t of p.open_trades) {
+    const lq = liveQuotes[t.ticker]?.price;
+    const fb = fallbackPrices[t.ticker];
+    const live = typeof lq === "number" ? lq : typeof fb === "number" ? fb : null;
+    const entry = Number(t.entry_price ?? 0);
+    const shares = Number(t.shares ?? 0);
+    if (live != null && entry > 0 && shares > 0) {
+      unrealized += (live - entry) * shares;
+      liveCount += 1;
+    }
+  }
+  if (liveCount > 0) {
+    const liveEquity = equity + unrealized;
+    const livePeak = Math.max(peak, liveEquity);
+    const dd_pct = livePeak > 0 ? ((livePeak - liveEquity) / livePeak) * 100 : 0;
+    points.push({
+      date: "now",
+      equity: Math.round(liveEquity * 100) / 100,
+      peak: Math.round(livePeak * 100) / 100,
+      dd_pct: Math.round(dd_pct * 100) / 100,
+    });
+  }
   return points;
 }
 
@@ -172,6 +202,27 @@ export function currentEquity(p: Portfolio): number {
   for (const t of p.closed_trades) eq += Number(t.pnl_eur ?? 0);
   for (const m of p.cash_movements ?? []) eq += Number(m.amount ?? 0);
   return Math.round(eq * 100) / 100;
+}
+
+export function unrealizedPnl(p: Portfolio): number {
+  const liveQuotes = p.heartbeat?.live_quotes ?? {};
+  const fallbackPrices = p.heartbeat?.prices ?? {};
+  let pnl = 0;
+  for (const t of p.open_trades) {
+    const lq = liveQuotes[t.ticker]?.price;
+    const fb = fallbackPrices[t.ticker];
+    const live = typeof lq === "number" ? lq : typeof fb === "number" ? fb : null;
+    const entry = Number(t.entry_price ?? 0);
+    const shares = Number(t.shares ?? 0);
+    if (live != null && entry > 0 && shares > 0) {
+      pnl += (live - entry) * shares;
+    }
+  }
+  return Math.round(pnl * 100) / 100;
+}
+
+export function currentEquityLive(p: Portfolio): number {
+  return Math.round((currentEquity(p) + unrealizedPnl(p)) * 100) / 100;
 }
 
 export function todayRealizedLoss(p: Portfolio): { eur: number; pct: number } {

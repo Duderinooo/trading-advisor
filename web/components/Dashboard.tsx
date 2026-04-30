@@ -7,9 +7,11 @@ import {
   computeHitStats,
   computeSetupTypeStats,
   currentEquity,
+  currentEquityLive,
   openExposure,
   portfolioHeat,
   todayRealizedLoss,
+  unrealizedPnl,
 } from "@/lib/compute";
 import { Card, Kpi } from "@/components/Card";
 import EquityChart from "@/components/EquityChart";
@@ -63,6 +65,8 @@ export default function Dashboard({ initial }: { initial: Portfolio }) {
   }, [autoRefresh, refresh]);
 
   const equity = useMemo(() => currentEquity(portfolio), [portfolio]);
+  const equityLive = useMemo(() => currentEquityLive(portfolio), [portfolio]);
+  const unrealized = useMemo(() => unrealizedPnl(portfolio), [portfolio]);
   const exposure = useMemo(() => openExposure(portfolio), [portfolio]);
   const curve = useMemo(() => computeEquityCurve(portfolio), [portfolio]);
   const stats = useMemo(
@@ -79,7 +83,7 @@ export default function Dashboard({ initial }: { initial: Portfolio }) {
   const dd = curve.length ? curve[curve.length - 1].dd_pct : 0;
   const totalReturn =
     portfolio.total_capital_eur > 0
-      ? ((equity - portfolio.total_capital_eur) /
+      ? ((equityLive - portfolio.total_capital_eur) /
           portfolio.total_capital_eur) *
         100
       : 0;
@@ -148,9 +152,14 @@ export default function Dashboard({ initial }: { initial: Portfolio }) {
       <main className="p-6 space-y-6 max-w-7xl mx-auto">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <Kpi
-            label="Equity"
-            value={`${equity.toFixed(2)} €`}
-            sub={`Start ${portfolio.total_capital_eur.toFixed(0)} €`}
+            label="Equity (Live)"
+            value={`${equityLive.toFixed(2)} €`}
+            tone={unrealized > 0 ? "good" : unrealized < 0 ? "bad" : "neutral"}
+            sub={
+              unrealized !== 0
+                ? `realized ${equity.toFixed(2)} · unreal ${unrealized >= 0 ? "+" : ""}${unrealized.toFixed(2)} €`
+                : `realized ${equity.toFixed(2)} €`
+            }
           />
           <Kpi
             label="Total Return"
