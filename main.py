@@ -1144,15 +1144,35 @@ def main():
         try:
             from core import get_daily_usage
             _live_prices: dict[str, float] = {}
+            _live_quotes: dict[str, dict] = {}
             try:
-                _open = load_portfolio().get("open_trades", []) or []
-                _tickers = [t["ticker"] for t in _open if t.get("ticker")]
+                _pf_snapshot = load_portfolio()
+                _open = _pf_snapshot.get("open_trades", []) or []
+                _watch = _pf_snapshot.get("watch_levels", []) or []
+                _tickers = list({
+                    *(t["ticker"] for t in _open if t.get("ticker")),
+                    *(w["ticker"] for w in _watch if w.get("ticker")),
+                })
                 if _tickers and is_market_hours():
                     _md = get_market_data(_tickers)
                     for _tk, _data in _md.items():
-                        _p = _data.get("price") if isinstance(_data, dict) else None
+                        if not isinstance(_data, dict):
+                            continue
+                        _p = _data.get("price")
                         if isinstance(_p, (int, float)) and _p > 0:
                             _live_prices[_tk] = float(_p)
+                        # Full live overlay (bid/ask/ts/change/source) — only when
+                        # ls-tc.de actually delivered something.
+                        if _data.get("live_source"):
+                            _live_quotes[_tk] = {
+                                "price": _data.get("live_price"),
+                                "bid": _data.get("live_bid"),
+                                "ask": _data.get("live_ask"),
+                                "ts": _data.get("live_ts"),
+                                "change_pct": _data.get("live_change_pct"),
+                                "market_status": _data.get("live_market_status"),
+                                "source": _data.get("live_source"),
+                            }
             except Exception:
                 logger.exception("Live-price snapshot failed (heartbeat)")
             with portfolio_lock:
@@ -1163,6 +1183,7 @@ def main():
                     "api_calls_today": get_daily_usage(),
                     "api_cap": config.MAX_ANALYSES_PER_DAY,
                     "prices": _live_prices,
+                    "live_quotes": _live_quotes,
                 }
                 save_portfolio(_pf)
         except Exception:

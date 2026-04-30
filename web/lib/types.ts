@@ -112,12 +112,23 @@ export type PendingRecommendation = {
   urgency?: "now" | "today" | "eod";
 };
 
+export type LiveQuote = {
+  price: number | null;
+  bid: number | null;
+  ask: number | null;
+  ts: string | null;
+  change_pct: number | null;
+  market_status: "open" | "closed" | null;
+  source: string | null;
+};
+
 export type Heartbeat = {
   last_tick: string;
   market_hours: boolean;
   api_calls_today: number;
   api_cap: number;
   prices?: Record<string, number>;
+  live_quotes?: Record<string, LiveQuote>;
 };
 
 export type CorrelationMatrix = {

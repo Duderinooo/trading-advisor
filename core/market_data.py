@@ -22,6 +22,40 @@ _EARNINGS_CACHE_TTL = 6 * 3600
 _dividend_cache: dict[str, tuple[dict | None, float]] = {}
 _DIVIDEND_CACHE_TTL = 24 * 3600
 
+# Per-ticker ISIN cache: ticker -> isin (or None if unresolved). Process-local;
+# yfinance Ticker.isin makes an extra HTTP call so we don't want to repeat per
+# 15min poll. Negative cache too — never re-ask for indices/funds w/o ISIN.
+_isin_cache: dict[str, str | None] = {}
+
+
+def _isin_for_ticker(ticker: str, stock=None) -> str | None:
+    """Resolve ISIN. Order: hardcoded map (livefeed.TICKER_ISIN_MAP, source of
+    truth for .DE Tradegate symbols) → yfinance Ticker.isin (works for US
+    tickers, returns '-' for .DE). Result cached process-local. Returns None
+    for indices/commodities without a clean ISIN."""
+    if ticker in _isin_cache:
+        return _isin_cache[ticker]
+    # Hardcoded first: yfinance returns '-' for every .DE symbol.
+    try:
+        from core.livefeed import TICKER_ISIN_MAP
+        if ticker in TICKER_ISIN_MAP:
+            isin = TICKER_ISIN_MAP[ticker]
+            _isin_cache[ticker] = isin
+            return isin
+    except Exception:
+        pass
+    try:
+        st = stock or yf.Ticker(ticker)
+        isin = getattr(st, "isin", None)
+        if not isin or not isinstance(isin, str) or len(isin) != 12 or isin == "-":
+            _isin_cache[ticker] = None
+            return None
+        _isin_cache[ticker] = isin
+        return isin
+    except Exception:
+        _isin_cache[ticker] = None
+        return None
+
 
 # ---------- Indicators ----------
 
@@ -212,6 +246,37 @@ def _fetch_ticker(ticker: str) -> dict:
         "analyst_upside_pct": analyst_upside_pct,
     }
     snapshot.update(_compute_indicators(hist_daily, hist_intraday))
+
+    # Live-quote overlay from Lang & Schwarz Tradecenter (ls-tc.de). Fresher
+    # than yfinance (15min delay) and matches what TR shows the user. Fail-soft:
+    # any error keeps yfinance baseline. ISIN comes from yfinance info.
+    try:
+        from core.livefeed import get_live_quote
+        isin = info.get("isin") or _isin_for_ticker(ticker, stock)
+        if isin:
+            lq = get_live_quote(isin)
+            if lq and lq.get("price"):
+                snapshot["live_price"] = lq["price"]
+                snapshot["live_bid"] = lq.get("bid")
+                snapshot["live_ask"] = lq.get("ask")
+                snapshot["live_ts"] = lq.get("ts")
+                snapshot["live_change_pct"] = lq.get("change_pct")
+                snapshot["live_market_status"] = lq.get("market_status")
+                snapshot["live_source"] = lq.get("source")
+                # Overwrite price + bid/ask with live values so downstream
+                # (events.py trigger checks, analyzer.py prompt) gets fresh data.
+                snapshot["price"] = lq["price"]
+                if lq.get("bid"):
+                    snapshot["bid"] = lq["bid"]
+                if lq.get("ask"):
+                    snapshot["ask"] = lq["ask"]
+                if snapshot.get("bid") and snapshot.get("ask") and snapshot["price"]:
+                    snapshot["spread_pct"] = round(
+                        (snapshot["ask"] - snapshot["bid"]) / snapshot["price"] * 100, 3
+                    )
+    except Exception as e:
+        logger.debug("LS-TC overlay failed for %s: %s", ticker, e)
+
     return snapshot
 
 

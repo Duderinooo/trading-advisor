@@ -13,6 +13,9 @@ venv/
 # API usage tracking (local state)
 .api_usage.json
 
+# Lang & Schwarz instrument-id cache (regenerated on first lookup)
+.ls_tc_ids.json
+
 # Private portfolio holdings (should stay out of git)
 portfolio.json
 .portfolio_*.json

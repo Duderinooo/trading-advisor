@@ -250,7 +250,10 @@ export default function Dashboard({ initial }: { initial: Portfolio }) {
         </Card>
 
         <Card title="Watch Levels">
-          <WatchLevels levels={portfolio.watch_levels} />
+          <WatchLevels
+            levels={portfolio.watch_levels}
+            liveQuotes={portfolio.heartbeat?.live_quotes}
+          />
         </Card>
 
         <Card title="Open Trades">
