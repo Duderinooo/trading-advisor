@@ -32,7 +32,7 @@ import SetupTypeBreakdown from "@/components/SetupTypeBreakdown";
 import HealthStatus from "@/components/HealthStatus";
 import BotActivityTimeline from "@/components/BotActivityTimeline";
 
-const REFRESH_MS = 30_000;
+const REFRESH_MS = 10_000;
 
 export default function Dashboard({ initial }: { initial: Portfolio }) {
   const [portfolio, setPortfolio] = useState<Portfolio>(initial);

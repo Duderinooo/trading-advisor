@@ -79,7 +79,7 @@ _NEGATIVE_CACHE: set[str] = set()
 # Per-process quote cache to absorb burst reads (events.py + heartbeat hit
 # the same ticker within seconds). Short TTL — we want "fresh-ish".
 _QUOTE_CACHE: dict[int, tuple[float, dict]] = {}
-_QUOTE_TTL_SEC = 30.0
+_QUOTE_TTL_SEC = 10.0
 
 
 def _load_id_cache() -> dict[str, int]:
@@ -247,6 +247,17 @@ def get_live_quote(isin: str) -> dict | None:
     except requests.RequestException as e:
         logger.warning("LS-TC quote fetch failed %s: %s", isin, e)
         return None
+
+
+def live_quote_for_ticker(ticker: str) -> dict | None:
+    """Heartbeat fast-path: skip yfinance, look up ISIN in TICKER_ISIN_MAP and
+    scrape ls-tc directly. Used by the bot's 10s heartbeat tick — keeps live
+    prices fresh without invalidating the 60s yfinance cache that the morning
+    indicator pipeline depends on."""
+    isin = TICKER_ISIN_MAP.get(ticker)
+    if isin is None:
+        return None
+    return get_live_quote(isin)
 
 
 def clear_caches() -> None:

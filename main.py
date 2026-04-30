@@ -1143,6 +1143,7 @@ def main():
         # fs scans. yfinance has its own 60s cache so per-tick pulls are cheap.
         try:
             from core import get_daily_usage
+            from core.livefeed import live_quote_for_ticker
             _live_prices: dict[str, float] = {}
             _live_quotes: dict[str, dict] = {}
             try:
@@ -1153,28 +1154,23 @@ def main():
                     *(t["ticker"] for t in _open if t.get("ticker")),
                     *(w["ticker"] for w in _watch if w.get("ticker")),
                 })
-                # ls-tc.de also serves last quote off-hours — no point gating on
-                # is_market_hours(). yfinance call costs are absorbed by its TTL cache.
-                if _tickers:
-                    _md = get_market_data(_tickers)
-                    for _tk, _data in _md.items():
-                        if not isinstance(_data, dict):
-                            continue
-                        _p = _data.get("price")
-                        if isinstance(_p, (int, float)) and _p > 0:
-                            _live_prices[_tk] = float(_p)
-                        # Full live overlay (bid/ask/ts/change/source) — only when
-                        # ls-tc.de actually delivered something.
-                        if _data.get("live_source"):
-                            _live_quotes[_tk] = {
-                                "price": _data.get("live_price"),
-                                "bid": _data.get("live_bid"),
-                                "ask": _data.get("live_ask"),
-                                "ts": _data.get("live_ts"),
-                                "change_pct": _data.get("live_change_pct"),
-                                "market_status": _data.get("live_market_status"),
-                                "source": _data.get("live_source"),
-                            }
+                # Heartbeat fast-path: skip yfinance entirely, scrape ls-tc direct.
+                # 60s yfinance cache stays untouched (still serves indicator pipeline)
+                # while live_quotes refresh at LS-TC's 10s cache cadence.
+                for _tk in _tickers:
+                    _q = live_quote_for_ticker(_tk)
+                    if not _q or not _q.get("price"):
+                        continue
+                    _live_prices[_tk] = float(_q["price"])
+                    _live_quotes[_tk] = {
+                        "price": _q.get("price"),
+                        "bid": _q.get("bid"),
+                        "ask": _q.get("ask"),
+                        "ts": _q.get("ts"),
+                        "change_pct": _q.get("change_pct"),
+                        "market_status": _q.get("market_status"),
+                        "source": _q.get("source"),
+                    }
             except Exception:
                 logger.exception("Live-price snapshot failed (heartbeat)")
             with portfolio_lock:
@@ -1232,7 +1228,7 @@ def main():
 
             last_check = now
 
-        time.sleep(30)
+        time.sleep(10)
 
 
 if __name__ == "__main__":
