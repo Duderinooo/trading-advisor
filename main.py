@@ -1153,7 +1153,9 @@ def main():
                     *(t["ticker"] for t in _open if t.get("ticker")),
                     *(w["ticker"] for w in _watch if w.get("ticker")),
                 })
-                if _tickers and is_market_hours():
+                # ls-tc.de also serves last quote off-hours — no point gating on
+                # is_market_hours(). yfinance call costs are absorbed by its TTL cache.
+                if _tickers:
                     _md = get_market_data(_tickers)
                     for _tk, _data in _md.items():
                         if not isinstance(_data, dict):
