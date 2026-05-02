@@ -8,7 +8,7 @@
 import hashlib
 import logging
 import re
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 import yfinance as yf
 
@@ -156,11 +156,12 @@ def _ticker_in_title(title: str, ticker: str, name: str | None) -> bool:
         if name_lower in title_lower:
             return True
         # Extract word tokens (strip punctuation: "Tesla, Inc." → ["tesla", "inc"]).
+        # Match on ANY ≥4-char token (Bug 2026-05-02: premature break only checked
+        # the first token — "International Business Machines" matched on bare
+        # "international" → false-positives on unrelated articles).
         for tok in re.findall(r"\w+", name_lower):
-            if len(tok) >= 4:
-                if re.search(r"\b" + re.escape(tok) + r"\b", title_lower):
-                    return True
-                break
+            if len(tok) >= 4 and re.search(r"\b" + re.escape(tok) + r"\b", title_lower):
+                return True
     return False
 
 
@@ -291,7 +292,15 @@ def check_news_events() -> list[dict]:
                     events.append(event)
 
         if new_hashes:
-            portfolio["seen_news"] = {today: list(seen_today)}
+            # Keep yesterday too so a news-cycle that spans midnight doesn't re-fire
+            # 24h-old articles still in the RSS feed (Bug 2026-05-02: prior code
+            # overwrote seen_news with {today: ...} → loss on next-day rollover).
+            yesterday = str(date.today() - timedelta(days=1))
+            existing = portfolio.get("seen_news", {}) or {}
+            portfolio["seen_news"] = {
+                today: list(seen_today),
+                yesterday: list(existing.get(yesterday, [])),
+            }
             save_portfolio(portfolio)
 
         return events

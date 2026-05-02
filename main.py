@@ -1073,16 +1073,30 @@ def run_news_check():
         geo = [e for e in news_events if e["type"] == "NEWS_GEO"]
         stocks = [e for e in news_events if e["type"] == "NEWS_STOCK"]
 
-        # Geopolitical: bypass cooldown but notify only on actionable verdict
+        # Geopolitical: bypass cooldown but notify only on actionable verdict.
+        # Dedup per commodity in a 6h window — Iran-Krieg-day produces 5-10 related
+        # headlines that all map to the same `triggered_commodities`. Without dedup
+        # each one runs a forced analyze_portfolio (yfinance + Claude), burning
+        # daily-cap and producing redundant verdicts (Bug 2026-05-02 audit).
+        _geo_pf = load_portfolio()
+        _geo_seen = _geo_pf.get("geo_news_fired", {}) or {}
+        _now_iso = datetime.now().isoformat()
+        _cutoff = (datetime.now() - timedelta(hours=6)).isoformat()
+        _dirty = False
+
         for event in geo:
             comms = ", ".join(event["triggered_commodities"])
             headline = event["headline"]
+            comm_key = "+".join(sorted(event["triggered_commodities"]))
+            last_fired = _geo_seen.get(comm_key)
+            if last_fired and last_fired > _cutoff:
+                logger.info("GEO dedup: %s (%s) suppressed — fired %s",
+                            comm_key, headline[:60], last_fired)
+                continue
             logger.info("📰 GEO NEWS → %s: %s", comms, headline)
 
             # Auto-add breakout watch-levels for matched commodities so the breakout
             # gets caught by detect_events even if Claude says PASS this round.
-            # Why: GEO news is the trigger; the move often comes hours later — we need
-            # persistent levels, not a one-shot Claude call.
             try:
                 _auto_watch_geo(event["triggered_commodities"], headline)
             except Exception:
@@ -1090,6 +1104,8 @@ def run_news_check():
 
             ctx = f"GEO NEWS: {headline} | Commodity-Play: {comms}"
             analysis = analyze_portfolio(mode="event", event_context=ctx, force=True)
+            _geo_seen[comm_key] = _now_iso
+            _dirty = True
             parsed = _parse_actionable(analysis)
             if parsed:
                 extras = _enrich_extras_for_add(
@@ -1103,6 +1119,17 @@ def run_news_check():
             else:
                 logger.info("GEO news non-actionable, suppressed: %s",
                             (analysis or "").split('\n')[0][:80])
+
+        if _dirty:
+            with portfolio_lock:
+                _pf = load_portfolio()
+                _existing = _pf.get("geo_news_fired", {}) or {}
+                _existing.update(_geo_seen)
+                # Prune entries older than 24h.
+                _prune_cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
+                _existing = {k: v for k, v in _existing.items() if v > _prune_cutoff}
+                _pf["geo_news_fired"] = _existing
+                save_portfolio(_pf)
 
         # Stock news pre-gate: skip Claude call when ticker has neither open position
         # nor active watch_level — no thesis to verify, no position to manage, no

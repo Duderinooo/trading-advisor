@@ -7,11 +7,11 @@ multilingual, no API key. Single feed pattern → no per-source mapping.
 
 import logging
 import re
-import socket
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote_plus
 
 import feedparser
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -83,15 +83,17 @@ def fetch_rss_news(
     query = _build_query(ticker, name, finance_kw)
     url = _GOOGLE_NEWS_TPL.format(q=quote_plus(query), hl=hl, gl=gl, ceid=ceid)
 
-    old_timeout = socket.getdefaulttimeout()
-    socket.setdefaulttimeout(_TIMEOUT_SECONDS)
+    # NOTE: feedparser.parse(url) opens its own socket and ignores socket.setdefaulttimeout
+    # except by mutating it process-globally — racy with the Telegram listener thread.
+    # Fetch via requests with a local timeout, then hand the bytes to feedparser.
     try:
-        feed = feedparser.parse(url)
-    except Exception as e:
+        r = requests.get(url, timeout=_TIMEOUT_SECONDS, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return []
+        feed = feedparser.parse(r.content)
+    except (requests.RequestException, Exception) as e:
         logger.warning("RSS fetch failed for %r: %s", query, e)
         return []
-    finally:
-        socket.setdefaulttimeout(old_timeout)
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
     items = []
