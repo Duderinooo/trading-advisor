@@ -673,9 +673,9 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
     if mode == "morning":
         max_tokens = 1200
     elif mode == "opening":
-        max_tokens = 200
+        max_tokens = 500   # was 200 — truncated 2026-04-30 (3OIL.MI rationale cut)
     elif mode == "event":
-        max_tokens = 300
+        max_tokens = 700   # was 300 — truncated 2026-04-30 (SIE.DE + 3OIL.MI ENTRY recs cut)
     else:
         max_tokens = 400
 

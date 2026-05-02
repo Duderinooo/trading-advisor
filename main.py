@@ -146,8 +146,15 @@ def _parse_actionable(analysis: str) -> dict | None:
     """Parse Claude's verdict line into a structured dict, or None if non-actionable.
 
     Returns {"action": ENTRY|EXIT|ADD|REDUCE, "ticker": ..., "reason": ...}
-    Drops PASS/HALTEN/HOLD verdicts and anything that doesn't match the grammar
-    (markdown preamble, multi-line analysis, etc.).
+    Drops:
+    - PASS/HALTEN/HOLD verdicts.
+    - Grammar misses (markdown preamble, multi-line analysis, etc.).
+    - EXIT/ADD/REDUCE on tickers without an open position (Bug 2026-05-02:
+      WATCH_INVALIDATED on NVD.DE → Haiku emitted 'EXIT: NVD.DE' text →
+      Telegram even though no NVDA position existed).
+    - ENTRY/EXIT/ADD that the analyzer.py tool path *just persisted* as a
+      pending_recommendation — text dup-message suppressed (Bug 2026-05-02:
+      SIE.DE rec sent both via recommend_entry tool AND text-parse).
     """
     if not analysis:
         return None
@@ -158,9 +165,56 @@ def _parse_actionable(analysis: str) -> dict | None:
     if not m:
         return None
     raw = m.group("action").upper()
+    action = _ACTION_NORMALIZE.get(raw, raw)
+    ticker = m.group("ticker").upper()
+
+    pf = load_portfolio()
+    open_tickers = {(t.get("ticker") or "").upper() for t in pf.get("open_trades", [])}
+
+    if action in ("EXIT", "ADD", "REDUCE") and ticker not in open_tickers:
+        logger.info(
+            "Text-parse %s suppressed: %s has no open position", action, ticker,
+        )
+        return None
+
+    # Pending check serves both dedup AND orphan-detection:
+    # - Recent pending for ticker → structured rec already went out (dup) → suppress.
+    # - For ENTRY without any recent pending → tool path didn't persist (red-team
+    #   killed it, slippage gate, etc.). Text-parse would send a /confirm message
+    #   user can't actually act on (Bug 2026-04-30: 3OIL.MI ENTRY text emitted
+    #   even though red-team blocked the tool, leaving user with no /confirm
+    #   target). Suppress.
+    now = datetime.now()
+    has_recent_pending = False
+    for rec in pf.get("pending_recommendations", []) or []:
+        if (rec.get("ticker") or "").upper() != ticker:
+            continue
+        ts = rec.get("timestamp")
+        if not ts:
+            continue
+        try:
+            rec_dt = datetime.strptime(ts, "%Y-%m-%d %H:%M")
+        except ValueError:
+            continue
+        if (now - rec_dt) <= timedelta(minutes=5):
+            has_recent_pending = True
+            break
+    if has_recent_pending:
+        logger.info(
+            "Text-parse %s suppressed: structured rec for %s already pending",
+            action, ticker,
+        )
+        return None
+    if action == "ENTRY":
+        logger.info(
+            "Text-parse ENTRY suppressed: %s has no pending rec — "
+            "tool path likely blocked by gates (red-team / risk-halt)", ticker,
+        )
+        return None
+
     return {
-        "action": _ACTION_NORMALIZE.get(raw, raw),
-        "ticker": m.group("ticker").upper(),
+        "action": action,
+        "ticker": ticker,
         "reason": m.group("rest").strip()[:200],
     }
 

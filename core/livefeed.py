@@ -55,6 +55,7 @@ TICKER_ISIN_MAP: dict[str, str] = {
     "EXX1.DE": "IE00B4NCWG09",  # iShares Physical Silver
     "U3O8.DE": "CA85207H1047",  # Sprott Physical Uranium
     "NUKL.DE": "IE000NDWFGA5",  # Global X Uranium ETF
+    "3OIL.MI": "IE00B7Y34M31",  # WisdomTree WTI Oil 3x Daily Long (Borsa Italiana)
 }
 
 
