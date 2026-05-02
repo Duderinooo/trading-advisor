@@ -304,6 +304,46 @@ def _log_trace_warnings(trace: dict) -> None:
         )
 
 
+def compute_correlation_snapshot(portfolio: dict) -> dict | None:
+    """Pairwise return-correlation matrix over open positions for the dashboard.
+    Returns None if <2 open trades or returns fetch fails. Used by morning
+    analyzer AND /confirm path so the dashboard heatmap fills in immediately
+    after opening a 2nd position (prev: stayed empty until next morning)."""
+    _open = [t["ticker"] for t in portfolio.get("open_trades", []) if t.get("ticker")]
+    if len(_open) < 2:
+        return None
+    try:
+        _ret = get_returns(_open, days=config.CORRELATION_LOOKBACK_DAYS)
+    except Exception:
+        logger.exception("Correlation snapshot failed (returns fetch)")
+        return None
+    _m: dict[str, dict[str, float]] = {}
+    for a in _open:
+        sa = _ret.get(a)
+        if sa is None:
+            continue
+        _m[a] = {}
+        for b in _open:
+            if a == b:
+                _m[a][b] = 1.0
+                continue
+            sb = _ret.get(b)
+            if sb is None:
+                continue
+            try:
+                c = float(sa.corr(sb))
+                if c == c:
+                    _m[a][b] = round(c, 2)
+            except Exception:
+                continue
+    return {
+        "tickers": _open,
+        "matrix": _m,
+        "lookback_days": config.CORRELATION_LOOKBACK_DAYS,
+        "computed_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    }
+
+
 def _trace_key(mode: str, event_context: str | None) -> str | None:
     """Pick portfolio.json key for the trace. Opening splits xetra/us via context."""
     if mode in _TRACE_KEY_BY_MODE:
@@ -850,6 +890,32 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
     # Build the rec BEFORE notification so we can attach the Telegram message_id.
     rec = None
     message_id: int | None = None
+
+    if entry_recommendation:
+        # Required-fields validation — Anthropic SDK accepts truncated tool_use
+        # blocks where the JSON cuts off mid-stream and required keys silently
+        # drop to None. Without these we can't bucket the trade in setup-type
+        # hit-rate, can't run pre-mortem-vs-actual mistake-class validation,
+        # and the trade ends up in the 'untagged' bucket forever.
+        # (Bug 2026-04-30: SIE.DE + 3OIL.MI recs hit max_tokens=300, both
+        # missing setup_type + top_fail_mode, persisted as untagged.)
+        _required = ("ticker", "entry_price", "stop_loss", "take_profit",
+                     "size_eur", "conviction", "p_win", "thesis",
+                     "setup_type", "top_fail_mode")
+        _missing = [k for k in _required if not entry_recommendation.get(k)]
+        if _missing:
+            log_gate(
+                (entry_recommendation.get("ticker") or "?").upper(),
+                "incomplete_rec", True,
+                f"recommend_entry missing required fields: {','.join(_missing)} — "
+                f"likely max_tokens truncation",
+                {"missing": _missing, "received_keys": sorted(entry_recommendation.keys())},
+            )
+            logger.error(
+                "recommend_entry DROPPED: %s missing %s (truncated tool_use?)",
+                entry_recommendation.get("ticker"), _missing,
+            )
+            entry_recommendation = None
 
     if entry_recommendation:
         # Already-open silent drop: Claude got confused and called recommend_entry on
@@ -1575,37 +1641,7 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
     # for the corr-gate) and avoids re-computing in JS.
     corr_matrix = None
     if mode == "morning":
-        try:
-            _open = [t["ticker"] for t in portfolio.get("open_trades", []) if t.get("ticker")]
-            if len(_open) >= 2:
-                _ret = get_returns(_open, days=config.CORRELATION_LOOKBACK_DAYS)
-                _m: dict[str, dict[str, float]] = {}
-                for a in _open:
-                    sa = _ret.get(a)
-                    if sa is None:
-                        continue
-                    _m[a] = {}
-                    for b in _open:
-                        if a == b:
-                            _m[a][b] = 1.0
-                            continue
-                        sb = _ret.get(b)
-                        if sb is None:
-                            continue
-                        try:
-                            c = float(sa.corr(sb))
-                            if c == c:
-                                _m[a][b] = round(c, 2)
-                        except Exception:
-                            continue
-                corr_matrix = {
-                    "tickers": _open,
-                    "matrix": _m,
-                    "lookback_days": config.CORRELATION_LOOKBACK_DAYS,
-                    "computed_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                }
-        except Exception:
-            logger.exception("Correlation snapshot failed")
+        corr_matrix = compute_correlation_snapshot(portfolio)
 
     # Per-mode trace — every stage logged + persisted for /brain + dashboard.
     # User-requested 2026-04-29: "Dann sehen wir wurde nicht gesetzt weil gab keine

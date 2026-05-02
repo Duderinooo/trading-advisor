@@ -861,6 +861,19 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         pending.pop(rec_idx)
         portfolio["pending_recommendations"] = pending
 
+        # Refresh correlation snapshot when crossing the 2-position threshold so
+        # the dashboard heatmap fills in immediately instead of waiting for the
+        # next morning brief (Bug 2026-05-02: user opened 2nd position, heatmap
+        # stayed empty until 08:00 next day).
+        if len(portfolio["open_trades"]) >= 2:
+            try:
+                from core.analyzer import compute_correlation_snapshot
+                snap = compute_correlation_snapshot(portfolio)
+                if snap is not None:
+                    portfolio["correlation_matrix"] = snap
+            except Exception:
+                logger.exception("Correlation snapshot refresh failed at /confirm")
+
         save_portfolio(portfolio)
         new_cash = portfolio["cash_eur"]
 
