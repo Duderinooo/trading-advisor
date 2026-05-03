@@ -3,6 +3,12 @@
 import { useEffect, useState } from "react";
 import type { Heartbeat as HeartbeatT } from "@/lib/types";
 
+type RestartState =
+  | { kind: "idle" }
+  | { kind: "running" }
+  | { kind: "ok"; killed: number[]; pid: number }
+  | { kind: "err"; msg: string };
+
 export default function Heartbeat({
   heartbeat,
   killSwitchActive,
@@ -17,6 +23,29 @@ export default function Heartbeat({
   ddHaltActive?: boolean;
 }) {
   const [ageSec, setAgeSec] = useState<number | null>(null);
+  const [restart, setRestart] = useState<RestartState>({ kind: "idle" });
+
+  const onRestart = async () => {
+    if (
+      !window.confirm(
+        "Bot wirklich neustarten? Bestehende main.py-Prozesse werden gekillt und unter caffeinate -is neu gestartet.",
+      )
+    ) {
+      return;
+    }
+    setRestart({ kind: "running" });
+    try {
+      const res = await fetch("/api/bot/restart", { method: "POST" });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        setRestart({ kind: "ok", killed: data.killed ?? [], pid: data.pid });
+      } else {
+        setRestart({ kind: "err", msg: data.error ?? `HTTP ${res.status}` });
+      }
+    } catch (e) {
+      setRestart({ kind: "err", msg: String(e) });
+    }
+  };
 
   useEffect(() => {
     if (!heartbeat?.last_tick) return;
@@ -108,6 +137,28 @@ export default function Heartbeat({
             style={{ width: `${Math.min(100, apiPct)}%` }}
           />
         </div>
+      </div>
+
+      <div className="pt-2 border-t border-zinc-800 space-y-1.5">
+        <button
+          type="button"
+          onClick={onRestart}
+          disabled={restart.kind === "running"}
+          className="text-xs px-2.5 py-1 rounded border border-zinc-700 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed"
+          title="Killt main.py und startet unter caffeinate -is neu"
+        >
+          {restart.kind === "running" ? "Neustart…" : "Bot neustarten"}
+        </button>
+        {restart.kind === "ok" && (
+          <div className="text-xs text-emerald-400">
+            Neu gestartet · pid {restart.pid}
+            {restart.killed.length > 0 &&
+              ` · alt killed: ${restart.killed.join(", ")}`}
+          </div>
+        )}
+        {restart.kind === "err" && (
+          <div className="text-xs text-rose-400">Fehler: {restart.msg}</div>
+        )}
       </div>
 
       {(killSwitchActive || ddHaltActive) && (
