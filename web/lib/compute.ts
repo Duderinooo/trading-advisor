@@ -301,6 +301,79 @@ export function holdTimeStats(closed: ClosedTrade[]): HoldTimeStats | null {
   };
 }
 
+// Risk-of-Ruin Monte Carlo: bootstrap-resample closed-trade pnl_pct sequence,
+// run N trials of M-trade horizons, count how often equity falls below
+// (1 - ruinPct/100) of starting capital.
+export type RuinStats = {
+  n_trials: number;
+  horizon: number;
+  ruin_threshold_pct: number;
+  ruin_prob_pct: number;
+  median_terminal_return_pct: number;
+  worst_5pct_return_pct: number;
+};
+
+export function monteCarloRuin(
+  closed: ClosedTrade[],
+  opts: { trials?: number; horizon?: number; ruinPct?: number } = {},
+): RuinStats | null {
+  const trials = opts.trials ?? 5000;
+  const horizon = opts.horizon ?? 100;
+  const ruinPct = opts.ruinPct ?? 25;
+  const final = closed.filter((t) => !t.partial && typeof t.pnl_pct === "number");
+  if (final.length < 10) return null;
+  const returns = final.map((t) => Number(t.pnl_pct) / 100);
+  const ruinFactor = 1 - ruinPct / 100;
+  const terminals: number[] = [];
+  let busts = 0;
+  for (let i = 0; i < trials; i++) {
+    let eq = 1;
+    let bust = false;
+    for (let j = 0; j < horizon; j++) {
+      // Position-size assumption: each trade is 5% of equity (typical risk per
+      // trade in this bot). Scale pnl_pct by 0.05 so distribution matches a
+      // realistic single-trade equity impact.
+      const r = returns[Math.floor(Math.random() * returns.length)] * 0.05;
+      eq *= 1 + r;
+      if (eq <= ruinFactor) {
+        bust = true;
+        break;
+      }
+    }
+    if (bust) busts += 1;
+    terminals.push(eq);
+  }
+  terminals.sort((a, b) => a - b);
+  const median = terminals[Math.floor(trials / 2)];
+  const worst5 = terminals[Math.floor(trials * 0.05)];
+  return {
+    n_trials: trials,
+    horizon,
+    ruin_threshold_pct: ruinPct,
+    ruin_prob_pct: Math.round((busts / trials) * 1000) / 10,
+    median_terminal_return_pct: Math.round((median - 1) * 1000) / 10,
+    worst_5pct_return_pct: Math.round((worst5 - 1) * 1000) / 10,
+  };
+}
+
+export function maxLossStreak(closed: ClosedTrade[]): { current: number; max: number } {
+  const final = closed
+    .filter((t) => !t.partial && typeof t.pnl_pct === "number")
+    .slice()
+    .sort((a, b) => (a.exit_date ?? "").localeCompare(b.exit_date ?? ""));
+  let cur = 0;
+  let max = 0;
+  for (const t of final) {
+    if ((t.pnl_pct ?? 0) <= 0) {
+      cur += 1;
+      if (cur > max) max = cur;
+    } else {
+      cur = 0;
+    }
+  }
+  return { current: cur, max };
+}
+
 export function currentEquity(p: Portfolio): number {
   let eq = p.total_capital_eur;
   for (const t of p.closed_trades) eq += Number(t.pnl_eur ?? 0);

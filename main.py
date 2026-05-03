@@ -116,6 +116,76 @@ _ACTION_NORMALIZE = {
 }
 
 
+# Drawdown-cross alert thresholds (% from peak).
+_DD_ALERT_THRESHOLDS = (5.0, 10.0, 15.0, 20.0)
+
+
+def _check_equity_alerts():
+    """Drawdown-threshold-cross + new-equity-ATH alerts. State persisted in
+    portfolio.json so each threshold fires exactly once per cycle (re-arms on
+    return-to-peak). Live equity = realized + unrealized using heartbeat quotes."""
+    try:
+        with portfolio_lock:
+            pf = load_portfolio()
+            cap = float(pf.get("total_capital_eur") or 0)
+            if cap <= 0:
+                return
+            realized = cap
+            for t in pf.get("closed_trades", []):
+                realized += float(t.get("pnl_eur") or 0)
+            for m in pf.get("cash_movements", []) or []:
+                realized += float(m.get("amount") or 0)
+            quotes = (pf.get("heartbeat") or {}).get("live_quotes") or {}
+            prices = (pf.get("heartbeat") or {}).get("prices") or {}
+            unrealized = 0.0
+            for t in pf.get("open_trades", []) or []:
+                tk = (t.get("ticker") or "").upper()
+                live = (quotes.get(tk) or {}).get("price") or prices.get(tk)
+                entry = float(t.get("entry_price") or 0)
+                shares = float(t.get("shares") or 0)
+                if isinstance(live, (int, float)) and entry > 0 and shares > 0:
+                    unrealized += (live - entry) * shares
+            equity = realized + unrealized
+
+            ath = float(pf.get("equity_ath") or cap)
+            dd_alerts = set(pf.get("dd_alerts_triggered") or [])
+
+            dirty = False
+
+            # New ATH (only after at least one realized close — avoid intraday spam
+            # on the very first up-tick before any trade closed).
+            if equity > ath + 0.01 and len(pf.get("closed_trades", []) or []) >= 1:
+                send_alert(
+                    "📈 EQUITY NEW ATH",
+                    f"Live €{equity:.2f} (alt-ATH €{ath:.2f}, "
+                    f"+{(equity / cap - 1) * 100:+.2f}% vs Start).",
+                )
+                pf["equity_ath"] = round(equity, 2)
+                ath = equity
+                # Reset DD-alert state when re-arming above peak.
+                dd_alerts = set()
+                dirty = True
+
+            # Drawdown-cross: each threshold fires once per peak.
+            dd_pct = (ath - equity) / ath * 100 if ath > 0 else 0
+            for thr in _DD_ALERT_THRESHOLDS:
+                if dd_pct >= thr and thr not in dd_alerts:
+                    send_alert(
+                        f"⚠️ DRAWDOWN −{thr:.0f}% Cross",
+                        f"Live €{equity:.2f} vs Peak €{ath:.2f} → −{dd_pct:.2f}%.\n"
+                        f"Realized €{realized:.2f} · Unrealized €{unrealized:+.2f}.",
+                    )
+                    dd_alerts.add(thr)
+                    dirty = True
+
+            if dirty:
+                pf["equity_ath"] = round(ath, 2)
+                pf["dd_alerts_triggered"] = sorted(dd_alerts)
+                save_portfolio(pf)
+    except Exception:
+        logger.exception("Equity alerts check failed")
+
+
 def _enrich_extras_for_add(parsed: dict, base_extras: dict) -> dict:
     """When Claude emits 'ADD: ...' as TEXT (e.g. tool-call gates blocked or Sonnet-lazy),
     look up the open trade and surface Bestand/SL so user has actionable context.
@@ -1303,6 +1373,9 @@ def main():
                     _check_exit_reminders()
                 except Exception:
                     logger.exception("Exit-reminder check failed")
+                # Drawdown-cross + new-ATH alerts. State persisted; each
+                # threshold fires once per peak-cycle.
+                _check_equity_alerts()
             elif is_weekend_news_window():
                 # Sunday evening: news-only scan, no price/event checks (markets closed)
                 run_news_check()

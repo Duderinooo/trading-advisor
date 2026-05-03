@@ -9,6 +9,8 @@ import {
   currentEquity,
   currentEquityLive,
   holdTimeStats,
+  maxLossStreak,
+  monteCarloRuin,
   openExposure,
   portfolioHeat,
   preMortemAccuracy,
@@ -33,6 +35,7 @@ import PendingRecommendations from "@/components/PendingRecommendations";
 import SetupTypeBreakdown from "@/components/SetupTypeBreakdown";
 import HealthStatus from "@/components/HealthStatus";
 import BotActivityTimeline from "@/components/BotActivityTimeline";
+import RiskOfRuin from "@/components/RiskOfRuin";
 
 const REFRESH_MS = 10_000;
 
@@ -85,6 +88,14 @@ export default function Dashboard({ initial }: { initial: Portfolio }) {
   );
   const holdTime = useMemo(
     () => holdTimeStats(portfolio.closed_trades),
+    [portfolio.closed_trades],
+  );
+  const ruin = useMemo(
+    () => monteCarloRuin(portfolio.closed_trades),
+    [portfolio.closed_trades],
+  );
+  const lossStreak = useMemo(
+    () => maxLossStreak(portfolio.closed_trades),
     [portfolio.closed_trades],
   );
   const dailyLoss = useMemo(() => todayRealizedLoss(portfolio), [portfolio]);
@@ -234,6 +245,10 @@ export default function Dashboard({ initial }: { initial: Portfolio }) {
             <WhatIfShock open={portfolio.open_trades} />
           </Card>
         </div>
+
+        <Card title="Risk-of-Ruin · Loss-Streak (Monte Carlo)">
+          <RiskOfRuin ruin={ruin} lossStreak={lossStreak} />
+        </Card>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <Card title="Korrelations-Heatmap (offene Positionen)">
