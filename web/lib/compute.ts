@@ -374,6 +374,63 @@ export function maxLossStreak(closed: ClosedTrade[]): { current: number; max: nu
   return { current: cur, max };
 }
 
+// MAE/MFE per closed trade, normalized in R-multiples (R = entry → SL distance).
+// Insight: if winners' avg MAE ≈ -0.3R but losers stop at -1.0R, SL +0.3R wider
+// would catch them all without changing winners. Symmetric for MFE → tightening.
+export type MaeMfeRow = {
+  ticker: string;
+  exit_date: string;
+  pnl_pct: number;
+  mae_r: number | null;     // worst excursion in R-multiples (negative)
+  mfe_r: number | null;     // best excursion in R-multiples (positive)
+  outcome: "win" | "loss";
+};
+
+export type MaeMfeStats = {
+  rows: MaeMfeRow[];
+  win_avg_mae_r: number | null;
+  loss_avg_mae_r: number | null;
+  win_avg_mfe_r: number | null;
+  loss_avg_mfe_r: number | null;
+};
+
+export function maeMfeAnalysis(closed: ClosedTrade[]): MaeMfeStats | null {
+  const rows: MaeMfeRow[] = [];
+  for (const t of closed) {
+    if (t.partial) continue;
+    const entry = Number(t.entry_price ?? 0);
+    const sl = Number(t.stop_loss ?? 0);
+    if (entry <= 0 || sl <= 0 || entry <= sl) continue;
+    const r = entry - sl;
+    const mae = typeof t.mae === "number" ? t.mae : null;
+    const mfe = typeof t.mfe === "number" ? t.mfe : null;
+    if (mae == null && mfe == null) continue;
+    rows.push({
+      ticker: t.ticker,
+      exit_date: t.exit_date ?? "",
+      pnl_pct: Number(t.pnl_pct ?? 0),
+      mae_r: mae != null ? Math.round(((mae - entry) / r) * 100) / 100 : null,
+      mfe_r: mfe != null ? Math.round(((mfe - entry) / r) * 100) / 100 : null,
+      outcome: (t.pnl_pct ?? 0) > 0 ? "win" : "loss",
+    });
+  }
+  if (rows.length === 0) return null;
+  const wins = rows.filter((r) => r.outcome === "win");
+  const losses = rows.filter((r) => r.outcome === "loss");
+  const avg = (xs: (number | null)[]): number | null => {
+    const valid = xs.filter((x): x is number => typeof x === "number");
+    if (valid.length === 0) return null;
+    return Math.round((valid.reduce((s, v) => s + v, 0) / valid.length) * 100) / 100;
+  };
+  return {
+    rows: rows.sort((a, b) => b.exit_date.localeCompare(a.exit_date)),
+    win_avg_mae_r: avg(wins.map((r) => r.mae_r)),
+    loss_avg_mae_r: avg(losses.map((r) => r.mae_r)),
+    win_avg_mfe_r: avg(wins.map((r) => r.mfe_r)),
+    loss_avg_mfe_r: avg(losses.map((r) => r.mfe_r)),
+  };
+}
+
 export function currentEquity(p: Portfolio): number {
   let eq = p.total_capital_eur;
   for (const t of p.closed_trades) eq += Number(t.pnl_eur ?? 0);

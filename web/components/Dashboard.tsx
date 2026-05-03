@@ -9,6 +9,7 @@ import {
   currentEquity,
   currentEquityLive,
   holdTimeStats,
+  maeMfeAnalysis,
   maxLossStreak,
   monteCarloRuin,
   openExposure,
@@ -36,6 +37,7 @@ import SetupTypeBreakdown from "@/components/SetupTypeBreakdown";
 import HealthStatus from "@/components/HealthStatus";
 import BotActivityTimeline from "@/components/BotActivityTimeline";
 import RiskOfRuin from "@/components/RiskOfRuin";
+import MaeMfe from "@/components/MaeMfe";
 
 const REFRESH_MS = 10_000;
 
@@ -96,6 +98,10 @@ export default function Dashboard({ initial }: { initial: Portfolio }) {
   );
   const lossStreak = useMemo(
     () => maxLossStreak(portfolio.closed_trades),
+    [portfolio.closed_trades],
+  );
+  const maeMfe = useMemo(
+    () => maeMfeAnalysis(portfolio.closed_trades),
     [portfolio.closed_trades],
   );
   const dailyLoss = useMemo(() => todayRealizedLoss(portfolio), [portfolio]);
@@ -248,6 +254,10 @@ export default function Dashboard({ initial }: { initial: Portfolio }) {
 
         <Card title="Risk-of-Ruin · Loss-Streak (Monte Carlo)">
           <RiskOfRuin ruin={ruin} lossStreak={lossStreak} />
+        </Card>
+
+        <Card title="MAE/MFE — SL/TP-Tuning Insight (R-multiples)">
+          <MaeMfe stats={maeMfe} />
         </Card>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

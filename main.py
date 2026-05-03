@@ -1334,6 +1334,34 @@ def main():
                     "prices": _live_prices,
                     "live_quotes": _live_quotes,
                 }
+                # MAE/MFE accumulation: track per open trade the worst (mae) and
+                # best (mfe) price seen since entry. Frozen onto closed_trade in
+                # /close handler. Insight: where would 1-bar-tighter SL have
+                # caught more profit, where would looser SL have prevented stops.
+                for _ot in _pf.get("open_trades", []) or []:
+                    _tk = (_ot.get("ticker") or "").upper()
+                    _live = _live_prices.get(_tk)
+                    if not isinstance(_live, (int, float)) or _live <= 0:
+                        continue
+                    _entry = float(_ot.get("entry_price") or 0)
+                    if _entry <= 0:
+                        continue
+                    _mae = _ot.get("mae")
+                    _mfe = _ot.get("mfe")
+                    # Init from entry on first tick after /confirm.
+                    if _mae is None:
+                        _mae = _entry
+                    if _mfe is None:
+                        _mfe = _entry
+                    if _live < _mae:
+                        _ot["mae"] = round(_live, 4)
+                    if _live > _mfe:
+                        _ot["mfe"] = round(_live, 4)
+                    # Always seed if absent so subsequent comparisons are valid.
+                    if "mae" not in _ot:
+                        _ot["mae"] = round(_mae, 4)
+                    if "mfe" not in _ot:
+                        _ot["mfe"] = round(_mfe, 4)
                 save_portfolio(_pf)
         except Exception:
             logger.exception("Heartbeat persist failed")
