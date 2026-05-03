@@ -45,6 +45,10 @@ export type OpenTrade = {
   red_team_review?: RedTeamReview;
   add_history?: AddHistoryEntry[];
   update_history?: UpdateHistoryEntry[];
+  top_fail_mode?: string;
+  // MAE/MFE accumulators written by main.py heartbeat
+  mae?: number | null;
+  mfe?: number | null;
 };
 
 export type ClosedTrade = {
@@ -72,6 +76,12 @@ export type ClosedTrade = {
   mistake_tag?: string;
   mistake_class?: string;
   setup_type?: string;
+  top_fail_mode?: string;
+  hold_days_min?: number;
+  hold_days_max?: number;
+  // MAE/MFE (Bundle C): worst/best price seen between entry & exit
+  mae?: number | null;   // most adverse price
+  mfe?: number | null;   // most favorable price
 };
 
 export type WatchLevel = {

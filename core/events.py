@@ -422,6 +422,37 @@ def detect_events() -> list[dict]:
                 continue
 
         distance_pct = abs(current_price - trigger_price) / trigger_price * 100
+
+        # Heads-up alert: 0.5-1.5% from trigger but not yet inside the trigger
+        # band. Fires once per watch per day so user can manually monitor TR app.
+        # No event/Claude call — purely informational Telegram.
+        if (
+            config.BREAKOUT_TRIGGER_PERCENT < distance_pct <= 1.5
+            and current_price < trigger_price  # only LONG-direction approaches
+        ):
+            _heads_key = f"{ticker}:{trigger_price}"
+            _heads_seen = portfolio.get("watch_heads_alerted", {}).get(
+                str(today), []
+            )
+            if _heads_key not in _heads_seen:
+                from notifier import send_alert as _send_alert
+                _send_alert(
+                    f"📡 NEAR-TRIGGER: {ticker}",
+                    f"Preis €{current_price:.2f} ist {distance_pct:.2f}% "
+                    f"vom {level_type}-Trigger €{trigger_price:.2f} entfernt.\n"
+                    f"These: _{level.get('thesis', '—')}_",
+                )
+                # Persist so we don't re-alert this watch today.
+                with portfolio_lock:
+                    fresh = load_portfolio()
+                    today_key = str(today)
+                    seen_dict = fresh.get("watch_heads_alerted", {}) or {}
+                    seen_dict = {today_key: list(seen_dict.get(today_key, []))}
+                    if _heads_key not in seen_dict[today_key]:
+                        seen_dict[today_key].append(_heads_key)
+                    fresh["watch_heads_alerted"] = seen_dict
+                    save_portfolio(fresh)
+
         if distance_pct <= config.BREAKOUT_TRIGGER_PERCENT:
             confirm_close_above = level.get("confirm_close_above")
             if isinstance(confirm_close_above, (int, float)) and confirm_close_above > 0:

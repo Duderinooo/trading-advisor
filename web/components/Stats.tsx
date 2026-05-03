@@ -1,6 +1,13 @@
 import type { HitStats } from "@/lib/types";
+import type { HoldTimeStats, PreMortemStats } from "@/lib/compute";
 
-export default function Stats({ stats }: { stats: HitStats | null }) {
+type Props = {
+  stats: HitStats | null;
+  premortem?: PreMortemStats | null;
+  holdTime?: HoldTimeStats | null;
+};
+
+export default function Stats({ stats, premortem, holdTime }: Props) {
   if (!stats) {
     return <div className="text-sm text-zinc-500">≥3 geschlossene Trades nötig.</div>;
   }
@@ -118,6 +125,81 @@ export default function Stats({ stats }: { stats: HitStats | null }) {
                 <span className="text-zinc-400">{n}</span>
               </li>
             ))}
+          </ul>
+        </div>
+      )}
+
+      {premortem && (
+        <div>
+          <div className="text-xs uppercase tracking-wider text-zinc-500 mb-1">
+            Pre-Mortem Accuracy (n={premortem.n})
+          </div>
+          <ul className="space-y-1">
+            <li className="flex justify-between">
+              <span>Hit-Rate</span>
+              <span
+                className={
+                  premortem.accuracy_pct >= 60
+                    ? "text-emerald-400"
+                    : premortem.accuracy_pct >= 40
+                      ? "text-amber-400"
+                      : "text-rose-400"
+                }
+              >
+                {premortem.correct}/{premortem.n} ({premortem.accuracy_pct}%)
+              </span>
+            </li>
+            {premortem.by_mode.slice(0, 4).map((m) => (
+              <li
+                key={m.mode}
+                className="flex justify-between text-xs text-zinc-500"
+              >
+                <span>{m.mode}</span>
+                <span>
+                  {m.correct}/{m.n} ({m.rate}%)
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {holdTime && (
+        <div>
+          <div className="text-xs uppercase tracking-wider text-zinc-500 mb-1">
+            Hold-Time (n={holdTime.n})
+          </div>
+          <ul className="space-y-1 text-xs">
+            <li className="flex justify-between">
+              <span>Actual / Planned (avg d)</span>
+              <span className="text-zinc-400">
+                {holdTime.avg_actual} / {holdTime.avg_planned}
+              </span>
+            </li>
+            <li className="flex justify-between">
+              <span>Early-Exit Rate</span>
+              <span
+                className={
+                  holdTime.early_exit_rate > 30
+                    ? "text-amber-400"
+                    : "text-zinc-400"
+                }
+              >
+                {holdTime.early_exit_rate}%
+              </span>
+            </li>
+            <li className="flex justify-between">
+              <span>Overstay Rate</span>
+              <span
+                className={
+                  holdTime.overstay_rate > 30
+                    ? "text-amber-400"
+                    : "text-zinc-400"
+                }
+              >
+                {holdTime.overstay_rate}%
+              </span>
+            </li>
           </ul>
         </div>
       )}

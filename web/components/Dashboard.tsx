@@ -8,8 +8,10 @@ import {
   computeSetupTypeStats,
   currentEquity,
   currentEquityLive,
+  holdTimeStats,
   openExposure,
   portfolioHeat,
+  preMortemAccuracy,
   todayRealizedLoss,
   unrealizedPnl,
 } from "@/lib/compute";
@@ -75,6 +77,14 @@ export default function Dashboard({ initial }: { initial: Portfolio }) {
   );
   const setupStats = useMemo(
     () => computeSetupTypeStats(portfolio.closed_trades),
+    [portfolio.closed_trades],
+  );
+  const premortem = useMemo(
+    () => preMortemAccuracy(portfolio.closed_trades),
+    [portfolio.closed_trades],
+  );
+  const holdTime = useMemo(
+    () => holdTimeStats(portfolio.closed_trades),
     [portfolio.closed_trades],
   );
   const dailyLoss = useMemo(() => todayRealizedLoss(portfolio), [portfolio]);
@@ -212,7 +222,7 @@ export default function Dashboard({ initial }: { initial: Portfolio }) {
             />
           </Card>
           <Card title="Hit Stats" className="lg:col-span-2">
-            <Stats stats={stats} />
+            <Stats stats={stats} premortem={premortem} holdTime={holdTime} />
           </Card>
         </div>
 

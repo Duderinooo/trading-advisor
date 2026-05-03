@@ -197,6 +197,110 @@ export function computeSetupTypeStats(closed: ClosedTrade[]): SetupTypeStats[] {
   return out;
 }
 
+// Pre-mortem accuracy: did Sonnet's predicted top_fail_mode (entry-time)
+// match the actual mistake_class (close-time tag)? Mirrors Python mapping in
+// core/portfolio.compute_hit_stats fail_mode_to_class.
+const FAIL_MODE_TO_CLASS: Record<string, string> = {
+  support_breakdown: "prediction",
+  thesis_invalidation: "prediction",
+  earnings_miss: "external",
+  macro_event: "external",
+  regime_shift: "external",
+  sector_rotation: "external",
+  false_breakout: "timing",
+  stop_run: "timing",
+};
+
+export type PreMortemStats = {
+  n: number;
+  correct: number;
+  accuracy_pct: number;
+  by_mode: Array<{ mode: string; n: number; correct: number; rate: number }>;
+};
+
+export function preMortemAccuracy(closed: ClosedTrade[]): PreMortemStats | null {
+  const losses = closed.filter(
+    (t) =>
+      (t.pnl_pct ?? 0) <= 0 &&
+      t.top_fail_mode &&
+      t.mistake_class &&
+      !t.partial,
+  );
+  if (losses.length < 3) return null;
+  let correct = 0;
+  const groups: Record<string, { n: number; correct: number }> = {};
+  for (const t of losses) {
+    const mode = t.top_fail_mode as string;
+    const predicted = FAIL_MODE_TO_CLASS[mode];
+    const matched = predicted === t.mistake_class;
+    if (matched) correct += 1;
+    const g = (groups[mode] ??= { n: 0, correct: 0 });
+    g.n += 1;
+    if (matched) g.correct += 1;
+  }
+  const by_mode = Object.entries(groups)
+    .map(([mode, g]) => ({
+      mode,
+      n: g.n,
+      correct: g.correct,
+      rate: Math.round((g.correct / g.n) * 1000) / 10,
+    }))
+    .sort((a, b) => b.n - a.n);
+  return {
+    n: losses.length,
+    correct,
+    accuracy_pct: Math.round((correct / losses.length) * 1000) / 10,
+    by_mode,
+  };
+}
+
+export type HoldTimeStats = {
+  n: number;
+  avg_actual: number;
+  avg_planned: number;
+  early_exit_rate: number;   // share closed before hold_days_min
+  overstay_rate: number;     // share closed after hold_days_max
+};
+
+function _daysBetween(a: string, b: string): number {
+  const ta = Date.parse(a.split(" ")[0]);
+  const tb = Date.parse(b.split(" ")[0]);
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return NaN;
+  return Math.max(0, (tb - ta) / 86_400_000);
+}
+
+export function holdTimeStats(closed: ClosedTrade[]): HoldTimeStats | null {
+  const valid = closed.filter(
+    (t) =>
+      !t.partial &&
+      t.entry_date &&
+      t.exit_date &&
+      typeof t.hold_days_max === "number",
+  );
+  if (valid.length < 3) return null;
+  let sumActual = 0;
+  let sumPlanned = 0;
+  let early = 0;
+  let over = 0;
+  for (const t of valid) {
+    const d = _daysBetween(t.entry_date, t.exit_date as string);
+    if (Number.isNaN(d)) continue;
+    sumActual += d;
+    const planned = Number(t.hold_days_max ?? 0);
+    sumPlanned += planned;
+    const minHold = Number(t.hold_days_min ?? 0);
+    if (minHold > 0 && d < minHold) early += 1;
+    if (planned > 0 && d > planned) over += 1;
+  }
+  return {
+    n: valid.length,
+    avg_actual: Math.round((sumActual / valid.length) * 10) / 10,
+    avg_planned: Math.round((sumPlanned / valid.length) * 10) / 10,
+    early_exit_rate: Math.round((early / valid.length) * 1000) / 10,
+    overstay_rate: Math.round((over / valid.length) * 1000) / 10,
+  };
+}
+
 export function currentEquity(p: Portfolio): number {
   let eq = p.total_capital_eur;
   for (const t of p.closed_trades) eq += Number(t.pnl_eur ?? 0);
