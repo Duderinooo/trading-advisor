@@ -26,7 +26,7 @@ export default function Heartbeat({
       setAgeSec(delta);
     };
     tick();
-    const id = setInterval(tick, 1000);
+    const id = setInterval(tick, 5000);
     return () => clearInterval(id);
   }, [heartbeat?.last_tick]);
 

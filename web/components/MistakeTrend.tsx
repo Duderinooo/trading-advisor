@@ -81,6 +81,7 @@ export default function MistakeTrend({
           />
           <Legend wrapperStyle={{ fontSize: 11 }} />
           <Area
+            isAnimationActive={false}
             type="monotone"
             dataKey="prediction"
             stackId="1"
@@ -88,6 +89,7 @@ export default function MistakeTrend({
             fill={COLORS.prediction}
           />
           <Area
+            isAnimationActive={false}
             type="monotone"
             dataKey="timing"
             stackId="1"
@@ -95,6 +97,7 @@ export default function MistakeTrend({
             fill={COLORS.timing}
           />
           <Area
+            isAnimationActive={false}
             type="monotone"
             dataKey="execution"
             stackId="1"
@@ -102,6 +105,7 @@ export default function MistakeTrend({
             fill={COLORS.execution}
           />
           <Area
+            isAnimationActive={false}
             type="monotone"
             dataKey="external"
             stackId="1"
@@ -109,6 +113,7 @@ export default function MistakeTrend({
             fill={COLORS.external}
           />
           <Area
+            isAnimationActive={false}
             type="monotone"
             dataKey="untagged"
             stackId="1"

@@ -1,24 +1,33 @@
 import type { ReactNode } from "react";
+import Sparkline from "./Sparkline";
 
 export function Card({
   title,
+  badge,
+  sub,
+  flush,
   children,
   className = "",
 }: {
   title?: string;
+  badge?: string;
+  sub?: ReactNode;
+  flush?: boolean;
   children: ReactNode;
   className?: string;
 }) {
   return (
-    <section
-      className={`rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 ${className}`}
-    >
+    <section className={`card ${className}`}>
       {title && (
-        <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
-          {title}
-        </h2>
+        <div className="card-head">
+          <div className="card-title">
+            {title}
+            {badge && <span className="card-badge">{badge}</span>}
+          </div>
+          {sub && <div className="card-sub">{sub}</div>}
+        </div>
       )}
-      {children}
+      <div className={`card-body ${flush ? "flush" : ""}`}>{children}</div>
     </section>
   );
 }
@@ -27,28 +36,53 @@ export function Kpi({
   label,
   value,
   sub,
+  delta,
+  deltaPos,
   tone = "neutral",
+  sparkData,
+  sparkColor,
 }: {
   label: string;
   value: string;
   sub?: string;
+  delta?: string;
+  deltaPos?: boolean;
   tone?: "neutral" | "good" | "bad" | "warn";
+  sparkData?: { v: number }[];
+  sparkColor?: string;
 }) {
-  const toneCls =
+  const valCls =
     tone === "good"
-      ? "text-emerald-400"
+      ? "num-pos"
       : tone === "bad"
-        ? "text-rose-400"
+        ? "num-neg"
         : tone === "warn"
-          ? "text-amber-400"
-          : "text-zinc-100";
+          ? "num-warn"
+          : "";
   return (
-    <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
-      <div className="text-xs uppercase tracking-wider text-zinc-500">
-        {label}
+    <div className="kpi">
+      <div className="kpi-label">
+        <span>{label}</span>
+        {delta != null && (
+          <span className={`delta ${deltaPos ? "num-pos" : "num-neg"}`}>
+            {delta}
+          </span>
+        )}
       </div>
-      <div className={`mt-1 text-2xl font-semibold ${toneCls}`}>{value}</div>
-      {sub && <div className="mt-1 text-xs text-zinc-500">{sub}</div>}
+      <div className={`kpi-value ${valCls}`}>{value}</div>
+      <div className="kpi-foot">
+        {sub && <div className="kpi-meta">{sub}</div>}
+        {sparkData && sparkData.length >= 2 && (
+          <div className="kpi-spark">
+            <Sparkline
+              data={sparkData}
+              color={sparkColor ?? "var(--good)"}
+              width={70}
+              height={24}
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 }

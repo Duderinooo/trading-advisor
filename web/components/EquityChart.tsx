@@ -106,6 +106,7 @@ export default function EquityChart({ data }: { data: EquityPoint[] }) {
               stroke={up ? "#22c55e" : "#f43f5e"}
               fill="url(#eqFill)"
               strokeWidth={2}
+              isAnimationActive={false}
             />
             <Area
               type="monotone"
@@ -114,6 +115,7 @@ export default function EquityChart({ data }: { data: EquityPoint[] }) {
               strokeDasharray="3 3"
               fill="none"
               strokeWidth={1}
+              isAnimationActive={false}
             />
           </AreaChart>
         </ResponsiveContainer>

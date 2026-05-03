@@ -43,9 +43,9 @@ export function computeEquityCurve(p: Portfolio): EquityPoint[] {
     });
   }
 
-  // Live point: realized equity + unrealized PnL from open trades using
-  // heartbeat.live_quotes (ls-tc) → heartbeat.prices fallback. Refreshes as
-  // the dashboard polls /api/portfolio every 30s.
+  // Live "now" point: realized equity + unrealized PnL from open trades.
+  // Rounded to whole € so cent-level price ticks don't cause Recharts to
+  // re-paint every poll (curveKey in Dashboard hashes the rounded value).
   const liveQuotes = p.heartbeat?.live_quotes ?? {};
   const fallbackPrices = p.heartbeat?.prices ?? {};
   let unrealized = 0;
@@ -62,17 +62,36 @@ export function computeEquityCurve(p: Portfolio): EquityPoint[] {
     }
   }
   if (liveCount > 0) {
-    const liveEquity = equity + unrealized;
+    const liveEquity = Math.round(equity + unrealized);
     const livePeak = Math.max(peak, liveEquity);
     const dd_pct = livePeak > 0 ? ((livePeak - liveEquity) / livePeak) * 100 : 0;
     points.push({
       date: "now",
-      equity: Math.round(liveEquity * 100) / 100,
-      peak: Math.round(livePeak * 100) / 100,
-      dd_pct: Math.round(dd_pct * 100) / 100,
+      equity: liveEquity,
+      peak: livePeak,
+      dd_pct: Math.round(dd_pct * 10) / 10,
     });
   }
   return points;
+}
+
+// Rounded live equity used to key curve memoization in Dashboard. Whole € so
+// cent-level price ticks don't bust the cache.
+export function liveEquityRounded(p: Portfolio): number {
+  const liveQuotes = p.heartbeat?.live_quotes ?? {};
+  const fallbackPrices = p.heartbeat?.prices ?? {};
+  let unrealized = 0;
+  for (const t of p.open_trades) {
+    const lq = liveQuotes[t.ticker]?.price;
+    const fb = fallbackPrices[t.ticker];
+    const live = typeof lq === "number" ? lq : typeof fb === "number" ? fb : null;
+    const entry = Number(t.entry_price ?? 0);
+    const shares = Number(t.shares ?? 0);
+    if (live != null && entry > 0 && shares > 0) {
+      unrealized += (live - entry) * shares;
+    }
+  }
+  return Math.round(currentEquity(p) + unrealized);
 }
 
 export function computeHitStats(closed: ClosedTrade[]): HitStats | null {
@@ -651,6 +670,51 @@ export function computeMistakeTrend(
     });
   }
   return out;
+}
+
+// Rolling KPI sparklines (last N points). Each derives from closed-trade sequence.
+export type SparkPoint = { v: number };
+
+export function returnSpark(curve: EquityPoint[], n = 14): SparkPoint[] {
+  // Use the equity curve's last n points (excluding the synthetic "start" anchor).
+  const real = curve.filter((p) => p.date !== "start");
+  return real.slice(-n).map((p) => ({ v: p.equity }));
+}
+
+export function winRateSpark(closed: ClosedTrade[], window = 10, points = 14): SparkPoint[] {
+  const final = closed
+    .filter((t) => !t.partial && typeof t.pnl_pct === "number")
+    .sort((a, b) => (a.exit_date ?? "").localeCompare(b.exit_date ?? ""));
+  if (final.length < window) return [];
+  const out: SparkPoint[] = [];
+  for (let i = window - 1; i < final.length; i++) {
+    const w = final.slice(i - window + 1, i + 1);
+    const wins = w.filter((t) => (t.pnl_pct ?? 0) > 0).length;
+    out.push({ v: (wins / window) * 100 });
+  }
+  return out.slice(-points);
+}
+
+export function rMultipleSpark(closed: ClosedTrade[], window = 10, points = 14): SparkPoint[] {
+  const final = closed
+    .filter((t) => !t.partial && typeof t.pnl_pct === "number")
+    .sort((a, b) => (a.exit_date ?? "").localeCompare(b.exit_date ?? ""));
+  if (final.length < window) return [];
+  const out: SparkPoint[] = [];
+  for (let i = window - 1; i < final.length; i++) {
+    const w = final.slice(i - window + 1, i + 1);
+    const wins = w.filter((t) => (t.pnl_pct ?? 0) > 0);
+    const losses = w.filter((t) => (t.pnl_pct ?? 0) <= 0);
+    const avgWin = wins.length
+      ? wins.reduce((s, t) => s + (t.pnl_pct ?? 0), 0) / wins.length
+      : 0;
+    const avgLoss = losses.length
+      ? losses.reduce((s, t) => s + (t.pnl_pct ?? 0), 0) / losses.length
+      : 0;
+    const r = avgLoss !== 0 ? Math.abs(avgWin / avgLoss) : 0;
+    out.push({ v: r });
+  }
+  return out.slice(-points);
 }
 
 export type Timeframe = "1D" | "1W" | "1M" | "1Y" | "ALL";
