@@ -78,7 +78,6 @@ Beispiel: `/watch RWE.DE breakout_long @62.50 Goldman 68 target + Analyst-Upgrad
 | `🚨 STOP-LOSS HIT` | Position Stop getroffen → schließen JETZT auf TR + `/close` |
 | `🎉 TAKE-PROFIT HIT` | TP getroffen, Vollverkauf |
 | `🎯 PARTIAL-TP` | TP1 hit, 50% raus, Rest läuft mit BE-SL + Trailing |
-| `⏱️ TIME-STOP` | held > TIME_STOP_DAYS ohne TP1 → close |
 | `🛡️ Stop auf Break-Even` | SL auf Entry gezogen nach TP1 |
 | `📐 Trailing aktiviert` | 1.5×ATR Trailing-Stop läuft jetzt |
 | `📈 Trailing-Stop nachgezogen` | SL hochgezogen (max 1× / 15min) |
@@ -113,7 +112,7 @@ Tag-über (alle 15min):
 Mechanisch (kein Claude):
    ├─ TP1 hit → 50% raus + BE-SL + 1.5×ATR Trailing aktiv
    ├─ SL hit → Telegram (du closest auf TR)
-   ├─ TIME_STOP_DAYS ohne TP1 → auto-close-Telegram
+   ├─ Held > hold_days_max → 🕒 STALE THESIS Alert (kein auto-close)
    └─ invalidate_below durchbrochen → Watchlevel weg + Event
 ```
 

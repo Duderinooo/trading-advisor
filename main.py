@@ -923,7 +923,7 @@ _SLTP_DEDUP_BUCKETS = {
     "TRAILING_STOP_MOVED": 900,    # 1× per 15min per trade — chatty during runs
     "TRAILING_ACTIVATED": 86400,
     "BREAK_EVEN_SHIFT": 86400,
-    # Default 0 = once-per-trade (HITs, TIME_STOP, PARTIAL_TP)
+    # Default 0 = once-per-trade (HITs, PARTIAL_TP)
 }
 
 
@@ -1012,19 +1012,6 @@ P&L: +{alert['pnl_pct']:.1f}%
                 if MEMPALACE_AVAILABLE:
                     log_trade(alert, "PARTIAL_TP", f"Partial-TP @ €{alert['current_price']:.2f}, "
                               f"sold {alert['shares_sold']}, remain {alert['shares_remaining']}")
-
-            elif alert["type"] == "TIME_STOP_HIT":
-                message = (
-                    f"⏱️ *TIME-STOP: {alert['ticker']}*\n\n"
-                    f"Hold: {alert['held_days']}d ohne TP1 → auto-close\n"
-                    f"Entry: €{alert['entry']:.2f}\n"
-                    f"Now: €{alert['current_price']:.2f}\n"
-                    f"P&L: {alert['pnl_pct']:+.1f}%\n\n"
-                    f"⚠️ *POSITION AUF TR SCHLIESSEN*\n_Tote Trades binden Heat — Kapital frei für neue Setups._"
-                )
-                _maybe_send_sltp(alert, message)
-                if MEMPALACE_AVAILABLE:
-                    log_trade(alert, "TIME_STOP", f"Time-stop hit nach {alert['held_days']}d")
 
             elif alert["type"] == "BREAK_EVEN_SHIFT":
                 _maybe_send_sltp(alert, (

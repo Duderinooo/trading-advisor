@@ -171,10 +171,6 @@ MIN_BREAKOUT_VOLUME_RATIO = 1.3   # heute_volume / avg_volume
 MIN_RS_20D_VS_INDEX_PCT = -1.0    # ticker_perf_20d − spy_perf_20d ≥ −1pp (kleine Toleranz)
 RS_INDEX_TICKER = "SPY5.DE"
 
-# Time-Stop: Position nach N Handelstagen ohne TP1-Hit auto-closen.
-# Tote Trades binden Heat → Kapital-Effizienz.
-TIME_STOP_DAYS = 10
-
 # Partial-TP-Execution: bei TP1-Hit X% der Position schließen, Rest mit BE-SL + Trailing weiterlaufen.
 # Wandelt Loser in BE-Trades nach 1R-Gewinnsicherung → Win-Rate-Bias.
 PARTIAL_TP_FRACTION = 0.5         # 50% bei TP1 raus, 50% läuft weiter

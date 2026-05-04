@@ -423,36 +423,6 @@ def detect_events() -> list[dict]:
 
         distance_pct = abs(current_price - trigger_price) / trigger_price * 100
 
-        # Heads-up alert: 0.5-1.5% from trigger but not yet inside the trigger
-        # band. Fires once per watch per day so user can manually monitor TR app.
-        # No event/Claude call — purely informational Telegram.
-        if (
-            config.BREAKOUT_TRIGGER_PERCENT < distance_pct <= 1.5
-            and current_price < trigger_price  # only LONG-direction approaches
-        ):
-            _heads_key = f"{ticker}:{trigger_price}"
-            _heads_seen = portfolio.get("watch_heads_alerted", {}).get(
-                str(today), []
-            )
-            if _heads_key not in _heads_seen:
-                from notifier import send_alert as _send_alert
-                _send_alert(
-                    f"📡 NEAR-TRIGGER: {ticker}",
-                    f"Preis €{current_price:.2f} ist {distance_pct:.2f}% "
-                    f"vom {level_type}-Trigger €{trigger_price:.2f} entfernt.\n"
-                    f"These: _{level.get('thesis', '—')}_",
-                )
-                # Persist so we don't re-alert this watch today.
-                with portfolio_lock:
-                    fresh = load_portfolio()
-                    today_key = str(today)
-                    seen_dict = fresh.get("watch_heads_alerted", {}) or {}
-                    seen_dict = {today_key: list(seen_dict.get(today_key, []))}
-                    if _heads_key not in seen_dict[today_key]:
-                        seen_dict[today_key].append(_heads_key)
-                    fresh["watch_heads_alerted"] = seen_dict
-                    save_portfolio(fresh)
-
         if distance_pct <= config.BREAKOUT_TRIGGER_PERCENT:
             confirm_close_above = level.get("confirm_close_above")
             if isinstance(confirm_close_above, (int, float)) and confirm_close_above > 0:
@@ -736,31 +706,6 @@ def check_stop_loss_take_profit() -> list[dict]:
                 continue
 
             entry = trade.get("entry_price", 0)
-
-            # Time-Stop: stale trade auto-close. Frees heat for fresh setups.
-            # Skip if trade already had a partial TP-hit (those locked in profit, let runner work).
-            time_stop_days = trade.get("time_stop_days") or config.TIME_STOP_DAYS
-            entry_date_str = trade.get("entry_date") or ""
-            partial_count = trade.get("partial_seq") or 0
-            if time_stop_days and entry_date_str and partial_count == 0:
-                try:
-                    entry_dt = datetime.strptime(entry_date_str, "%Y-%m-%d %H:%M")
-                    held_days = (datetime.now() - entry_dt).days
-                    if held_days >= time_stop_days:
-                        pnl_pct = ((current_price - entry) / entry * 100) if entry else 0
-                        alerts.append({
-                            "type": "TIME_STOP_HIT",
-                            "ticker": ticker,
-                            "entry": entry,
-                            "current_price": current_price,
-                            "held_days": held_days,
-                            "pnl_pct": pnl_pct,
-                        })
-                        _close_trade(trade, current_price, "TIME_STOP", portfolio)
-                        portfolio_dirty = True
-                        continue
-                except ValueError:
-                    pass
 
             if _apply_trailing_stop(trade, current_price):
                 portfolio_dirty = True

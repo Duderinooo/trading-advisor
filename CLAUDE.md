@@ -62,7 +62,7 @@ VWAP-anomaly gate runs in `core.events.detect_events`: watch-level hits with `|v
 
 ## Trade-state automation (events.py SL/TP loop)
 
-- **Time-Stop**: positions held ≥ `TIME_STOP_DAYS` without a partial TP1 hit auto-close (`TIME_STOP_HIT` alert). Skipped once `partial_seq ≥ 1` (locked-in profit, let runner work).
+- **Stale-Thesis Alert** (`main._check_stale_theses`): position held > per-rec `hold_days_max` → `🕒 STALE THESIS` Telegram, **alert-only, no auto-close**. Once per day. Mechanical Time-Stop was removed 2026-05-04 — Claude sees `entry_date` in open_trades dump and `recommend_exit` is now allowed for "Stagnation + Thesis-Decay-Signal" (entry_snapshot vs current).
 - **Partial TP**: TP1 hit on a multi-TP rec sells `PARTIAL_TP_FRACTION × shares` (default 50%), records the partial as a separate `closed_trades` entry with `partial=True`, then moves SL to break-even and activates 1.5×ATR trailing on remainder. Final TP closes full remainder.
 - **Brier scoring on partials**: scored only on `partial_seq=1` (first close); later partials carry no `brier`/`outcome` to avoid double-counting.
 

@@ -419,10 +419,11 @@ RECOMMEND_EXIT_TOOL = {
     "description": (
         "Strukturierte EXIT-Empfehlung für laufende Position. Landet in pending_recommendations + "
         "wird per Telegram mit /confirm gesendet (wie ENTRY-Flow). "
-        "User exekutiert manuell auf TR. NUR aufrufen bei Thesis-Bruch / These invalid / "
-        "harter Reject mit Confirmation / RSI bearish divergence / Pre-Earnings-Defense. "
-        "NICHT aufrufen für: 'TP nicht erreicht aber lange unterwegs' (mechanisches TIME_STOP) "
-        "oder mechanisches Trailing (events.py macht das selbst)."
+        "User exekutiert manuell auf TR. Aufrufen bei: Thesis-Bruch / These invalid / "
+        "harter Reject mit Confirmation / RSI bearish divergence / Pre-Earnings-Defense / "
+        "längere Stagnation OHNE Progress UND Thesis-Pillar weg (entry_snapshot vs aktuell zeigt Decay). "
+        "NICHT aufrufen für mechanisches Trailing (events.py macht das selbst) oder reines 'lange flach' "
+        "ohne Thesis-Decay-Signal — kontextfreies Time-Stop ist absichtlich entfernt."
     ),
     "input_schema": {
         "type": "object",
