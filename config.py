@@ -163,6 +163,13 @@ KELLY_FRACTION = 0.25             # Quarter-Kelly cap on size_pct
 FIXED_FEE_EUR_PER_SIDE = 1.0      # Trade Republic Order-Gebühr pro Seite
 MIN_NET_PROFIT_EUR = 2.0          # Mindest-Netto-Gewinn nach Fees am TP1 (auf whole-shares × (TP1-entry))
 
+# Exit-Reminder Schedule (User-Feedback 2026-05-04: ein Reminder reicht, danach
+# Auto-Drop). Flow: 1. Reminder bei Urgency-Threshold → AUTO_DROP_GAP Pause →
+# Auto-Drop + Trade-Markierung. Cooldown verhindert dass Claude in nächster Analysis
+# sofort wieder Exit-Rec für gleichen Ticker generiert.
+EXIT_AUTO_DROP_GAP_MIN = 60             # Pause zwischen Reminder und Auto-Drop
+EXIT_REC_COOLDOWN_MIN_AFTER_DROP = 240  # 4h: keine neue Exit-Rec für Ticker nach Drop
+
 # Execution-quality gates
 MAX_ENTRY_SLIPPAGE_PERCENT = 2.0  # /confirm @filled_price rejected if |filled-rec|/rec > 2%
 PENDING_REC_TTL_HOURS = 4         # Rec veraltet nach 4h — Preis weg, Kontext veraltet → reject

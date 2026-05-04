@@ -359,6 +359,46 @@ def _trace_key(mode: str, event_context: str | None) -> str | None:
     return None
 
 
+def _auto_paper_open(rec: dict) -> None:
+    """Mirror a passing entry-rec into the paper portfolio for parallel learning.
+
+    Same shape as /confirm but auto, no slippage, €1 fee. Whole-share + fee gates
+    already filtered by the time we get here, so int(size_eur/entry) >= 1 is implied;
+    defensive guard added anyway. KEIN Telegram, KEIN MemPalace — Paper-Spur soll
+    User nicht spammen und Real-History sauber halten.
+    """
+    from core.portfolio import (
+        load_paper_portfolio, save_paper_portfolio, paper_lock, build_trade_dict,
+    )
+    entry = float(rec.get("entry_price") or 0)
+    size = float(rec.get("size_eur") or 0)
+    shares = int(size / entry) if entry > 0 else 0
+    if shares < 1:
+        return
+    fee = config.FIXED_FEE_EUR_PER_SIDE
+    with paper_lock:
+        pp = load_paper_portfolio()
+        cost = shares * entry + fee
+        cash = float(pp.get("cash_eur", 0) or 0)
+        if cost > cash + 0.01:
+            logger.info("paper: skip %s (cash €%.2f < cost €%.2f)",
+                        rec.get("ticker"), cash, cost)
+            return
+        trade = build_trade_dict(
+            rec, entry, float(shares), entry_snapshot=None, paper=True,
+        )
+        trade["entry_fee_eur"] = fee
+        trade["mae"] = round(entry, 4)
+        trade["mfe"] = round(entry, 4)
+        pp["cash_eur"] = round(cash - cost, 2)
+        pp.setdefault("open_trades", []).append(trade)
+        save_paper_portfolio(pp)
+        logger.info(
+            "paper: opened %s %d×€%.2f fee=€%.2f cash_now=€%.2f",
+            trade["ticker"], shares, entry, fee, pp["cash_eur"],
+        )
+
+
 # ---------- Main orchestrator ----------
 
 def analyze_portfolio(
@@ -1863,24 +1903,66 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
         if update_persisted is not None:
             fresh.setdefault("pending_recommendations", []).append(update_persisted)
         if exit_persisted is not None:
-            # Dedupe: nur ein pending exit pro Ticker. Sonst feuert _check_exit_reminders
-            # mehrfach (Bug 2026-05-04: RWE.DE bekam 3 Exit-Recs im Tagesverlauf →
-            # User 2× Reminder um 16:30). Latest reason wins; Urgency-Eskalation
-            # geschieht implizit, weil neuere Analysen aktuelleren Kontext haben.
+            # Two-Stage Suppress (User-Feedback 2026-05-04 zu RWE.DE Spam):
+            # (a) Cooldown: wenn dieser Trade kürzlich einen auto-dropped Exit-Rec
+            #     hatte (≤EXIT_REC_COOLDOWN_MIN_AFTER_DROP), suppress neue Exit-Recs
+            #     komplett. Verhindert Spiral nach User-Ignore + Auto-Drop.
+            # (b) Keep-Existing: wenn schon ein pending Exit für Ticker liegt, NICHT
+            #     ersetzen — sonst resettet Timer + User bekommt erneut 1. Reminder.
+            #     User hat ersten Alert schon gesehen; wenn sie ignorieren, geht's
+            #     durch den Reminder→2nd-Reminder→Drop-Flow.
             _et = (exit_persisted.get("ticker") or "").upper()
-            _existing = fresh.get("pending_recommendations", []) or []
-            _kept = [
-                r for r in _existing
-                if not (r.get("kind") == "exit"
-                        and (r.get("ticker") or "").upper() == _et)
-            ]
-            _dropped = len(_existing) - len(_kept)
-            if _dropped:
-                logger.info("Exit-rec dedupe: replaced %d stale pending exit(s) for %s",
-                            _dropped, _et)
-            _kept.append(exit_persisted)
-            fresh["pending_recommendations"] = _kept
+            _open_pos = next(
+                (tr for tr in fresh.get("open_trades", []) or []
+                 if (tr.get("ticker") or "").upper() == _et),
+                None,
+            )
+            _in_cooldown = False
+            if _open_pos and _open_pos.get("exit_dropped_at"):
+                try:
+                    _drop_dt = datetime.strptime(
+                        _open_pos["exit_dropped_at"], "%Y-%m-%d %H:%M",
+                    )
+                    _age_min = (datetime.now() - _drop_dt).total_seconds() / 60.0
+                    if _age_min < config.EXIT_REC_COOLDOWN_MIN_AFTER_DROP:
+                        _in_cooldown = True
+                        log_gate(_et, "exit_cooldown", True,
+                                 f"in cooldown {_age_min:.0f}min < "
+                                 f"{config.EXIT_REC_COOLDOWN_MIN_AFTER_DROP}min",
+                                 {"age_min": round(_age_min, 1),
+                                  "cooldown_min": config.EXIT_REC_COOLDOWN_MIN_AFTER_DROP})
+                        logger.info(
+                            "Exit-rec for %s suppressed (cooldown %.0fmin < %dmin)",
+                            _et, _age_min, config.EXIT_REC_COOLDOWN_MIN_AFTER_DROP,
+                        )
+                except ValueError:
+                    pass
+
+            if not _in_cooldown:
+                _existing = fresh.get("pending_recommendations", []) or []
+                _has_pending = any(
+                    r.get("kind") == "exit"
+                    and (r.get("ticker") or "").upper() == _et
+                    for r in _existing
+                )
+                if _has_pending:
+                    log_gate(_et, "exit_dedupe", True,
+                             "existing pending exit-rec, keep old (no timer reset)", {})
+                    logger.info(
+                        "Exit-rec for %s suppressed (existing pending kept)", _et,
+                    )
+                else:
+                    fresh.setdefault("pending_recommendations", []).append(exit_persisted)
         fresh["last_analysis"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         save_portfolio(fresh)
+
+    # Paper-Portfolio Auto-Open (außerhalb des real-portfolio_lock — eigener paper_lock).
+    # Lernt parallel ohne User-Action: jeder rec, der alle Gates passt, wird auch im
+    # Trainings-Portfolio geöffnet. Fail-soft: niemals echten Flow blockieren.
+    if rec is not None:
+        try:
+            _auto_paper_open(rec)
+        except Exception:
+            logger.exception("paper-portfolio auto-open failed")
 
     return analysis_text

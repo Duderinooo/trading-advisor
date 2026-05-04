@@ -13,7 +13,10 @@ from datetime import datetime, date, timedelta
 import yfinance as yf
 
 import config
-from core.portfolio import portfolio_lock, load_portfolio, save_portfolio, maintain_drawdown_state
+from core.portfolio import (
+    portfolio_lock, load_portfolio, save_portfolio, maintain_drawdown_state,
+    exit_suppressed_tickers,
+)
 from core.market_data import get_market_data
 from core.news_rss import fetch_rss_news
 from core.api_usage import get_minutes_since_last_analysis
@@ -227,14 +230,24 @@ def check_news_events() -> list[dict]:
         today = str(date.today())
         seen_today = set(portfolio.get("seen_news", {}).get(today, []))
 
-        open_tickers = {t["ticker"] for t in portfolio.get("open_trades", [])}
-        scan_tickers = list(dict.fromkeys(
-            list(config.MARKET_INDICATORS) + list(open_tickers) + config.WATCHLIST + config.COMMODITIES
-        ))
+        # Exit-suppressed: kein News-Scan für Tickers mit pending Exit / Cooldown.
+        # Spart Haiku-Calls bei Headlines, die User sowieso ignorieren würde.
+        suppressed = {t.upper() for t in exit_suppressed_tickers(portfolio)}
+        open_tickers = {
+            t["ticker"] for t in portfolio.get("open_trades", [])
+            if (t.get("ticker") or "").upper() not in suppressed
+        }
+        scan_tickers = [
+            t for t in dict.fromkeys(
+                list(config.MARKET_INDICATORS) + list(open_tickers)
+                + config.WATCHLIST + config.COMMODITIES
+            )
+            if t.upper() not in suppressed
+        ]
 
         # RSS scan only for stock tickers (open + watchlist). Skip indices/commodities —
         # yfinance covers those, and RSS query "SPY" or "GC=F" returns junk.
-        rss_tickers = set(open_tickers) | set(config.WATCHLIST)
+        rss_tickers = (set(open_tickers) | set(config.WATCHLIST)) - suppressed
 
         # Pull company names from market_data cache to disambiguate ticker queries
         # (e.g. "RWE" alone matches Rot-Weiss Essen football headlines).
@@ -360,13 +373,23 @@ def detect_events() -> list[dict]:
     events = []
     portfolio = load_portfolio()
     excluded = set(config.EXCLUDED_TICKERS)
-    watch_levels = [w for w in portfolio.get("watch_levels", []) if w["ticker"] not in excluded]
+    # Exit-suppressed: pending Exit-Rec aktiv ODER Cooldown nach Auto-Drop. Diese
+    # Tickers triggern KEINE neuen Events (spart Haiku-€ + verhindert Re-Loop).
+    suppressed = {t.upper() for t in exit_suppressed_tickers(portfolio)}
+    watch_levels = [
+        w for w in portfolio.get("watch_levels", [])
+        if w["ticker"] not in excluded
+        and (w.get("ticker") or "").upper() not in suppressed
+    ]
 
     watch_tickers = [w["ticker"] for w in watch_levels]
     all_tickers = [
         t for t in set(watch_tickers + config.WATCHLIST + config.COMMODITIES)
-        if t not in excluded
+        if t not in excluded and t.upper() not in suppressed
     ]
+    if suppressed:
+        logger.info("detect_events: %d ticker(s) exit-suppressed: %s",
+                    len(suppressed), ", ".join(sorted(suppressed)))
 
     if not all_tickers:
         return events
@@ -606,8 +629,18 @@ def _close_partial(trade: dict, shares_to_sell: float, exit_price: float, reason
         partial["brier"] = round((p_win - outcome) ** 2, 4)
         partial["outcome"] = outcome
 
+    # Paper-Trades zahlen €1 Exit-Fee bei jedem Close (auch Partial). Real-Trades
+    # haben keine Fee hier, weil User auf TR exekutiert (Real-Cash wird vom Broker
+    # gepflegt; Bot-Cash spiegelt nominell). Symmetric to entry: paper opened with
+    # entry_fee_eur=1, partial close = exit_fee_eur=1.
+    is_paper = bool(trade.get("paper"))
+    fee = config.FIXED_FEE_EUR_PER_SIDE if is_paper else 0.0
     portfolio.setdefault("closed_trades", []).append(partial)
-    portfolio["cash_eur"] = portfolio.get("cash_eur", 0) + (exit_price * shares_to_sell)
+    portfolio["cash_eur"] = round(
+        portfolio.get("cash_eur", 0) + (exit_price * shares_to_sell) - fee, 2,
+    )
+    if is_paper:
+        partial["exit_fee_eur"] = fee
 
     remaining = round(float(trade.get("shares", 0) or 0) - shares_to_sell, 4)
     trade["shares"] = max(remaining, 0.0)
@@ -670,16 +703,35 @@ def _close_trade(trade: dict, exit_price: float, reason: str, portfolio: dict):
     except Exception:
         logger.exception("SPY-attribution failed for %s", trade.get("ticker", "?"))
 
+    # Symmetric to _close_partial: Paper zahlt €1 Exit-Fee, Real nicht.
+    is_paper = bool(trade.get("paper"))
+    fee = config.FIXED_FEE_EUR_PER_SIDE if is_paper else 0.0
     portfolio.setdefault("closed_trades", []).append(closed)
-    portfolio["cash_eur"] = portfolio.get("cash_eur", 0) + (exit_price * shares)
+    portfolio["cash_eur"] = round(
+        portfolio.get("cash_eur", 0) + (exit_price * shares) - fee, 2,
+    )
+    if is_paper:
+        closed["exit_fee_eur"] = fee
 
 
-def check_stop_loss_take_profit() -> list[dict]:
+def check_stop_loss_take_profit(paper: bool = False) -> list[dict]:
     """Check open trades for stop-loss / take-profit triggers.
     On full exit (SL or final TP), moves trade to closed_trades + frees cash.
-    Handles trailing stops and break-even shift after TP1."""
-    with portfolio_lock:
-        portfolio = load_portfolio()
+    Handles trailing stops and break-even shift after TP1.
+
+    paper=True läuft die gleiche Logik gegen training_portfolio.json (eigener Lock,
+    eigenes File). Paper-Trades zahlen €1/Seite Fee in _close_trade/_close_partial,
+    Real-Trades nicht (Real-Cash wird via TR-Execution gepflegt).
+    """
+    if paper:
+        from core.portfolio import (
+            load_paper_portfolio, save_paper_portfolio, paper_lock,
+        )
+        loader, saver, lock = load_paper_portfolio, save_paper_portfolio, paper_lock
+    else:
+        loader, saver, lock = load_portfolio, save_portfolio, portfolio_lock
+    with lock:
+        portfolio = loader()
         open_trades = portfolio.get("open_trades", [])
 
         if not open_trades:
@@ -818,8 +870,10 @@ def check_stop_loss_take_profit() -> list[dict]:
         if portfolio_dirty:
             portfolio["open_trades"] = surviving_trades
             # Recompute DD halt latch — SL/TP hits just changed realized equity.
+            # Paper hat eigene DD-Spur (für Stats), aber Halt blockt nichts (Auto-Open
+            # läuft über analyzer, ignoriert paper-DD). Symmetric ausführen für Daten.
             maintain_drawdown_state(portfolio)
-            save_portfolio(portfolio)
+            saver(portfolio)
 
         return alerts
 
@@ -840,8 +894,11 @@ def check_price_alerts() -> list[dict]:
 
         alerts = []
         excluded = set(config.EXCLUDED_TICKERS)
+        # Exit-suppressed: kein Price-Alert für Tickers mit pending Exit / Cooldown.
+        suppressed = {t.upper() for t in exit_suppressed_tickers(portfolio)}
         watch_tickers = [
-            t for t in config.WATCHLIST + config.COMMODITIES if t not in excluded
+            t for t in config.WATCHLIST + config.COMMODITIES
+            if t not in excluded and t.upper() not in suppressed
         ]
         market_data = get_market_data(watch_tickers)
 
@@ -849,6 +906,8 @@ def check_price_alerts() -> list[dict]:
 
         for ticker, data in market_data.items():
             if "error" in data or ticker in excluded:
+                continue
+            if ticker.upper() in suppressed:
                 continue
 
             change = data.get("change_pct")

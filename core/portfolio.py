@@ -17,9 +17,12 @@ import config
 logger = logging.getLogger(__name__)
 
 _PORTFOLIO_PATH = Path(__file__).resolve().parent.parent / "portfolio.json"
+_PAPER_PORTFOLIO_PATH = Path(__file__).resolve().parent.parent / "training_portfolio.json"
 
 # Guards every load-modify-save sequence on portfolio.json.
 portfolio_lock = threading.RLock()
+# Separate lock + file for the paper/training portfolio. Real and paper never share state.
+paper_lock = threading.RLock()
 
 
 # ---------- I/O ----------
@@ -54,6 +57,115 @@ def save_portfolio(portfolio: dict):
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
         raise
+
+
+def load_paper_portfolio() -> dict:
+    """Load training/paper portfolio. Returns fresh default if missing.
+
+    Paper-Spur lernt ohne Ausführungs-Risiko: jeder rec_entry, der alle Gates passt,
+    wird automatisch geöffnet (mit €1/Seite Fee), via SL/TP-Loop geschlossen.
+    Strikt getrennt von Real-Portfolio (eigene Datei, eigener Lock) damit Paper-Stats
+    nie in Real-Brier-Haircut fließen.
+    """
+    if _PAPER_PORTFOLIO_PATH.exists():
+        with open(_PAPER_PORTFOLIO_PATH) as f:
+            return json.load(f)
+    return {
+        "open_trades": [],
+        "closed_trades": [],
+        "cash_eur": config.BUDGET_EUR,
+        "total_capital_eur": config.BUDGET_EUR,
+        "started_at": datetime.now().strftime("%Y-%m-%d"),
+        "paper": True,
+    }
+
+
+def save_paper_portfolio(portfolio: dict):
+    """Atomic write of paper portfolio. Same crash-safety as save_portfolio."""
+    portfolio["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    portfolio["paper"] = True
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".training_portfolio_", suffix=".json",
+        dir=_PAPER_PORTFOLIO_PATH.parent,
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(portfolio, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, _PAPER_PORTFOLIO_PATH)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+
+
+def exit_suppressed_tickers(portfolio: dict) -> set[str]:
+    """Tickers für die KEINE neuen Event-/Haiku-Calls erzeugt werden sollen.
+
+    Spart Haiku-Kosten + verhindert Re-Trigger-Loops, wenn User Exit ignoriert.
+    Quellen:
+      (a) pending_recommendations mit kind=exit (User hat schon Reminder bekommen
+          oder sieht den ersten gleich; weitere Events bringen nichts).
+      (b) open_trades mit exit_dropped_at < EXIT_REC_COOLDOWN_MIN_AFTER_DROP min
+          (Auto-Drop hat stattgefunden; Cooldown verhindert sofortige Re-Recs).
+    """
+    out: set[str] = set()
+    for rec in portfolio.get("pending_recommendations", []) or []:
+        if rec.get("kind") == "exit":
+            t = (rec.get("ticker") or "").upper()
+            if t:
+                out.add(t)
+    cooldown_min = config.EXIT_REC_COOLDOWN_MIN_AFTER_DROP
+    now = datetime.now()
+    for tr in portfolio.get("open_trades", []) or []:
+        ts = tr.get("exit_dropped_at")
+        if not ts:
+            continue
+        try:
+            drop_dt = datetime.strptime(ts, "%Y-%m-%d %H:%M")
+            if (now - drop_dt).total_seconds() / 60.0 < cooldown_min:
+                t = (tr.get("ticker") or "").upper()
+                if t:
+                    out.add(t)
+        except ValueError:
+            continue
+    return out
+
+
+def build_trade_dict(rec: dict, filled_price: float, shares: float,
+                     entry_snapshot: dict | None = None,
+                     paper: bool = False) -> dict:
+    """Source of truth for open_trade dict shape.
+
+    Used by /confirm (real) and _auto_paper_open (paper) so beide Spuren identisches
+    Schema haben. shares = float weil TR-Bruchstücke (rounded 4 decimals).
+    """
+    size_eur = round(filled_price * shares, 2)
+    return {
+        "ticker": rec.get("ticker"),
+        "entry_price": filled_price,
+        "shares": shares,
+        "size_eur": size_eur,
+        "stop_loss": rec.get("stop_loss"),
+        "take_profit": rec.get("take_profit"),
+        "conviction": rec.get("conviction"),
+        "p_win": rec.get("p_win"),
+        "thesis": rec.get("thesis", ""),
+        "setup_type": rec.get("setup_type"),
+        "top_fail_mode": rec.get("top_fail_mode"),
+        "hold_days_min": rec.get("hold_days_min"),
+        "hold_days_max": rec.get("hold_days_max"),
+        "trailing_stop_pct": rec.get("trailing_stop_pct"),
+        "regime_at_entry": rec.get("regime_at_entry"),
+        "vix_at_entry": rec.get("vix_at_entry"),
+        "entry_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "status": "open",
+        "entry_snapshot": entry_snapshot,
+        "mae": 0.0,
+        "mfe": 0.0,
+        "paper": paper,
+    }
 
 
 def add_cash_movement(

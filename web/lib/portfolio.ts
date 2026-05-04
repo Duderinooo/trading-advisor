@@ -1,8 +1,9 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { ClaudeCall, GateBlock, Portfolio } from "./types";
+import type { ClaudeCall, GateBlock, PaperPortfolio, Portfolio } from "./types";
 
 const PORTFOLIO_PATH = path.join(process.cwd(), "..", "portfolio.json");
+const PAPER_PORTFOLIO_PATH = path.join(process.cwd(), "..", "training_portfolio.json");
 const GATE_LOG_PATH = path.join(process.cwd(), "..", "gate_blocks.jsonl");
 const BACKTEST_PATH = path.join(process.cwd(), "..", "backtest_report.json");
 const CALLS_LOG_PATH = path.join(process.cwd(), "..", "claude_calls.jsonl");
@@ -33,6 +34,25 @@ export async function readPortfolio(): Promise<Portfolio> {
     last_opening_trace_xetra: data.last_opening_trace_xetra,
     last_opening_trace_us: data.last_opening_trace_us,
   };
+}
+
+export async function readPaperPortfolio(): Promise<PaperPortfolio | null> {
+  try {
+    const raw = await fs.readFile(PAPER_PORTFOLIO_PATH, "utf8");
+    const data = JSON.parse(raw);
+    return {
+      open_trades: data.open_trades ?? [],
+      closed_trades: data.closed_trades ?? [],
+      cash_eur: data.cash_eur ?? 0,
+      total_capital_eur: data.total_capital_eur ?? 0,
+      started_at: data.started_at,
+      paper: true,
+      last_updated: data.last_updated,
+    };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
 }
 
 export async function readGateBlocks(limit = 500): Promise<GateBlock[]> {

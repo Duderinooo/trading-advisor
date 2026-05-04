@@ -65,6 +65,7 @@ VWAP-anomaly gate runs in `core.events.detect_events`: watch-level hits with `|v
 ## Trade-state automation (events.py SL/TP loop)
 
 - **Stale-Thesis Alert** (`main._check_stale_theses`): position held > per-rec `hold_days_max` → `🕒 STALE THESIS` Telegram, **alert-only, no auto-close**. Once per day. Mechanical Time-Stop was removed 2026-05-04 — Claude sees `entry_date` in open_trades dump and `recommend_exit` is now allowed for "Stagnation + Thesis-Decay-Signal" (entry_snapshot vs current).
+- **Exit-Reminder + Auto-Drop** (`main._check_exit_reminders`): pending exit-recs nudgen User. State-Machine pro Rec: Reminder bei Urgency-Threshold → `EXIT_AUTO_DROP_GAP_MIN` Pause → Auto-Drop. Bei Drop wird `trade.exit_dropped_at` gesetzt → `EXIT_REC_COOLDOWN_MIN_AFTER_DROP` (4h) lang werden neue Exit-Recs für diesen Ticker in `core.analyzer` suppressed UND Event-Detection in `core.events` überspringt diese Tickers ganz (kein Haiku-Call → spart €) (verhindert Spiral-Loop). **Außerdem:** wenn schon ein pending Exit für Ticker existiert, werden neue Exit-Recs von Claude verworfen statt ersetzt — Timer wird nicht resettet.
 - **Partial TP**: TP1 hit on a multi-TP rec sells `PARTIAL_TP_FRACTION × shares` (default 50%), records the partial as a separate `closed_trades` entry with `partial=True`, then moves SL to break-even and activates 1.5×ATR trailing on remainder. Final TP closes full remainder.
 - **Brier scoring on partials**: scored only on `partial_seq=1` (first close); later partials carry no `brier`/`outcome` to avoid double-counting.
 

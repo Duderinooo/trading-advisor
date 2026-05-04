@@ -18,6 +18,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 import config
 from core import (
     portfolio_lock, load_portfolio, save_portfolio, add_cash_movement,
+    build_trade_dict,
     get_market_data,
     risk_halt_status, set_kill_switch, kill_switch_active,
     maintain_drawdown_state, compute_slippage_budget, get_period_return,
@@ -824,23 +825,14 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "rs_20d_vs_index_pct": snapshot_data.get("rs_20d_vs_index_pct"),
         }
 
-        trade = {
-            "ticker": rec["ticker"],
-            "entry_price": entry,
-            "shares": shares,
-            "size_eur": actual_size,
-            "stop_loss": rec.get("stop_loss"),
-            "take_profit": rec.get("take_profit"),
-            "trailing_stop_pct": rec.get("trailing_stop_pct"),
-            "conviction": rec.get("conviction"),
-            "p_win": rec.get("p_win"),
-            "thesis": rec.get("thesis"),
+        # Common base shape (shared with paper-portfolio auto-open) +
+        # confirm-only fields (slippage, watch_thesis, confluence-snapshot, etc.).
+        trade = build_trade_dict(
+            rec, entry, shares,
+            entry_snapshot=entry_snapshot, paper=False,
+        )
+        trade.update({
             "watch_thesis": rec.get("watch_thesis"),
-            "entry_snapshot": entry_snapshot,
-            "hold_days_min": rec.get("hold_days_min"),
-            "hold_days_max": rec.get("hold_days_max"),
-            "setup_type": rec.get("setup_type"),
-            "top_fail_mode": rec.get("top_fail_mode"),
             "confluence_score": rec.get("confluence_score"),
             "confluence_items": rec.get("confluence_items"),
             "correlations": rec.get("correlations"),
@@ -848,16 +840,12 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "dd_soft_scale": rec.get("dd_soft_scale"),
             "vix_dampener": rec.get("vix_dampener"),
             "kelly_clamp": rec.get("kelly_clamp"),
-            "regime_at_entry": rec.get("regime_at_entry"),
-            "vix_at_entry": rec.get("vix_at_entry"),
-            "entry_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "status": "open",
             "rec_entry_price": rec_entry,
             "slippage_pct": round(slippage_pct, 3),
             # MAE/MFE seeded at entry; updated each heartbeat tick by main.py.
             "mae": round(entry, 4),
             "mfe": round(entry, 4),
-        }
+        })
 
         portfolio.setdefault("open_trades", []).append(trade)
         portfolio["cash_eur"] = round(cash - actual_size, 2)

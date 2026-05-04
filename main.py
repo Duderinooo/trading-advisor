@@ -587,13 +587,62 @@ def is_us_open_check_time() -> bool:
 _EXIT_REMINDER_THRESHOLDS_MIN = {"now": 120, "today": 360, "eod": 60}
 
 
+def _gap_min(last_at_str, now):
+    """Minutes since last_at_str (formatted '%Y-%m-%d %H:%M'). None if unparseable."""
+    if not last_at_str:
+        return None
+    try:
+        return (now - datetime.strptime(last_at_str, "%Y-%m-%d %H:%M")).total_seconds() / 60.0
+    except ValueError:
+        return None
+
+
+def _send_exit_reminder(rec: dict, age_min: float):
+    """Send a Telegram exit reminder. After EXIT_AUTO_DROP_GAP_MIN ohne Action
+    wird Rec verworfen — siehe _drop_exit_rec."""
+    ticker = rec.get("ticker", "?")
+    reason = (rec.get("reason") or "")[:120]
+    urgency = (rec.get("urgency") or "today").lower()
+    urg_emoji = {"now": "🚨", "today": "⚠️", "eod": "🕐"}.get(urgency, "⚠️")
+    send_notification(
+        f"⏰ *EXIT-REMINDER* | `{ticker}` | {urg_emoji} {urgency}\n"
+        f"Vor {int(age_min)} Min empfohlen, noch nicht actioned.\n"
+        f"Grund: {reason}\n"
+        f"_Auf TR schließen + `/confirm` oder `/close {ticker} @PREIS`. "
+        f"Ohne Action in {config.EXIT_AUTO_DROP_GAP_MIN}min wird Empfehlung verworfen._"
+    )
+    logger.warning("EXIT-reminder sent: %s urgency=%s age=%dmin",
+                   ticker, urgency, int(age_min))
+
+
+def _drop_exit_rec(rec: dict, portfolio: dict, now: datetime):
+    """Auto-drop pending exit-rec ohne Action nach Reminder. Marks trade mit
+    `exit_dropped_at` → analyzer-Cooldown suppresst neue Exit-Recs für
+    EXIT_REC_COOLDOWN_MIN_AFTER_DROP min."""
+    ticker = (rec.get("ticker") or "?").upper()
+    for tr in portfolio.get("open_trades", []) or []:
+        if (tr.get("ticker") or "").upper() == ticker:
+            tr["exit_dropped_at"] = now.strftime("%Y-%m-%d %H:%M")
+            break
+    cooldown_h = config.EXIT_REC_COOLDOWN_MIN_AFTER_DROP // 60
+    send_notification(
+        f"🗑️ *EXIT-Rec verworfen* | `{ticker}`\n"
+        f"Nach Reminder keine Aktion. Bot generiert für {cooldown_h}h keine "
+        f"neue Exit-Rec auf diesen Ticker."
+    )
+    logger.warning("EXIT-rec auto-dropped: %s after reminder (cooldown %dh)",
+                   ticker, cooldown_h)
+
+
 def _check_exit_reminders():
-    """Resend Telegram for pending EXIT-recs that the user hasn't actioned in time.
-    Bot doesn't auto-close (no broker API) — if user ignores `EXIT now`, position
-    rots. This nudges. Each rec gets max 1 reminder (idempotent via flag)."""
+    """Reminder + Auto-Drop für pending EXIT-recs. Bot hat keine Broker-API; bei
+    User-Ignore rottet Position. State-Machine pro Rec:
+      reminder_sent=False → Threshold hit → Reminder, last_reminder_at=now
+      reminder_sent=True  → AUTO_DROP_GAP since last_reminder_at → drop + cooldown
+    Ein Reminder reicht — User-Feedback 2026-05-04.
+    """
     if not is_market_hours():
         return
-    today = str(date.today())
     with portfolio_lock:
         portfolio = load_portfolio()
         pending = portfolio.get("pending_recommendations", []) or []
@@ -601,44 +650,58 @@ def _check_exit_reminders():
             return
         now = datetime.now()
         dirty = False
+        kept = []
         for rec in pending:
             if rec.get("kind") != "exit":
-                continue
-            if rec.get("reminder_sent_date") == today:
+                kept.append(rec)
                 continue
             ts = rec.get("timestamp")
             if not ts:
+                kept.append(rec)
                 continue
             try:
                 rec_dt = datetime.strptime(ts, "%Y-%m-%d %H:%M")
             except ValueError:
+                kept.append(rec)
                 continue
+
             urgency = (rec.get("urgency") or "today").lower()
             threshold = _EXIT_REMINDER_THRESHOLDS_MIN.get(urgency, 360)
             age_min = (now - rec_dt).total_seconds() / 60.0
+
+            # Threshold hit?
             if urgency == "eod":
-                # 1h before XETRA close (17:30) regardless of age
+                # 1h before XETRA close (17:30)
                 close_min = 17 * 60 + 30
                 cutoff_min = close_min - threshold
-                if now.hour * 60 + now.minute < cutoff_min:
-                    continue
-            elif age_min < threshold:
+                threshold_hit = (now.hour * 60 + now.minute) >= cutoff_min
+            else:
+                threshold_hit = age_min >= threshold
+
+            if not threshold_hit:
+                kept.append(rec)
                 continue
-            ticker = rec.get("ticker", "?")
-            reason = (rec.get("reason") or "")[:120]
-            urg_emoji = {"now": "🚨", "today": "⚠️", "eod": "🕐"}.get(urgency, "⚠️")
-            send_notification(
-                f"⏰ *EXIT-REMINDER* | `{ticker}` | {urg_emoji} {urgency}\n"
-                f"Vor {int(age_min)} Min empfohlen, noch nicht actioned.\n"
-                f"Grund: {reason}\n"
-                f"_Auf TR schließen + `/close {ticker} @PREIS`._"
-            )
-            rec["reminder_sent_date"] = today
-            dirty = True
-            logger.warning("EXIT-reminder sent: %s urgency=%s age=%dmin",
-                           ticker, urgency, int(age_min))
+
+            sent = bool(rec.get("reminder_sent"))
+            last_at = rec.get("last_reminder_at")
+
+            if not sent:
+                _send_exit_reminder(rec, age_min)
+                rec["reminder_sent"] = True
+                rec["last_reminder_at"] = now.strftime("%Y-%m-%d %H:%M")
+                dirty = True
+                kept.append(rec)
+            else:
+                gap = _gap_min(last_at, now)
+                if gap is not None and gap >= config.EXIT_AUTO_DROP_GAP_MIN:
+                    _drop_exit_rec(rec, portfolio, now)
+                    dirty = True
+                    # NICHT zu kept → fällt aus pending raus
+                else:
+                    kept.append(rec)
+
         if dirty:
-            portfolio["pending_recommendations"] = pending
+            portfolio["pending_recommendations"] = kept
             save_portfolio(portfolio)
 
 
@@ -963,7 +1026,13 @@ def run_price_check():
 
     try:
         # Check stop-loss and take-profit for open trades
-        sl_tp_alerts = check_stop_loss_take_profit()
+        sl_tp_alerts = check_stop_loss_take_profit(paper=False)
+        # Paper-Portfolio SL/TP läuft parallel: gleiche Logik, eigenes File, KEIN
+        # Telegram-Alert (User soll nicht für Paper-Closes gespammt werden). Fail-soft.
+        try:
+            check_stop_loss_take_profit(paper=True)
+        except Exception:
+            logger.exception("paper SL/TP loop failed")
 
         for alert in sl_tp_alerts:
             if alert["type"] == "STOP_LOSS_HIT":
