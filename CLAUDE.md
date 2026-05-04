@@ -53,8 +53,9 @@ Located in `core/analyzer.analyze_portfolio`, applied in this order on a `recomm
 13. Correlation gate (≥`MAX_CORRELATED_HOLDINGS+1` holdings with corr ≥ `MAX_CORRELATION` over `CORRELATION_LOOKBACK_DAYS`)
 14. DD-soft scaling (modifier: size *= 0.5 between SOFT and HALT thresholds)
 15. Auto-split TP at 1R (modifier: single-TP recs get 1R-TP1 prepended for partial scale-out)
+16. Whole-share gate (after all size-modifiers: `int(size_eur / entry_price) ≥ 1` — TR-SL läuft nur auf ganzen Stücken; Bruchstück-Position = SL-unmöglich = Verstoß gegen Full-Trust-Invariant)
 
-Liquidity gate runs earlier, before data even reaches Claude: tickers with `volume_ratio < MIN_VOLUME_RATIO` or `spread_pct > MAX_SPREAD_PERCENT` are dropped from `market_data` — open trades are kept regardless so they remain visible for exit decisions.
+Liquidity gate runs earlier, before data even reaches Claude: tickers with `volume_ratio < MIN_VOLUME_RATIO`, `spread_pct > MAX_SPREAD_PERCENT`, or `price > total_capital × MAX_POSITION_SIZE_PERCENT/100 × WHOLE_SHARE_PRICE_BUFFER` (Whole-Share-Pre-Filter, helper `core.portfolio.max_affordable_share_price_eur`) are dropped from `market_data` — open trades + bestehende watch_levels werden geschützt (Exit-/Trigger-Sichtbarkeit). Stage-2-Filter im `set_watch_levels`-Merge verhindert, dass das Protected-Set sich neu mit teuren Tickers füllt.
 
 Slippage gate runs on `/confirm @price`: if `|filled − rec|/rec > MAX_ENTRY_SLIPPAGE_PERCENT`, confirm is rejected and user must re-quote.
 

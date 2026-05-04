@@ -38,6 +38,7 @@ from core.portfolio import (
     risk_halt_status, maintain_drawdown_state, edge_ok,
     compute_confluence, format_confluence,
     compute_correlations, dd_scaling_factor,
+    max_affordable_share_price_eur,
 )
 from core.market_data import (
     get_market_data, get_earnings_warnings, fetch_news, market_regime,
@@ -408,8 +409,14 @@ def analyze_portfolio(
     # Keep open-trade + watch-level tickers always (exit decisions + breakout context
     # need them; watch levels were set for a reason — don't silently drop them on a
     # thin-volume day).
+    # Whole-share-Filter (Preis-Cap): Tickers > MAX_POSITION_SIZE_PERCENT × total_capital
+    # raus, weil TR-SL nur auf ganzen Stücken läuft. Protected-Set bleibt (offene Pos
+    # für Exit + Alt-Watch-Level). Stage-2-Filter im set_watch_levels-Merge verhindert,
+    # dass _protected sich neu mit teuren Tickers füllt.
+    _max_share_price = max_affordable_share_price_eur(portfolio)
     _kept = {}
     _dropped_illiquid = []
+    _dropped_unaffordable = []
     _protected = set(open_trade_tickers) | set(watch_level_tickers)
     # Opening: 5min volume vs daily avg = inherently tiny → looser gate to keep
     # early-XETRA tickers visible. Spread check still active (data-quality).
@@ -423,16 +430,23 @@ def analyze_portfolio(
             continue
         vr = _d.get("volume_ratio")
         sp = _d.get("spread_pct")
+        pr = _d.get("price")
         if vr is not None and vr < _gate_vol:
             _dropped_illiquid.append(f"{_t}(vol_ratio={vr})")
             continue
         if sp is not None and sp > config.MAX_SPREAD_PERCENT:
             _dropped_illiquid.append(f"{_t}(spread={sp}%)")
             continue
+        if isinstance(pr, (int, float)) and pr > _max_share_price:
+            _dropped_unaffordable.append(f"{_t}(price=€{pr:.2f}>€{_max_share_price:.2f})")
+            continue
         _kept[_t] = _d
     if _dropped_illiquid:
         logger.info("Liquidity gate dropped (mode=%s, vol_min=%.2f): %s",
                     mode, _gate_vol, ", ".join(_dropped_illiquid))
+    if _dropped_unaffordable:
+        logger.info("Whole-share gate dropped (cap=€%.2f): %s",
+                    _max_share_price, ", ".join(_dropped_unaffordable))
     market_data = _kept
 
     regime = market_regime(market_ctx)
@@ -1333,6 +1347,28 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                     )
 
     if entry_recommendation:
+        # Whole-share Hard-Gate: nach allen Size-Modifikatoren (Kelly/VIX/DD-soft) muss
+        # ≥1 ganzes Stück innerhalb size_eur passen, sonst ist auf TR keine SL-Order
+        # platzierbar → Verstoß gegen Full-Trust-SL-Invariant. Pre-Filter im Liquidity-
+        # Block fängt die meisten Fälle, dieser Gate fängt Edge-Cases (Ticker durch
+        # _protected durchgelassen, oder size_eur durch Modifikatoren unter Aktienpreis
+        # geschrumpft).
+        _t = (entry_recommendation.get("ticker") or "?").upper()
+        _entry = float(entry_recommendation.get("entry_price") or 0)
+        _size = float(entry_recommendation.get("size_eur") or 0)
+        _whole = int(_size / _entry) if _entry > 0 else 0
+        if _whole < 1:
+            _frac = (_size / _entry) if _entry > 0 else 0
+            logger.warning(
+                "Entry BLOCKED by whole_shares: %s €%.2f / size €%.2f = %.3f Stk (<1, no SL on TR)",
+                _t, _entry, _size, _frac,
+            )
+            log_gate(_t, "whole_shares", True,
+                     f"price €{_entry:.2f} > size €{_size:.2f} (only {_frac:.3f} shares)",
+                     {"price": _entry, "size_eur": _size, "whole_shares": round(_frac, 3)})
+            entry_recommendation = None
+
+    if entry_recommendation:
         log_gate(
             entry_recommendation.get("ticker", "?"), "all_passed", False, "entry approved",
             {"size_eur": entry_recommendation.get("size_eur"),
@@ -1716,6 +1752,29 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             filtered = _conflict_filtered
             if trace is not None and _dropped_self_sabotage:
                 trace["dropped_self_sabotage"] = _dropped_self_sabotage
+
+            # Whole-share filter on incoming levels: TR-SL braucht ganze Stücke,
+            # kein Sinn Watch-Level für Tickers zu setzen, die wir nicht handeln können.
+            # Preis-Quelle: market_data (frisch aus diesem Run); fallback auf level.current_price.
+            _max_share_price_lvl = max_affordable_share_price_eur(fresh)
+            _kept_lvls = []
+            _dropped_unaffordable_lvls = []
+            for lvl in filtered:
+                _lt = (lvl.get("ticker") or "").upper()
+                _md = market_data.get(_lt) or {}
+                _lp = _md.get("price")
+                if not isinstance(_lp, (int, float)):
+                    _lp = lvl.get("current_price")
+                if isinstance(_lp, (int, float)) and _lp > _max_share_price_lvl:
+                    _dropped_unaffordable_lvls.append(f"{_lt}(€{_lp:.2f})")
+                    continue
+                _kept_lvls.append(lvl)
+            if _dropped_unaffordable_lvls:
+                logger.info("Watch-levels dropped (price>€%.2f): %s",
+                            _max_share_price_lvl, ", ".join(_dropped_unaffordable_lvls))
+                if trace is not None:
+                    trace["dropped_unaffordable"] = len(_dropped_unaffordable_lvls)
+            filtered = _kept_lvls
 
             # Merge-by-ticker instead of full replace: Sonnet returning [] used to
             # WIPE all morning levels (Bug 2026-04-28: 08:00 set_watch_levels([]) →

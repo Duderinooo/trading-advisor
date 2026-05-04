@@ -124,7 +124,7 @@ SECTOR_MAP = {
 
 # Risk management
 MAX_RISK_PER_TRADE_PERCENT = 3.0  # Max % of capital to risk per trade
-MAX_POSITION_SIZE_PERCENT = 8.0   # Max % of capital in single position (was 30 — full-trust exec needs tight cap)
+MAX_POSITION_SIZE_PERCENT = 10.0  # Max % of capital in single position (8→10 2026-05-04: TR-SL-Constraint braucht ganze Stücke; €100 Cap erlaubt mehr Mid-Caps ohne Klumpen-Risiko zu sprengen)
 MIN_CASH_RESERVE_PERCENT = 20.0   # Always keep this much in cash
 
 # Trade frequency limits
@@ -238,8 +238,10 @@ MAX_ANALYSES_PER_DAY = 20          # Safety cap, but shouldn't hit it normally
 MIN_MINUTES_BETWEEN_ANALYSES = 45  # Swing braucht keine Hektik
 ANALYSIS_COST_EUR = 0.01          # ~cost per Haiku call (gemessen 2026-04, event/opening/news)
 
-# Trade Republic constraint: Need 1 full share for Stop-Loss orders
-MAX_SHARE_PRICE_FOR_SL = 150.0  # Only auto-suggest SL for stocks under this price
+# Trade Republic constraint: SL nur auf ganze Stücke. Bruchstück-Position = SL-unmöglich =
+# Verstoß gegen Full-Trust-SL-Invariant. Cap dynamisch aus total_capital × MAX_POSITION_SIZE_PERCENT.
+# Helper: core.portfolio.max_affordable_share_price_eur(portfolio).
+WHOLE_SHARE_PRICE_BUFFER = 1.0  # 1.0 = strikt; <1.0 = Slippage-Reserve (z.B. 0.95 = 5%)
 
 # ❌ AUSGESCHLOSSEN (Sparpläne aktiv - nicht traden!)
 EXCLUDED_TICKERS = [
