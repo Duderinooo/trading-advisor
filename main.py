@@ -11,7 +11,7 @@ import logging
 import signal
 import sys
 import threading
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from logging.handlers import RotatingFileHandler
 
 import config
@@ -453,7 +453,6 @@ def run_weekend_summary():
     if _weekend_summary_done_today():
         return
     try:
-        from datetime import timedelta
         from core import (
             compute_portfolio_heat, compute_hit_stats, compute_equity_stats,
             get_earnings_warnings, get_daily_usage,
@@ -1058,7 +1057,19 @@ _Watch closely_"""
             event_context = " | ".join(descriptions)
             logger.info("🔔 %d price alert(s): %s", len(price_alerts), event_context)
 
-            analysis = analyze_portfolio(mode="event", event_context=event_context)
+            big_movers = [
+                a for a in price_alerts
+                if abs(a.get("change", 0)) >= config.BIG_MOVER_PCT_BYPASS
+            ]
+            bypass = bool(big_movers)
+            if bypass:
+                logger.info(
+                    "Big-mover cooldown bypass: %s",
+                    ", ".join(f"{a['ticker']} {a['change']:+.1f}%" for a in big_movers),
+                )
+            analysis = analyze_portfolio(
+                mode="event", event_context=event_context, bypass_cooldown=bypass,
+            )
 
             if analysis.startswith("⚠️ Analysis skipped"):
                 logger.info("Price alert analysis skipped: %s", analysis)
@@ -1113,9 +1124,14 @@ def _auto_watch_geo(commodities: list[str], headline: str):
             logger.info("GEO auto-watch added: %s", ", ".join(added))
 
 
+_news_check_consec_failures = 0
+_news_check_alert_sent = False
+
+
 def run_news_check():
     """Scan for new actionable headlines. Geo news forces analysis; stock news respects cooldown.
     Runs during market hours + Sunday 18-22 CET (weekend geo-news catch-up)."""
+    global _news_check_consec_failures, _news_check_alert_sent
     if not (is_market_hours() or is_weekend_news_window()):
         return
     if kill_switch_active(load_portfolio()):
@@ -1227,8 +1243,21 @@ def run_news_check():
                 logger.info("Stock news non-actionable, suppressed: %s",
                             (analysis or "").split('\n')[0][:80])
 
+        _news_check_consec_failures = 0
+        _news_check_alert_sent = False
     except Exception:
         logger.exception("News check failed")
+        _news_check_consec_failures += 1
+        if _news_check_consec_failures >= 3 and not _news_check_alert_sent:
+            try:
+                send_alert(
+                    "⚠️ News-Pipeline tot",
+                    f"{_news_check_consec_failures}× consecutive failures. "
+                    f"Bot ist News-blind bis Fix. Logs prüfen.",
+                )
+                _news_check_alert_sent = True
+            except Exception:
+                logger.exception("News-pipeline alert send failed")
 
 
 def graceful_shutdown(signum, frame):

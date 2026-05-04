@@ -411,6 +411,9 @@ def analyze_portfolio(
     _kept = {}
     _dropped_illiquid = []
     _protected = set(open_trade_tickers) | set(watch_level_tickers)
+    # Opening: 5min volume vs daily avg = inherently tiny → looser gate to keep
+    # early-XETRA tickers visible. Spread check still active (data-quality).
+    _gate_vol = config.MIN_VOLUME_RATIO_OPENING if mode == "opening" else config.MIN_VOLUME_RATIO
     for _t, _d in market_data.items():
         if not isinstance(_d, dict) or _d.get("error"):
             _kept[_t] = _d
@@ -420,7 +423,7 @@ def analyze_portfolio(
             continue
         vr = _d.get("volume_ratio")
         sp = _d.get("spread_pct")
-        if vr is not None and vr < config.MIN_VOLUME_RATIO:
+        if vr is not None and vr < _gate_vol:
             _dropped_illiquid.append(f"{_t}(vol_ratio={vr})")
             continue
         if sp is not None and sp > config.MAX_SPREAD_PERCENT:
@@ -428,7 +431,8 @@ def analyze_portfolio(
             continue
         _kept[_t] = _d
     if _dropped_illiquid:
-        logger.info("Liquidity gate dropped: %s", ", ".join(_dropped_illiquid))
+        logger.info("Liquidity gate dropped (mode=%s, vol_min=%.2f): %s",
+                    mode, _gate_vol, ", ".join(_dropped_illiquid))
     market_data = _kept
 
     regime = market_regime(market_ctx)

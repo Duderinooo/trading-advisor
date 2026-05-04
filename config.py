@@ -161,6 +161,14 @@ NO_ENTRY_WINDOWS = [
 # Liquidity pre-filter (gate tickers before Claude sees them)
 MIN_VOLUME_RATIO = 0.3            # current_vol/avg_vol; dead tape if below
 MAX_SPREAD_PERCENT = 0.75         # (ask-bid)/price*100; wide spread = bad fill risk
+# XETRA Open: nur 5min Volumen aggregiert vs Tagesschnitt = winzig. Ohne Lockerung
+# fallen halbe Watchlist (DBK/SAP/BAS/BAYN) raus → Opening-Check sieht nichts.
+MIN_VOLUME_RATIO_OPENING = 0.05
+
+# Big-Mover-Bypass: Price-Alert mit |change| ≥ Threshold darf Cooldown brechen.
+# Sonst frisst Morning-Prep (08:00) den Cooldown bis 08:14 → NVD/AMD-Gaps werden
+# komplett verschluckt (Bug 2026-05-04 audit).
+BIG_MOVER_PCT_BYPASS = 4.0
 
 # Breakout-Volume-Confirmation: setup_type=breakout_resistance braucht Volumen-Bestätigung.
 # Ohne Volumen = Fake-Breakout, hohe Whipsaw-Rate.
