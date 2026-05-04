@@ -79,40 +79,56 @@ MAX_POSITIONS_PER_SECTOR = 2
 
 SECTOR_MAP = {
     # Semiconductors
-    "NVD.DE": "semis",
-    "AMD.DE": "semis",
+    "NVD.DE": "semis",       # legacy: open positions only (gefiltert für neue Entries)
+    "AMD.DE": "semis",       # legacy
     "INL.DE": "semis",
+    "IFX.DE": "semis",
     # Enterprise Software / Cloud
-    "MSF.DE": "software_cloud",
-    "SAP.DE": "software_cloud",
+    "MSF.DE": "software_cloud",  # legacy
+    "SAP.DE": "software_cloud",  # legacy
     # Consumer Tech
-    "APC.DE": "consumer_tech",
+    "APC.DE": "consumer_tech",   # legacy
     # Fintech
     "2PP.DE": "fintech",
     # Internet/Mobility
     "UT8.DE": "internet",
+    # E-commerce
+    "ZAL.DE": "ecommerce",
     # EV/Auto
-    "TL0.DE": "auto_ev",
+    "TL0.DE": "auto_ev",         # legacy
     # Industrial
-    "SIE.DE": "industrial",
+    "SIE.DE": "industrial",      # legacy
     # Finance / Insurance
-    "ALV.DE": "insurance",
-    # Banking (separate from insurance — rate-sensitive, different macro)
+    "ALV.DE": "insurance",       # legacy
+    # Banking
     "DBK.DE": "banking",
+    "CBK.DE": "banking",
+    # Telecom
+    "DTE.DE": "telecom",
+    # Logistics
+    "DHL.DE": "logistics",
     # Pharma / Healthcare
     "BAYN.DE": "pharma",
+    "FRE.DE": "healthcare",
     # Chemicals
     "BAS.DE": "chemicals",
-    # Auto ICE (separate from EV like Tesla)
+    "1COV.DE": "chemicals",
+    # Auto (ICE + Massenmarkt)
     "BMW.DE": "auto_ice",
     "MBG.DE": "auto_ice",
+    "VOW3.DE": "auto_ice",
+    "P911.DE": "auto_luxury",
+    "CON.DE": "auto_supplier",
+    # Consumer Goods
+    "HEN3.DE": "consumer_goods",
+    "PUM.DE": "consumer_goods",
     # Utility / Renewables
     "RWE.DE": "utility",
     "ENR.DE": "energy_transition",
     # Aerospace / Defense
-    "AIR.DE": "aerospace",
+    "AIR.DE": "aerospace",       # legacy
     # Building Materials (cyclical)
-    "HEI.DE": "building_materials",
+    "HEI.DE": "building_materials",  # legacy
     # Commodities (already risk-diversified by nature but track)
     "3OIL.MI": "oil",
     "4GLD.DE": "gold",
@@ -140,6 +156,12 @@ MAX_PORTFOLIO_HEAT_PERCENT = 10.0 # Max summed open risk (entry-SL) across all p
 # Edge gate — require positive expectancy before recommending entry
 MIN_EXPECTED_EDGE = 0.04          # (p*b - (1-p)) ≥ 0.04 else force PASS
 KELLY_FRACTION = 0.25             # Quarter-Kelly cap on size_pct
+
+# TR-Fixkosten pro Order: €1 Kauf + €1 Verkauf = €2 Roundtrip. Bei kleinen Positionen
+# (€80–100) frisst Fee einen merklichen Anteil am 1R-Gewinn → Gate fordert Brutto-
+# Gewinn @ TP1 ≥ Fees + MIN_NET_PROFIT_EUR. Verhindert Null-Summen-Trades nach Kosten.
+FIXED_FEE_EUR_PER_SIDE = 1.0      # Trade Republic Order-Gebühr pro Seite
+MIN_NET_PROFIT_EUR = 2.0          # Mindest-Netto-Gewinn nach Fees am TP1 (auf whole-shares × (TP1-entry))
 
 # Execution-quality gates
 MAX_ENTRY_SLIPPAGE_PERCENT = 2.0  # /confirm @filled_price rejected if |filled-rec|/rec > 2%
@@ -252,43 +274,53 @@ EXCLUDED_TICKERS = [
     # ETFs generell nicht aktiv traden (nur Marktrichtung beobachten)
 ]
 
-# Watchlist - XETRA Tickers (EUR prices for Trade Republic)
+# Watchlist - XETRA Tickers (EUR prices for Trade Republic).
+# Whole-share-Filter (2026-05-04): nur Tickers <€100 sind handelbar (TR-SL braucht
+# ganze Stücke; Cap = total_capital × MAX_POSITION_SIZE_PERCENT/100). Teure Tickers
+# (NVD/APC/AMD/MSF/TL0/SAP/SIE/ALV/AIR/HEI) entfernt; Mid-/Small-Caps unter €100
+# zugefügt für sektorale Diversifikation. Preise Snapshot 2026-05-04.
 WATCHLIST = [
-    # ✅ GÜNSTIG (< €150) - Stop-Loss möglich bei TR
+    # Tech US (XETRA-EUR-Listings)
     "2PP.DE",       # PayPal - €43
-    "INL.DE",       # Intel - €57
+    "INL.DE",       # Intel - €84
     "UT8.DE",       # Uber - €66
 
-    # ⚠️ MITTEL (€150-200) - Stop-Loss knapp möglich
-    "NVD.DE",       # NVIDIA - €171
-    
-    # ❌ TEUER (> €200) - Nur manueller Stop-Loss
-    "APC.DE",       # Apple - €228
-    "AMD.DE",       # AMD - €246
-    "MSF.DE",       # Microsoft - €364
-    "TL0.DE",       # Tesla - €227
-    
-    # German/EU Blue Chips
-    "SAP.DE",       # SAP - €268
-    "SIE.DE",       # Siemens - €213
-    "ALV.DE",       # Allianz - €349
+    # Tech EU
+    "IFX.DE",       # Infineon - €57 (Semis-EU, Auto-/IoT-Exposure)
 
-    # DAX - Pharma / Healthcare
-    "BAYN.DE",      # Bayer - €29 (news-driven, Glyphosat/Pharma-Trials)
-    # DAX - Chemicals (cyclical)
-    "BAS.DE",       # BASF - €45 (Global Chemicals, China-Zyklus)
-    # DAX - Auto ICE (separate von Tesla EV)
+    # Auto (ICE + EV-Exposure)
     "BMW.DE",       # BMW - €78
     "MBG.DE",       # Mercedes-Benz - €50
-    # DAX - Banks (high-beta, rate-sensitive)
-    "DBK.DE",       # Deutsche Bank - €20
-    # DAX - Utility / Energy Transition
-    "RWE.DE",       # RWE - €33 (Stromproduzent, Renewables)
-    "ENR.DE",       # Siemens Energy - €50 (Energiewende-Play)
-    # DAX - Aerospace
-    "AIR.DE",       # Airbus - €160 (Zyklisch, Großaufträge)
-    # DAX - Building Materials (cyclical)
-    "HEI.DE",       # Heidelberg Materials - €175
+    "VOW3.DE",      # Volkswagen Vz - €84 (Auto-Massenmarkt)
+    "P911.DE",      # Porsche AG - €40 (Luxus-EV/ICE)
+    "CON.DE",       # Continental - €61 (Auto-Supplier, Reifen)
+
+    # Banks (high-beta, rate-sensitive)
+    "DBK.DE",       # Deutsche Bank - €26
+    "CBK.DE",       # Commerzbank - €34
+
+    # Telecom
+    "DTE.DE",       # Deutsche Telekom - €27 (Defensive, Dividenden-Anker)
+
+    # Logistics / Industrial
+    "DHL.DE",       # DHL Group - €47 (Globaler Logistik-Zyklus)
+
+    # Pharma / Healthcare
+    "BAYN.DE",      # Bayer - €37 (news-driven, Glyphosat/Pharma-Trials)
+    "FRE.DE",       # Fresenius - €41 (Healthcare-Services)
+
+    # Chemicals
+    "BAS.DE",       # BASF - €53 (Global Chemicals, China-Zyklus)
+    "1COV.DE",      # Covestro - €60 (Spezial-Chemie)
+
+    # Consumer
+    "HEN3.DE",      # Henkel Vz - €62 (Consumer-Goods, Defensive)
+    "PUM.DE",       # Puma - €24 (Sportswear, China-/Brand-Sentiment)
+    "ZAL.DE",       # Zalando - €21 (E-Commerce-EU)
+
+    # Utility / Energy Transition
+    "RWE.DE",       # RWE - €60 (Stromproduzent, Renewables)
+    # ENR.DE entfernt 2026-05-04: €178 — über €100 Cap, würde dynamisch gefiltert.
 ]
 
 # 🛢️ ROHSTOFFE - für geopolitische Events (Iran, Krieg, etc.)

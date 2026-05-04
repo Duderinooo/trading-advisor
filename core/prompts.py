@@ -55,12 +55,18 @@ CONFLUENCE-SCORE (deterministisch, im Prompt mitgeliefert):
 SETUP-TYPE (Pflicht im recommend_entry):
 - pullback_ma20 / pullback_ma50: Rücksetzer auf gleitenden Durchschnitt im Aufwärtstrend
 - breakout_resistance: Ausbruch über Widerstand mit Volumen (≥1.3× avg pflicht)
+- pre_breakout_squeeze: Volatility-Squeeze vor Ausbruch — `range_compression < 0.5` (20d-Range deutlich enger als 60d-Norm) + Preis nahe Range-Top + steigendes Volumen-Profil. Trigger: Schluss über Range-Hoch. Vorteil: früher dran, kleinere SL-Distanz unter Range-Tief = bessere R-Multiplier. Risiko: viele Squeezes brechen nach unten — fester invalidate_below pflicht.
 - reversal_oversold: RSI<30 + bullish divergence/hammer auf wichtigem Support
 - flag_continuation: Bull-Flag nach Trend-Move
 - support_bounce: Bounce an etabliertem Support (MA50/200, Trendlinie)
 - mean_reversion: Statistische Rückkehr zu MA/VWAP nach Übertreibung (RS-Gate Override-fähig)
 - gap_fill: Gap-Trade mit Mean-Reversion-These
 - earnings_drift: Post-Earnings-Drift nach starkem Beat (T+1 bis T+5)
+
+PRE-RUNUP-PRÄFERENZ:
+- User-Feedback 2026-05-04: bisher zu viele ATH-Extension-Trades empfohlen, zu wenig Pre-Breakout. Aktiv suchen nach: Tickers mit `pct_below_52w_high` zwischen -3% und -15% (also nahe ATH aber NICHT AM ATH) UND `range_compression < 0.6` UND Volumen-Profil aufbauend → Base-Building/Squeeze-Kandidaten.
+- DEPRIORITISIEREN: `pct_below_52w_high > -2%` (am/sehr nahe ATH) ohne klaren Pullback-Setup. ATH-Extension ohne Konsolidierung = Late-Trade, schlechtes R/R.
+- Wenn zwei Kandidaten ähnlich gut: nimm den mit **größerer Konsolidierungs-Phase** (höherer `pct_below_52w_high` Abstand + niedrigere `range_compression`).
 
 PRE-MORTEM (top_fail_mode) — PFLICHT im recommend_entry Tool:
 - Vor jedem Entry: "Wenn dieser Trade verliert, was bricht zuerst?" Wähle dominanten Fail-Mode aus enum.
@@ -534,6 +540,7 @@ RECOMMEND_ENTRY_TOOL = {
                 "enum": [
                     "pullback_ma20", "pullback_ma50",
                     "breakout_resistance",
+                    "pre_breakout_squeeze",
                     "reversal_oversold",
                     "flag_continuation",
                     "support_bounce",

@@ -50,6 +50,19 @@ TICKER_ISIN_MAP: dict[str, str] = {
     "ENR.DE":  "DE000ENER6Y0",  # Siemens Energy
     "AIR.DE":  "NL0000235190",  # Airbus
     "HEI.DE":  "DE0006047004",  # Heidelberg Materials
+    # Watchlist-Expansion 2026-05-04 (Whole-share <€100)
+    "IFX.DE":  "DE0006231004",  # Infineon
+    "VOW3.DE": "DE0007664039",  # Volkswagen Vz
+    "P911.DE": "DE000PAG9113",  # Porsche AG
+    "CON.DE":  "DE0005439004",  # Continental
+    "CBK.DE":  "DE000CBK1001",  # Commerzbank
+    "DTE.DE":  "DE0005557508",  # Deutsche Telekom
+    "DHL.DE":  "DE0005552004",  # DHL Group
+    "FRE.DE":  "DE0005785604",  # Fresenius
+    "1COV.DE": "DE0006062144",  # Covestro
+    "HEN3.DE": "DE0006048432",  # Henkel Vz
+    "PUM.DE":  "DE0006969603",  # Puma
+    "ZAL.DE":  "DE000ZAL1111",  # Zalando
     # Commodities / ETFs
     "4GLD.DE": "DE000A0S9GB0",  # Xetra-Gold
     "EXX1.DE": "IE00B4NCWG09",  # iShares Physical Silver

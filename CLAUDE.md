@@ -54,6 +54,7 @@ Located in `core/analyzer.analyze_portfolio`, applied in this order on a `recomm
 14. DD-soft scaling (modifier: size *= 0.5 between SOFT and HALT thresholds)
 15. Auto-split TP at 1R (modifier: single-TP recs get 1R-TP1 prepended for partial scale-out)
 16. Whole-share gate (after all size-modifiers: `int(size_eur / entry_price) ≥ 1` — TR-SL läuft nur auf ganzen Stücken; Bruchstück-Position = SL-unmöglich = Verstoß gegen Full-Trust-Invariant)
+17. Fee gate (Brutto-Gewinn @ TP1 in €: `(TP1 − entry) × whole_shares ≥ 2 × FIXED_FEE_EUR_PER_SIDE + MIN_NET_PROFIT_EUR` — sonst Trade nach €1+€1 TR-Order-Fees Null-Summe)
 
 Liquidity gate runs earlier, before data even reaches Claude: tickers with `volume_ratio < MIN_VOLUME_RATIO`, `spread_pct > MAX_SPREAD_PERCENT`, or `price > total_capital × MAX_POSITION_SIZE_PERCENT/100 × WHOLE_SHARE_PRICE_BUFFER` (Whole-Share-Pre-Filter, helper `core.portfolio.max_affordable_share_price_eur`) are dropped from `market_data` — open trades + bestehende watch_levels werden geschützt (Exit-/Trigger-Sichtbarkeit). Stage-2-Filter im `set_watch_levels`-Merge verhindert, dass das Protected-Set sich neu mit teuren Tickers füllt.
 

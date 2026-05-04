@@ -1369,6 +1369,39 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             entry_recommendation = None
 
     if entry_recommendation:
+        # Fixed-Fee-Gate: TR €1/Seite × 2 = €2 Roundtrip frisst kleine Trades.
+        # Brutto-Gewinn auf whole-shares bei TP1 muss ≥ Fees + MIN_NET_PROFIT_EUR sein,
+        # sonst Trade nach Kosten Null-Summe oder negativ. Conservative: TP1 statt TP2,
+        # weil Auto-Split-Partial bei TP1 die Hälfte schließt → Fee fällt zweimal an
+        # (Buy + Partial-Sell), Brutto-Gewinn aber nur halb. Gleichung gilt 1:1.
+        _t = (entry_recommendation.get("ticker") or "?").upper()
+        _entry = float(entry_recommendation.get("entry_price") or 0)
+        _size = float(entry_recommendation.get("size_eur") or 0)
+        _tp = entry_recommendation.get("take_profit")
+        _tp1 = (
+            float(_tp[0]) if isinstance(_tp, list) and _tp
+            else (float(_tp) if isinstance(_tp, (int, float)) else 0)
+        )
+        _shares = int(_size / _entry) if _entry > 0 else 0
+        _gross_profit_eur = (_tp1 - _entry) * _shares if _tp1 > _entry > 0 else 0
+        _fees_roundtrip = 2 * config.FIXED_FEE_EUR_PER_SIDE
+        _required = _fees_roundtrip + config.MIN_NET_PROFIT_EUR
+        if _gross_profit_eur < _required:
+            logger.warning(
+                "Entry BLOCKED by fee_gate: %s gross @TP1 €%.2f < required €%.2f "
+                "(fees €%.2f + min_net €%.2f); shares=%d, TP1=%.2f, entry=%.2f",
+                _t, _gross_profit_eur, _required, _fees_roundtrip,
+                config.MIN_NET_PROFIT_EUR, _shares, _tp1, _entry,
+            )
+            log_gate(_t, "fee_gate", True,
+                     f"gross @TP1 €{_gross_profit_eur:.2f} < €{_required:.2f}",
+                     {"gross_profit_eur": round(_gross_profit_eur, 2),
+                      "fees_roundtrip_eur": _fees_roundtrip,
+                      "min_net_eur": config.MIN_NET_PROFIT_EUR,
+                      "shares": _shares, "tp1": _tp1, "entry": _entry})
+            entry_recommendation = None
+
+    if entry_recommendation:
         log_gate(
             entry_recommendation.get("ticker", "?"), "all_passed", False, "entry approved",
             {"size_eur": entry_recommendation.get("size_eur"),
@@ -1830,7 +1863,23 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
         if update_persisted is not None:
             fresh.setdefault("pending_recommendations", []).append(update_persisted)
         if exit_persisted is not None:
-            fresh.setdefault("pending_recommendations", []).append(exit_persisted)
+            # Dedupe: nur ein pending exit pro Ticker. Sonst feuert _check_exit_reminders
+            # mehrfach (Bug 2026-05-04: RWE.DE bekam 3 Exit-Recs im Tagesverlauf →
+            # User 2× Reminder um 16:30). Latest reason wins; Urgency-Eskalation
+            # geschieht implizit, weil neuere Analysen aktuelleren Kontext haben.
+            _et = (exit_persisted.get("ticker") or "").upper()
+            _existing = fresh.get("pending_recommendations", []) or []
+            _kept = [
+                r for r in _existing
+                if not (r.get("kind") == "exit"
+                        and (r.get("ticker") or "").upper() == _et)
+            ]
+            _dropped = len(_existing) - len(_kept)
+            if _dropped:
+                logger.info("Exit-rec dedupe: replaced %d stale pending exit(s) for %s",
+                            _dropped, _et)
+            _kept.append(exit_persisted)
+            fresh["pending_recommendations"] = _kept
         fresh["last_analysis"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         save_portfolio(fresh)
 

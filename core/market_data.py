@@ -117,6 +117,26 @@ def _compute_indicators(daily_hist, intraday_hist) -> dict:
                 "atr14_pct": atr14_pct,
             })
 
+            # Range-Tightness — Pre-Breakout-Detektor.
+            # range_20d_pct = (20d-High − 20d-Low) / current_price × 100.
+            # range_compression = range_20d / range_60d. <0.4 = Volatility-Squeeze
+            # (20-Tage-Range deutlich enger als 60-Tage-Norm) → "coiled spring",
+            # häufig vor Range-Expansion. Nur Signal, kein Gate — Claude entscheidet.
+            try:
+                if len(daily_hist) >= 20 and current_px:
+                    h20 = float(daily_hist["High"].tail(20).max())
+                    l20 = float(daily_hist["Low"].tail(20).min())
+                    r20 = (h20 - l20) / float(current_px) * 100
+                    out["range_20d_pct"] = round(r20, 2)
+                    if len(daily_hist) >= 60:
+                        h60 = float(daily_hist["High"].tail(60).max())
+                        l60 = float(daily_hist["Low"].tail(60).min())
+                        r60 = (h60 - l60) / float(current_px) * 100
+                        if r60 > 0:
+                            out["range_compression"] = round(r20 / r60, 2)
+            except (KeyError, ValueError, IndexError) as e:
+                logger.debug("Range-tightness calc failed: %s", e)
+
             # Weekly timeframe (resample daily → weekly) — confirms trend direction.
             # Rule: don't go long against weekly downtrend.
             try:
@@ -221,6 +241,20 @@ def _fetch_ticker(ticker: str) -> dict:
     if target_mean and current_price:
         analyst_upside_pct = round((target_mean - current_price) / current_price * 100, 1)
 
+    # Pct distance from 52w high/low. Negative pct_below_52w_high = below 52w-high
+    # (e.g. -8 = 8% unter ATH). Wert ~0 = an ATH (oft schon gelaufen). Wert -5 bis
+    # -15 = potenzielles Base-Building. <-25 = tief im Drawdown.
+    fw_high = info.get("fiftyTwoWeekHigh")
+    fw_low = info.get("fiftyTwoWeekLow")
+    pct_below_52w_high = (
+        round((current_price - fw_high) / fw_high * 100, 2)
+        if fw_high and current_price else None
+    )
+    pct_above_52w_low = (
+        round((current_price - fw_low) / fw_low * 100, 2)
+        if fw_low and current_price else None
+    )
+
     snapshot = {
         "name": info.get("shortName", ticker),
         "price": current_price,
@@ -230,8 +264,10 @@ def _fetch_ticker(ticker: str) -> dict:
         "day_low": day_low,
         "5d_high": five_day_high,
         "5d_low": five_day_low,
-        "52w_high": info.get("fiftyTwoWeekHigh"),
-        "52w_low": info.get("fiftyTwoWeekLow"),
+        "52w_high": fw_high,
+        "52w_low": fw_low,
+        "pct_below_52w_high": pct_below_52w_high,
+        "pct_above_52w_low": pct_above_52w_low,
         "volume": current_volume,
         "volume_ratio": round(volume_ratio, 2) if volume_ratio else None,
         "bid": bid,
