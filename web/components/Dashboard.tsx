@@ -197,7 +197,9 @@ export default function Dashboard({
 
   const openCount = portfolio.open_trades.length;
   const pendingCount = (portfolio.pending_recommendations ?? []).length;
-  const closedCount = portfolio.closed_trades.filter((t) => !t.partial).length;
+  // Counter zeigt was ClosedTrades-Tabelle rendert (inkl Partials). Hit-Stats nutzen
+  // separat ihren eigenen Filter für Win-Rate-Math (stats.total in Stats-Component).
+  const closedCount = portfolio.closed_trades.length;
 
   const navItems = useMemo<NavItem[]>(
     () => [
@@ -465,7 +467,11 @@ export default function Dashboard({
         <CollapsibleSection
           id="history"
           title="History"
-          meta={`${closedCount} closed · realized ${stats?.total_pnl_eur != null ? (stats.total_pnl_eur >= 0 ? "+" : "") + stats.total_pnl_eur.toFixed(2) + " €" : "—"}`}
+          meta={
+            stats?.total_pnl_eur != null
+              ? `${closedCount} closed · realized ${stats.total_pnl_eur >= 0 ? "+" : ""}${stats.total_pnl_eur.toFixed(2)} €`
+              : `${closedCount} closed`
+          }
           open={open.history}
           onToggle={() => setOpen((o) => ({ ...o, history: !o.history }))}
         >

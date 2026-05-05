@@ -26,7 +26,7 @@ from core.call_log import log_claude_call
 from core.prompts import (
     STRATEGY_SYSTEM, MORNING_PREP_PROMPT, OPENING_CHECK_PROMPT, EVENT_TRIGGER_PROMPT,
     WATCH_LEVELS_TOOL, RECOMMEND_ENTRY_TOOL, RECOMMEND_ADD_TOOL,
-    UPDATE_TARGETS_TOOL, RECOMMEND_EXIT_TOOL,
+    UPDATE_TARGETS_TOOL, RECOMMEND_EXIT_TOOL, SUBMIT_PASS_TOOL,
     RED_TEAM_SYSTEM, RED_TEAM_TOOL,
 )
 from core.portfolio import (
@@ -515,10 +515,15 @@ def analyze_portfolio(
         ]
     elif mode == "opening":
         system_prompt = STRATEGY_SYSTEM + "\n\n" + OPENING_CHECK_PROMPT
+        system_prompt += (
+            "\n\nOUTPUT-FORMAT: AUSSCHLIESSLICH via tool_use, KEINE Prosa. Wenn keine "
+            "Action passt → `submit_pass` mit 1-Satz-Reason. Spart Tokens + verhindert "
+            "lange Texte ohne Decision."
+        )
         context_intro = f"OPEN-CHECK {event_context or ''}".strip()
         tools = [
             RECOMMEND_ENTRY_TOOL, RECOMMEND_ADD_TOOL,
-            UPDATE_TARGETS_TOOL, RECOMMEND_EXIT_TOOL,
+            UPDATE_TARGETS_TOOL, RECOMMEND_EXIT_TOOL, SUBMIT_PASS_TOOL,
         ]
     elif mode == "event":
         system_prompt = STRATEGY_SYSTEM + "\n\n" + EVENT_TRIGGER_PROMPT
@@ -526,14 +531,16 @@ def analyze_portfolio(
             "\n\nBei ENTRY-Empfehlung mit Conv ≥3/5: `recommend_entry`. "
             "Bei verstärkter These offener Position: `recommend_add_to_position`. "
             "Bei SL/TP-Anpassung wegen Catalyst: `update_position_targets`. "
-            "Bei Thesis-Bruch: `recommend_exit`."
+            "Bei Thesis-Bruch: `recommend_exit`. "
+            "Wenn keine Action passt: `submit_pass` mit 1-Satz-Reason. "
+            "OUTPUT: AUSSCHLIESSLICH via tool_use, KEINE Prosa (spart Tokens)."
         )
         context_intro = f"🚨 EVENT: {event_context}"
         # Watch-Levels sind Morning-Domain. Event-Mode darf sie nicht überschreiben
         # (Bug 2026-04-27: News-Event-Call rief set_watch_levels([]) und löschte 5 Morning-Levels).
         tools = [
             RECOMMEND_ENTRY_TOOL, RECOMMEND_ADD_TOOL,
-            UPDATE_TARGETS_TOOL, RECOMMEND_EXIT_TOOL,
+            UPDATE_TARGETS_TOOL, RECOMMEND_EXIT_TOOL, SUBMIT_PASS_TOOL,
         ]
     else:
         system_prompt = STRATEGY_SYSTEM
@@ -795,6 +802,13 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
     if tools:
         create_kwargs["tools"] = tools
 
+    # Tool-Only-Mode für event/opening: zwingt Tool-Use (keine Prosa-Antwort).
+    # Spart Output-Tokens (~30-50% in event mode). submit_pass-Tool fängt "keine
+    # Action"-Fall, damit Claude nicht zu einem Action-Tool gezwungen wird.
+    # Morning bleibt freie Antwort, weil User den Brief liest.
+    if tools and mode in ("event", "opening"):
+        create_kwargs["tool_choice"] = {"type": "any"}
+
     # Hard-stop on known Claude intro-phrases that violate the tight-output format.
     if mode in ("morning", "opening", "event"):
         create_kwargs["stop_sequences"] = [
@@ -836,6 +850,7 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
     add_recommendation = None
     update_targets = None
     exit_recommendation = None
+    pass_reason: str | None = None
     tool_use_blocks = []
 
     watch_tool_called = False
@@ -858,6 +873,8 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 update_targets = block.input or {}
             elif name == "recommend_exit":
                 exit_recommendation = block.input or {}
+            elif name == "submit_pass":
+                pass_reason = (block.input or {}).get("reason", "")
             tool_use_blocks.append(block)
 
     # Persistent log for /brain inspection page (one entry per call, swallows errors)
@@ -877,7 +894,14 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
     )
 
     # 2-Turn-Flow: tool calls without text → send tool_result back for summary.
-    if tool_use_blocks and response.stop_reason == "tool_use" and not text_parts:
+    # Skip in event/opening (tool-only modes): wir wollen explizit KEINE Prosa-
+    # Zusammenfassung, sonst frisst der 2. Turn die gesparten Tokens wieder auf.
+    if (
+        tool_use_blocks
+        and response.stop_reason == "tool_use"
+        and not text_parts
+        and mode not in ("event", "opening")
+    ):
         tool_result_content = []
         for tb in tool_use_blocks:
             if tb.name == "set_watch_levels":
@@ -894,6 +918,8 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             elif tb.name == "recommend_exit":
                 exit_ticker = (exit_recommendation or {}).get("ticker", "?")
                 result_text = f"Exit-Empfehlung für {exit_ticker} gespeichert."
+            elif tb.name == "submit_pass":
+                result_text = f"PASS akzeptiert: {pass_reason or '(no reason)'}"
             else:
                 result_text = "OK"
             tool_result_content.append({
@@ -943,7 +969,12 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
         if _dedup and _ln.strip() == _dedup[-1].strip():
             continue
         _dedup.append(_ln)
-    analysis_text = "\n".join(_dedup) or "(keine Text-Analyse)"
+    # Tool-Only-Modus: submit_pass.reason wird als analysis_text verwendet
+    # (statt "(keine Text-Analyse)"), damit /brain-Inspector + Logs lesbar bleiben.
+    if not _dedup and pass_reason:
+        analysis_text = f"PASS: {pass_reason}"
+    else:
+        analysis_text = "\n".join(_dedup) or "(keine Text-Analyse)"
 
     # Build the rec BEFORE notification so we can attach the Telegram message_id.
     rec = None

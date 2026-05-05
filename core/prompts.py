@@ -420,6 +420,29 @@ UPDATE_TARGETS_TOOL = {
 }
 
 
+SUBMIT_PASS_TOOL = {
+    "name": "submit_pass",
+    "description": (
+        "Aufrufen wenn KEINE der anderen Action-Tools (recommend_entry/exit/add/update) "
+        "passen und der Bot nichts tun soll. Pflicht in event/opening-Modus wenn keine "
+        "Action — sonst muss eine Action gewählt werden (tool_choice=any). Spart Output-"
+        "Tokens, weil Claude keine Prosa-Begründung liefern muss."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": "1-Satz warum keine Aktion. Max 120 Zeichen. Audit-Trail für /brain-Inspector.",
+            },
+        },
+        "required": ["reason"],
+        "additionalProperties": False,
+    },
+    "cache_control": {"type": "ephemeral"},
+}
+
+
 RECOMMEND_EXIT_TOOL = {
     "name": "recommend_exit",
     "description": (
