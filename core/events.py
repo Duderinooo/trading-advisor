@@ -203,14 +203,11 @@ def _classify_headline(
     if not (is_rating_change or has_stock_kw):
         return None
 
-    # Rating change on an open position = HIGH (act fast). Otherwise MEDIUM.
-    # Open-position non-rating news also HIGH so Claude reviews exit risk first.
-    if is_rating_change:
-        priority = "HIGH" if is_open_position else "MEDIUM"
-        subtype = "rating_change"
-    else:
-        priority = "HIGH" if is_open_position else "MEDIUM"
-        subtype = "stock_news"
+    # Open-position news = HIGH (act fast on either rating change or thesis-affecting story).
+    # Watchlist-only = MEDIUM. Rating changes get a distinct subtype so Claude can weight
+    # them above stale consensus from market_data snapshot.
+    priority = "HIGH" if is_open_position else "MEDIUM"
+    subtype = "rating_change" if is_rating_change else "stock_news"
 
     return {
         "type": "NEWS_STOCK",
@@ -521,17 +518,32 @@ def detect_events() -> list[dict]:
     # Persist expiry + invalidation removals (drop levels whose conditions are gone).
     drop = set(expired_indices) | set(invalidated_indices)
     if drop:
+        # Use a richer identity (ticker, trigger_price, type, thesis, invalidate_below,
+        # confirm_close_above, valid_until) to avoid collision when two watch_levels
+        # share the (ticker, trigger_price, type) triple but differ on conditions.
+        def _ident(lvl: dict) -> tuple:
+            return (
+                lvl.get("ticker"),
+                lvl.get("trigger_price"),
+                lvl.get("type"),
+                lvl.get("thesis"),
+                lvl.get("invalidate_below"),
+                lvl.get("confirm_close_above"),
+                lvl.get("valid_until"),
+            )
+        drop_idents = {_ident(watch_levels[i]) for i in drop}
         with portfolio_lock:
             fresh = load_portfolio()
             current = fresh.get("watch_levels", [])
-            keep_keys = {
-                (watch_levels[i].get("ticker"), watch_levels[i].get("trigger_price"), watch_levels[i].get("type"))
-                for i in range(len(watch_levels)) if i not in drop
-            }
-            kept = [
-                lvl for lvl in current
-                if (lvl.get("ticker"), lvl.get("trigger_price"), lvl.get("type")) in keep_keys
-            ]
+            # Only drop the FIRST occurrence per identity in case of duplicates.
+            remaining_to_drop = dict.fromkeys(drop_idents, False)  # marks "consumed"
+            kept = []
+            for lvl in current:
+                ident = _ident(lvl)
+                if ident in remaining_to_drop and not remaining_to_drop[ident]:
+                    remaining_to_drop[ident] = True
+                    continue
+                kept.append(lvl)
             if len(kept) != len(current):
                 fresh["watch_levels"] = kept
                 save_portfolio(fresh)
@@ -806,8 +818,38 @@ def check_stop_loss_take_profit(paper: bool = False) -> list[dict]:
                             "shares_sold": shares_to_sell,
                             "shares_remaining": trade["shares"],
                         })
+                        _pop_first_take_profit(trade)
+                        portfolio_dirty = True
+
+                        if entry and (trade.get("stop_loss") is None or trade["stop_loss"] < entry):
+                            trade["stop_loss"] = entry
+                            alerts.append({
+                                "type": "BREAK_EVEN_SHIFT",
+                                "ticker": ticker,
+                                "new_stop": entry,
+                            })
+                        if not trade.get("trailing_stop_pct"):
+                            atr_pct = data.get("atr14_pct")
+                            if isinstance(atr_pct, (int, float)) and atr_pct > 0:
+                                trail_pct = round(atr_pct * 1.5, 2)
+                                trade["trailing_stop_pct"] = trail_pct
+                                alerts.append({
+                                    "type": "TRAILING_ACTIVATED",
+                                    "ticker": ticker,
+                                    "trail_pct": trail_pct,
+                                    "atr_pct": atr_pct,
+                                })
+                        if trade.get("shares", 0) > 0:
+                            surviving_trades.append(trade)
                     else:
-                        # Edge: fractional share too small to split — treat as full TP-target reached.
+                        # Edge: fractional share too small to split (e.g. shares ≤ 0.0001
+                        # → round(0.5 × shares, 4) == shares). Close full position rather
+                        # than leave a phantom open trade after emitting "TP HIT".
+                        logger.warning(
+                            "Partial-TP fraction collapsed (shares_total=%s, "
+                            "shares_to_sell=%s); closing full position",
+                            shares_total, shares_to_sell,
+                        )
                         alerts.append({
                             "type": "TAKE_PROFIT_HIT",
                             "ticker": ticker,
@@ -817,29 +859,9 @@ def check_stop_loss_take_profit(paper: bool = False) -> list[dict]:
                             "pnl_pct": pnl_pct,
                             "partial": False,
                         })
-                    _pop_first_take_profit(trade)
-                    portfolio_dirty = True
-
-                    if entry and (trade.get("stop_loss") is None or trade["stop_loss"] < entry):
-                        trade["stop_loss"] = entry
-                        alerts.append({
-                            "type": "BREAK_EVEN_SHIFT",
-                            "ticker": ticker,
-                            "new_stop": entry,
-                        })
-                    if not trade.get("trailing_stop_pct"):
-                        atr_pct = data.get("atr14_pct")
-                        if isinstance(atr_pct, (int, float)) and atr_pct > 0:
-                            trail_pct = round(atr_pct * 1.5, 2)
-                            trade["trailing_stop_pct"] = trail_pct
-                            alerts.append({
-                                "type": "TRAILING_ACTIVATED",
-                                "ticker": ticker,
-                                "trail_pct": trail_pct,
-                                "atr_pct": atr_pct,
-                            })
-                    if trade.get("shares", 0) > 0:
-                        surviving_trades.append(trade)
+                        _pop_first_take_profit(trade)
+                        _close_trade(trade, current_price, "TAKE_PROFIT", portfolio)
+                        portfolio_dirty = True
                 else:
                     # Final TP — close full remainder.
                     alerts.append({
@@ -856,7 +878,7 @@ def check_stop_loss_take_profit(paper: bool = False) -> list[dict]:
                     portfolio_dirty = True
                 continue
 
-            if stop_loss and current_price <= stop_loss * 1.01:
+            if stop_loss and current_price <= stop_loss * (1 + config.SL_WARN_DISTANCE_PCT / 100):
                 alerts.append({
                     "type": "STOP_LOSS_WARNING",
                     "ticker": ticker,

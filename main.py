@@ -137,10 +137,33 @@ def _check_equity_alerts():
                 realized += float(m.get("amount") or 0)
             quotes = (pf.get("heartbeat") or {}).get("live_quotes") or {}
             prices = (pf.get("heartbeat") or {}).get("prices") or {}
+            open_trades = pf.get("open_trades", []) or []
+            # If LS-TC heartbeat empty (failed scrape, first tick after boot),
+            # fall back to yfinance so unrealized isn't silently 0 → false DD alerts.
+            missing = [
+                (t.get("ticker") or "").upper() for t in open_trades
+                if (t.get("ticker") or "").upper()
+                and not ((quotes.get((t.get("ticker") or "").upper()) or {}).get("price")
+                         or prices.get((t.get("ticker") or "").upper()))
+            ]
+            yf_fallback: dict[str, float] = {}
+            if missing:
+                try:
+                    snaps = get_market_data(missing)
+                    for _tk, _snap in (snaps or {}).items():
+                        _p = _snap.get("price") if isinstance(_snap, dict) else None
+                        if isinstance(_p, (int, float)):
+                            yf_fallback[(_tk or "").upper()] = float(_p)
+                except Exception:
+                    logger.exception("Equity-alert yfinance fallback failed")
             unrealized = 0.0
-            for t in pf.get("open_trades", []) or []:
+            for t in open_trades:
                 tk = (t.get("ticker") or "").upper()
-                live = (quotes.get(tk) or {}).get("price") or prices.get(tk)
+                live = (
+                    (quotes.get(tk) or {}).get("price")
+                    or prices.get(tk)
+                    or yf_fallback.get(tk)
+                )
                 entry = float(t.get("entry_price") or 0)
                 shares = float(t.get("shares") or 0)
                 if isinstance(live, (int, float)) and entry > 0 and shares > 0:
@@ -186,13 +209,17 @@ def _check_equity_alerts():
         logger.exception("Equity alerts check failed")
 
 
-def _enrich_extras_for_add(parsed: dict, base_extras: dict) -> dict:
+def _enrich_extras_for_add(parsed: dict, base_extras: dict, portfolio: dict | None = None) -> dict:
     """When Claude emits 'ADD: ...' as TEXT (e.g. tool-call gates blocked or Sonnet-lazy),
     look up the open trade and surface Bestand/SL so user has actionable context.
-    Without this, ADD text-mode shows just '🎯 ADD | TICKER' with no size hint."""
+    Without this, ADD text-mode shows just '🎯 ADD | TICKER' with no size hint.
+
+    Pass `portfolio` if already loaded (e.g. by _parse_actionable) to avoid a duplicate
+    file read on the hot path."""
     if (parsed or {}).get("action") != "ADD":
         return base_extras
-    portfolio = load_portfolio()
+    if portfolio is None:
+        portfolio = load_portfolio()
     open_trade = next(
         (t for t in portfolio.get("open_trades", [])
          if (t.get("ticker") or "").upper() == parsed["ticker"]),
@@ -212,7 +239,7 @@ def _enrich_extras_for_add(parsed: dict, base_extras: dict) -> dict:
     return enriched
 
 
-def _parse_actionable(analysis: str) -> dict | None:
+def _parse_actionable(analysis: str, portfolio: dict | None = None) -> dict | None:
     """Parse Claude's verdict line into a structured dict, or None if non-actionable.
 
     Returns {"action": ENTRY|EXIT|ADD|REDUCE, "ticker": ..., "reason": ...}
@@ -225,6 +252,8 @@ def _parse_actionable(analysis: str) -> dict | None:
     - ENTRY/EXIT/ADD that the analyzer.py tool path *just persisted* as a
       pending_recommendation — text dup-message suppressed (Bug 2026-05-02:
       SIE.DE rec sent both via recommend_entry tool AND text-parse).
+
+    Caller may pass a pre-loaded `portfolio` to skip a redundant file read.
     """
     if not analysis:
         return None
@@ -238,7 +267,7 @@ def _parse_actionable(analysis: str) -> dict | None:
     action = _ACTION_NORMALIZE.get(raw, raw)
     ticker = m.group("ticker").upper()
 
-    pf = load_portfolio()
+    pf = portfolio if portfolio is not None else load_portfolio()
     open_tickers = {(t.get("ticker") or "").upper() for t in pf.get("open_trades", [])}
 
     if action in ("EXIT", "ADD", "REDUCE") and ticker not in open_tickers:
@@ -507,7 +536,7 @@ def run_weekend_summary():
         # Mistake distribution (last 20 losses) — surfaces drift
         last_losses = [
             t for t in portfolio.get("closed_trades", [])
-            if (t.get("pnl_pct") or 0) <= 0
+            if (t.get("pnl_pct") or 0) < 0
         ][-20:]
         mistake_line = ""
         if last_losses:
@@ -902,9 +931,10 @@ def run_opening_check(market: str):
             logger.info("%s open: tool-only call, Telegram already sent by tool handler",
                         market.upper())
         else:
-            parsed = _parse_actionable(analysis)
+            pf = load_portfolio()
+            parsed = _parse_actionable(analysis, portfolio=pf)
             if parsed:
-                extras = _enrich_extras_for_add(parsed, {"Open": label})
+                extras = _enrich_extras_for_add(parsed, {"Open": label}, portfolio=pf)
                 send_actionable(
                     parsed["action"], parsed["ticker"],
                     size=None, reason=parsed["reason"], extras=extras,
@@ -962,10 +992,12 @@ def run_event_check():
         elif "(keine Text-Analyse)" in analysis:
             logger.info("Event: tool-only call, Telegram already sent by tool handler")
         else:
-            parsed = _parse_actionable(analysis)
+            pf = load_portfolio()
+            parsed = _parse_actionable(analysis, portfolio=pf)
             if parsed:
                 extras = _enrich_extras_for_add(
                     parsed, {"Watch": _word_truncate(event_context, 150)},
+                    portfolio=pf,
                 )
                 send_actionable(
                     parsed["action"], parsed["ticker"],
@@ -1145,10 +1177,12 @@ _Watch closely_"""
             elif "(keine Text-Analyse)" in analysis:
                 logger.info("Price alert: tool-only call, Telegram already sent by tool handler")
             else:
-                parsed = _parse_actionable(analysis)
+                pf = load_portfolio()
+                parsed = _parse_actionable(analysis, portfolio=pf)
                 if parsed:
                     extras = _enrich_extras_for_add(
                         parsed, {"Move": _word_truncate(event_context, 150)},
+                        portfolio=pf,
                     )
                     send_actionable(
                         parsed["action"], parsed["ticker"],
@@ -1248,11 +1282,13 @@ def run_news_check():
             analysis = analyze_portfolio(mode="event", event_context=ctx, force=True)
             _geo_seen[comm_key] = _now_iso
             _dirty = True
-            parsed = _parse_actionable(analysis)
+            pf = load_portfolio()
+            parsed = _parse_actionable(analysis, portfolio=pf)
             if parsed:
                 extras = _enrich_extras_for_add(
                     parsed,
                     {"GEO": _word_truncate(headline, 150), "Setup": comms},
+                    portfolio=pf,
                 )
                 send_actionable(
                     parsed["action"], parsed["ticker"],
@@ -1299,10 +1335,12 @@ def run_news_check():
             logger.info("📰 STOCK NEWS (%d): %s", len(stocks), headlines[:120])
             ctx = f"NEWS: {headlines}"
             analysis = analyze_portfolio(mode="event", event_context=ctx)
-            parsed = _parse_actionable(analysis)
+            pf = load_portfolio()
+            parsed = _parse_actionable(analysis, portfolio=pf)
             if parsed:
                 extras = _enrich_extras_for_add(
                     parsed, {"News": _word_truncate(headlines, 150)},
+                    portfolio=pf,
                 )
                 send_actionable(
                     parsed["action"], parsed["ticker"],
@@ -1369,6 +1407,11 @@ def main():
     
     last_check = datetime.now()
     check_interval = config.PRICE_CHECK_INTERVAL_MINUTES * 60
+    # Heartbeat write throttle: web stale-warn fires at ageSec>120, so 60s is safe.
+    # Cuts ~5000 portfolio.json writes/day to ~840 (atomic-write cost scales with
+    # file size; taming this also protects price-check loop latency).
+    last_heartbeat_write = 0.0
+    HEARTBEAT_WRITE_INTERVAL_SEC = 60
 
     while True:
         _heartbeat[0] = time.monotonic()
@@ -1376,80 +1419,73 @@ def main():
 
         # Persist heartbeat to portfolio.json so the web dashboard can show
         # last-tick age + API spend + live unrealized P&L without re-implementing
-        # fs scans. yfinance has its own 60s cache so per-tick pulls are cheap.
-        try:
-            from core import get_daily_usage
-            from core.livefeed import live_quote_for_ticker
-            _live_prices: dict[str, float] = {}
-            _live_quotes: dict[str, dict] = {}
+        # fs scans. Throttled to ≤1×/min.
+        if (time.monotonic() - last_heartbeat_write) >= HEARTBEAT_WRITE_INTERVAL_SEC:
             try:
-                _pf_snapshot = load_portfolio()
-                _open = _pf_snapshot.get("open_trades", []) or []
-                _watch = _pf_snapshot.get("watch_levels", []) or []
-                _tickers = list({
-                    *(t["ticker"] for t in _open if t.get("ticker")),
-                    *(w["ticker"] for w in _watch if w.get("ticker")),
-                })
-                # Heartbeat fast-path: skip yfinance entirely, scrape ls-tc direct.
-                # 60s yfinance cache stays untouched (still serves indicator pipeline)
-                # while live_quotes refresh at LS-TC's 10s cache cadence.
-                for _tk in _tickers:
-                    _q = live_quote_for_ticker(_tk)
-                    if not _q or not _q.get("price"):
-                        continue
-                    _live_prices[_tk] = float(_q["price"])
-                    _live_quotes[_tk] = {
-                        "price": _q.get("price"),
-                        "bid": _q.get("bid"),
-                        "ask": _q.get("ask"),
-                        "ts": _q.get("ts"),
-                        "change_pct": _q.get("change_pct"),
-                        "market_status": _q.get("market_status"),
-                        "source": _q.get("source"),
+                from core import get_daily_usage
+                from core.livefeed import live_quote_for_ticker
+                _live_prices: dict[str, float] = {}
+                _live_quotes: dict[str, dict] = {}
+                try:
+                    _pf_snapshot = load_portfolio()
+                    _open = _pf_snapshot.get("open_trades", []) or []
+                    _watch = _pf_snapshot.get("watch_levels", []) or []
+                    _tickers = list({
+                        *(t["ticker"] for t in _open if t.get("ticker")),
+                        *(w["ticker"] for w in _watch if w.get("ticker")),
+                    })
+                    # Heartbeat fast-path: skip yfinance entirely, scrape ls-tc direct.
+                    # 60s yfinance cache stays untouched (still serves indicator pipeline)
+                    # while live_quotes refresh at LS-TC's 10s cache cadence.
+                    for _tk in _tickers:
+                        _q = live_quote_for_ticker(_tk)
+                        if not _q or not _q.get("price"):
+                            continue
+                        _live_prices[_tk] = float(_q["price"])
+                        _live_quotes[_tk] = {
+                            "price": _q.get("price"),
+                            "bid": _q.get("bid"),
+                            "ask": _q.get("ask"),
+                            "ts": _q.get("ts"),
+                            "change_pct": _q.get("change_pct"),
+                            "market_status": _q.get("market_status"),
+                            "source": _q.get("source"),
+                        }
+                except Exception:
+                    logger.exception("Live-price snapshot failed (heartbeat)")
+                with portfolio_lock:
+                    _pf = load_portfolio()
+                    _pf["heartbeat"] = {
+                        "last_tick": now.strftime("%Y-%m-%d %H:%M:%S"),
+                        "market_hours": is_market_hours(),
+                        "api_calls_today": get_daily_usage(),
+                        "api_cap": config.MAX_ANALYSES_PER_DAY,
+                        "prices": _live_prices,
+                        "live_quotes": _live_quotes,
                     }
+                    # MAE/MFE accumulation: track per open trade the worst (mae) and
+                    # best (mfe) price seen since entry. Frozen onto closed_trade in
+                    # /close handler. Insight: where would 1-bar-tighter SL have
+                    # caught more profit, where would looser SL have prevented stops.
+                    # build_trade_dict seeds both at entry; we only ratchet here.
+                    for _ot in _pf.get("open_trades", []) or []:
+                        _tk = (_ot.get("ticker") or "").upper()
+                        _live = _live_prices.get(_tk)
+                        if not isinstance(_live, (int, float)) or _live <= 0:
+                            continue
+                        _entry = float(_ot.get("entry_price") or 0)
+                        if _entry <= 0:
+                            continue
+                        _mae = _ot.get("mae", _entry)
+                        _mfe = _ot.get("mfe", _entry)
+                        if _live < _mae:
+                            _ot["mae"] = round(_live, 4)
+                        if _live > _mfe:
+                            _ot["mfe"] = round(_live, 4)
+                    save_portfolio(_pf)
+                last_heartbeat_write = time.monotonic()
             except Exception:
-                logger.exception("Live-price snapshot failed (heartbeat)")
-            with portfolio_lock:
-                _pf = load_portfolio()
-                _pf["heartbeat"] = {
-                    "last_tick": now.strftime("%Y-%m-%d %H:%M:%S"),
-                    "market_hours": is_market_hours(),
-                    "api_calls_today": get_daily_usage(),
-                    "api_cap": config.MAX_ANALYSES_PER_DAY,
-                    "prices": _live_prices,
-                    "live_quotes": _live_quotes,
-                }
-                # MAE/MFE accumulation: track per open trade the worst (mae) and
-                # best (mfe) price seen since entry. Frozen onto closed_trade in
-                # /close handler. Insight: where would 1-bar-tighter SL have
-                # caught more profit, where would looser SL have prevented stops.
-                for _ot in _pf.get("open_trades", []) or []:
-                    _tk = (_ot.get("ticker") or "").upper()
-                    _live = _live_prices.get(_tk)
-                    if not isinstance(_live, (int, float)) or _live <= 0:
-                        continue
-                    _entry = float(_ot.get("entry_price") or 0)
-                    if _entry <= 0:
-                        continue
-                    _mae = _ot.get("mae")
-                    _mfe = _ot.get("mfe")
-                    # Init from entry on first tick after /confirm.
-                    if _mae is None:
-                        _mae = _entry
-                    if _mfe is None:
-                        _mfe = _entry
-                    if _live < _mae:
-                        _ot["mae"] = round(_live, 4)
-                    if _live > _mfe:
-                        _ot["mfe"] = round(_live, 4)
-                    # Always seed if absent so subsequent comparisons are valid.
-                    if "mae" not in _ot:
-                        _ot["mae"] = round(_mae, 4)
-                    if "mfe" not in _ot:
-                        _ot["mfe"] = round(_mfe, 4)
-                save_portfolio(_pf)
-        except Exception:
-            logger.exception("Heartbeat persist failed")
+                logger.exception("Heartbeat persist failed")
 
         if is_morning_prep_time():
             run_morning_prep()

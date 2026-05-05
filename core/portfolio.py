@@ -162,8 +162,10 @@ def build_trade_dict(rec: dict, filled_price: float, shares: float,
         "entry_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "status": "open",
         "entry_snapshot": entry_snapshot,
-        "mae": 0.0,
-        "mfe": 0.0,
+        # MAE/MFE seeded at entry; main.py heartbeat ratchets each tick.
+        # 0.0 default would freeze MAE forever (price never < 0); seed at entry instead.
+        "mae": round(filled_price, 4),
+        "mfe": round(filled_price, 4),
         "paper": paper,
     }
 
@@ -427,13 +429,19 @@ def risk_halt_status(portfolio: dict) -> dict:
         )
 
     today = datetime.now().strftime("%Y-%m-%d")
-    trades_today = sum(
-        1 for t in portfolio.get("open_trades", [])
-        if (t.get("entry_date") or "").startswith(today)
-    ) + sum(
-        1 for t in closed
-        if (t.get("entry_date") or "").startswith(today)
-    )
+    # Dedup by (ticker, entry_date): partial-TP keeps trade in open_trades AND
+    # adds a 'closed_partial' entry to closed_trades with the same entry_date.
+    # Without dedup, a single trade with 1 partial close eats 2/2 of the daily cap.
+    seen_today: set[tuple[str, str]] = set()
+    for t in portfolio.get("open_trades", []):
+        ed = t.get("entry_date") or ""
+        if ed.startswith(today):
+            seen_today.add(((t.get("ticker") or "").upper(), ed))
+    for t in closed:
+        ed = t.get("entry_date") or ""
+        if ed.startswith(today):
+            seen_today.add(((t.get("ticker") or "").upper(), ed))
+    trades_today = len(seen_today)
     if trades_today >= config.MAX_TRADES_PER_DAY:
         reasons.append(
             f"Max-Trades-Per-Day: {trades_today}/{config.MAX_TRADES_PER_DAY} heute"
@@ -562,8 +570,10 @@ def compute_hit_stats(closed_trades: list[dict]) -> dict | None:
     if not closed_trades or len(closed_trades) < 3:
         return None
 
+    # Exact-zero pnl is break-even, semantically neither win nor loss — exclude
+    # from both buckets so avg_loss_pct + r_multiple aren't dragged toward 0.
     wins = [t for t in closed_trades if (t.get("pnl_pct") or 0) > 0]
-    losses = [t for t in closed_trades if (t.get("pnl_pct") or 0) <= 0]
+    losses = [t for t in closed_trades if (t.get("pnl_pct") or 0) < 0]
     total = len(closed_trades)
 
     avg_win = sum((t.get("pnl_pct") or 0) for t in wins) / len(wins) if wins else 0.0
@@ -619,7 +629,7 @@ def compute_hit_stats(closed_trades: list[dict]) -> dict | None:
         }
 
     # --- Mistake-class distribution + actionable suggestion (last 20 losses) ---
-    recent_losses = [t for t in closed_trades if (t.get("pnl_pct") or 0) <= 0][-20:]
+    recent_losses = [t for t in closed_trades if (t.get("pnl_pct") or 0) < 0][-20:]
     mistake_classes: dict[str, int] = {}
     for t in recent_losses:
         cls = t.get("mistake_class") or "untagged"
@@ -757,8 +767,8 @@ def compute_hit_stats(closed_trades: list[dict]) -> dict | None:
     if len(attributed) >= 5:
         wins_alpha_pos = [t for t in attributed if (t.get("pnl_pct") or 0) > 0 and t["alpha_pct"] > 0]
         wins_alpha_neg = [t for t in attributed if (t.get("pnl_pct") or 0) > 0 and t["alpha_pct"] <= 0]
-        loss_alpha_pos = [t for t in attributed if (t.get("pnl_pct") or 0) <= 0 and t["alpha_pct"] > 0]
-        loss_alpha_neg = [t for t in attributed if (t.get("pnl_pct") or 0) <= 0 and t["alpha_pct"] <= 0]
+        loss_alpha_pos = [t for t in attributed if (t.get("pnl_pct") or 0) < 0 and t["alpha_pct"] > 0]
+        loss_alpha_neg = [t for t in attributed if (t.get("pnl_pct") or 0) < 0 and t["alpha_pct"] <= 0]
         avg_alpha = sum(t["alpha_pct"] for t in attributed) / len(attributed)
         attribution = {
             "n": len(attributed),
@@ -797,7 +807,7 @@ def compute_hit_stats(closed_trades: list[dict]) -> dict | None:
     }
     premortem_losses = [
         t for t in closed_trades
-        if (t.get("pnl_pct") or 0) <= 0
+        if (t.get("pnl_pct") or 0) < 0
         and t.get("top_fail_mode")
         and t.get("mistake_class")
     ]

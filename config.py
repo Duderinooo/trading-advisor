@@ -176,6 +176,7 @@ PENDING_REC_TTL_HOURS = 4         # Rec veraltet nach 4h — Preis weg, Kontext 
 SL_SLIPPAGE_TAG_PERCENT = 1.0     # Exit ≥1% unter SL → auto-tag slippage (execution-class)
 MIN_SL_DISTANCE_ATR = 0.8         # SL näher als 0.8×ATR → Whipsaw-garantiert, block
 MAX_SL_DISTANCE_ATR = 3.0         # SL weiter als 3×ATR → Risk-Reward kaputt, block
+SL_WARN_DISTANCE_PCT = 1.0        # STOP_LOSS_WARNING wenn current_price ≤ SL × (1+pct/100)
 
 # No-Entry-Zonen (CET): Auction-Spike Open + EOD-Chop Close = schlechteste Fill-Quality.
 # Format: (start_hour, start_min, end_hour, end_min). Nur entry_recommendation blocked,

@@ -388,8 +388,6 @@ def _auto_paper_open(rec: dict) -> None:
             rec, entry, float(shares), entry_snapshot=None, paper=True,
         )
         trade["entry_fee_eur"] = fee
-        trade["mae"] = round(entry, 4)
-        trade["mfe"] = round(entry, 4)
         pp["cash_eur"] = round(cash - cost, 2)
         pp.setdefault("open_trades", []).append(trade)
         save_paper_portfolio(pp)

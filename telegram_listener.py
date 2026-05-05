@@ -842,9 +842,6 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "kelly_clamp": rec.get("kelly_clamp"),
             "rec_entry_price": rec_entry,
             "slippage_pct": round(slippage_pct, 3),
-            # MAE/MFE seeded at entry; updated each heartbeat tick by main.py.
-            "mae": round(entry, 4),
-            "mfe": round(entry, 4),
         })
 
         portfolio.setdefault("open_trades", []).append(trade)
