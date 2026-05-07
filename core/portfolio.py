@@ -872,9 +872,16 @@ def format_hit_stats(stats: dict) -> str:
             f"→ {direction} um {abs(cal['bias']):.2f}"
         )
         if cal["haircut"]:
+            # Haircut applied as `p_adj = p_raw - haircut`. Negative haircut →
+            # under-confident → adjustment ADDS to p (be more aggressive).
+            # Positive haircut → over-confident → adjustment SUBTRACTS (be stricter).
+            hc = cal["haircut"]
+            if hc > 0:
+                action = f"sei STRENGER (Ziehe {hc:.2f} von neuen p_win ab — Bot war zu optimistisch)"
+            else:
+                action = f"sei AGGRESSIVER (Addiere {abs(hc):.2f} zu neuen p_win — Bot war zu pessimistisch)"
             line += (
-                f" | KORREKTUR: Ziehe {cal['haircut']:+.2f} von neuen p_win ab "
-                f"(Bias >5% — sei strenger)"
+                f" | KORREKTUR (auto-applied im edge gate, cap ±0.20): {action}"
             )
         lines.append(line)
     if stats.get("class_suggestion"):

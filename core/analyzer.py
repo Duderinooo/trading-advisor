@@ -727,6 +727,26 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             if stats.get("class_suggestion"):
                 logger.warning("Self-calibration: %s", stats["class_suggestion"])
             analysis_request += f"\n\n## HIT-RATE (eigene History)\n{format_hit_stats(stats)}\n"
+    # Brier-haircut visibility for event/opening too: Haiku must know its p_win
+    # baseline gets adjusted before edge-gate so it doesn't blindly mirror
+    # historical bias (Bug 2026-05-07: under-confident haircut=-0.38 silently
+    # killed CON.DE +9% entry; surfacing the auto-correction lets Haiku set
+    # p_win that already accounts for the bias direction).
+    elif mode in ("event", "opening"):
+        stats = compute_hit_stats(portfolio.get("closed_trades", []))
+        cal = (stats or {}).get("calibration") or {}
+        if cal.get("haircut"):
+            hc = cal["haircut"]
+            direction = (
+                f"Bot war historisch ZU PESSIMISTISCH (haircut={hc:+.2f}, edge gate "
+                f"addiert {abs(min(0.20, abs(hc))):+.2f} auto auf dein p_win) — "
+                f"sei AGGRESSIVER"
+                if hc < 0 else
+                f"Bot war historisch ZU OPTIMISTISCH (haircut={hc:+.2f}, edge gate "
+                f"zieht {min(0.20, abs(hc)):.2f} auto von deinem p_win ab) — "
+                f"sei STRENGER"
+            )
+            analysis_request += f"\n\n## BRIER-CAL\n{direction}\n"
 
     # Confluence scores per tradeable ticker (deterministic setup quality 0-10)
     if mode in ("morning", "opening", "event"):

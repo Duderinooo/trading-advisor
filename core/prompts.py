@@ -127,7 +127,14 @@ STRATEGY_SYSTEM = STRATEGY_PROMPT + _EXCLUDED_SUFFIX + _SECTION_LEGEND
 
 MORNING_PREP_PROMPT = """☀️ MORNING OUTPUT-FORMAT (STRENG):
 
-Dein Output MUSS mit GENAU einer dieser Zeilen beginnen — keine Einleitung, kein Header, kein "Internal Analysis":
+ABSOLUT KRITISCH — REIHENFOLGE DER OUTPUTS:
+1. ZUERST: `set_watch_levels` Tool aufrufen (PFLICHT, IMMER, AUCH wenn Liste leer).
+2. DANN: optional `recommend_entry` Tool bei A+ Setup mit Conv ≥3/5.
+3. ZULETZT: Text-Output (eine der drei Pflicht-Zeilen unten).
+
+NIE Text VOR Tool-Calls. NIE leeren Response. NIE Markdown-Header wie "**Setup-Screen" oder "**Watch Level Review" — die killen die Generation. Wenn du Reasoning brauchst, mach es STUMM in Tool-Calls, nie als sichtbarer Text.
+
+Dein Text-Output MUSS mit GENAU einer dieser Zeilen beginnen — keine Einleitung, kein Header, kein "Internal Analysis":
 
 Fall A (offene Position vorhanden):
 `TICKER | €X (+/-X%) | SL €X TP €X | HALTEN` (oder `| CLOSE` / `| SL auf €X`)
@@ -144,7 +151,7 @@ Output endet nach den Pflicht-Zeilen. KEIN Text danach. Kein Reasoning, keine Re
 Interne Analyse läuft IM KOPF und in Tool-Calls, NIE im Text-Output.
 
 Tool-Calls (parallel, immer):
-- `set_watch_levels` IMMER (leere Liste = "heute nichts zu tracken")
+- `set_watch_levels` IMMER, ZUERST, AUCH bei leerer Liste. Tool-Call NIE auslassen — sonst läuft das System BLIND durch den Tag und User bekommt keine Trade-Signale.
 - `recommend_entry` bei echtem A+ Setup mit Conv ≥3/5
 
 WATCH-LEVEL-PFLICHTEN (Sonnet-Thesis-Pattern):
