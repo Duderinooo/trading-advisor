@@ -469,7 +469,12 @@ def analyze_portfolio(
         vr = _d.get("volume_ratio")
         sp = _d.get("spread_pct")
         pr = _d.get("price")
-        if vr is not None and vr < _gate_vol:
+        # vol_ratio==0.0 means yfinance returned no aggregated volume (XETRA-Open
+        # before daily-bar settles, or stale cache after weekend). Treat as no-data
+        # → keep ticker; gate only when vol_ratio is positive but below threshold.
+        # Bug 2026-05-07: 14 tickers dropped with vol_ratio=0.0 at 09:35 → Haiku saw
+        # near-empty market_data and emitted no recs.
+        if isinstance(vr, (int, float)) and 0 < vr < _gate_vol:
             _dropped_illiquid.append(f"{_t}(vol_ratio={vr})")
             continue
         if sp is not None and sp > config.MAX_SPREAD_PERCENT:
@@ -773,12 +778,15 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
     # Output budgets. Morning needs room for set_watch_levels(3-7 levels)
     # serialized in tool_input — 400 truncated mid-tool-call (Bug 2026-04-29:
     # Sonnet output_tokens=400 → set_watch_levels({}) empty input → 0 levels).
+    # Bug 2026-05-07: opening hit max_tokens=500/500 twice same day (XETRA + US),
+    # both dropped recommend_entry for missing ['setup_type', 'top_fail_mode'].
+    # recommend_entry's full schema serialized = ~600-800 output tokens.
     if mode == "morning":
         max_tokens = 1200
     elif mode == "opening":
-        max_tokens = 500   # was 200 — truncated 2026-04-30 (3OIL.MI rationale cut)
+        max_tokens = 900   # was 500 — truncated 2026-05-07 (PUM.DE recommend_entry x2)
     elif mode == "event":
-        max_tokens = 700   # was 300 — truncated 2026-04-30 (SIE.DE + 3OIL.MI ENTRY recs cut)
+        max_tokens = 900   # was 700 — recommend_entry tool-input + thesis text needs ≥800
     else:
         max_tokens = 400
 
@@ -808,6 +816,10 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
         create_kwargs["tool_choice"] = {"type": "any"}
 
     # Hard-stop on known Claude intro-phrases that violate the tight-output format.
+    # Bug 2026-05-07: morning hit stop_sequence at out=3 tokens — likely "**Setup-Screen"
+    # or "**Watch Level Review" matched at the very start, killing the run before
+    # set_watch_levels tool_use fired. Stop_sequences halt tool_use too, not just text.
+    # Keeping only narrow prefix-style patterns; broad "**Header" patterns dropped.
     if mode in ("morning", "opening", "event"):
         create_kwargs["stop_sequences"] = [
             "Internal Analysis",
@@ -815,10 +827,6 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             "I'll analyze",
             "Analysiere die Daten",
             "Let me analyze",
-            "**Analysis",
-            "**Macro",
-            "**Watch Level Review",
-            "**Setup-Screen",
             "Schritt 1:",
             "Step 1:",
         ]
@@ -1126,16 +1134,23 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 entry_recommendation = None
 
     if entry_recommendation:
-        # Brier-Haircut: subtract calibrated bias from p_win before edge gate.
-        # Why: if Claude's p_win averages 5%+ above realized win-rate, every rec
-        # overstates edge. Haircut enforces what calibration text already told Claude.
+        # Brier-Haircut: shift p_win toward realized win-rate before edge gate.
+        # haircut = avg_p_pred - actual_win_rate (positive = overconfident, subtract;
+        # negative = underconfident, add). Bidirectional so Claude's well-calibrated
+        # but pessimistic theses don't get permanently filtered (Bug 2026-05-07:
+        # CON.DE +9% blocked by edge=-0.005 because haircut=-0.38 was ignored,
+        # gate saw p_adj=p_raw=0.58 instead of 0.78).
+        # Cap correction at ±0.20 to prevent runaway over-/under-confidence overrides
+        # from small samples (haircut from <20 trades has high variance).
+        _HAIRCUT_CAP = 0.20
         _p_raw = entry_recommendation.get("p_win")
         _stats = compute_hit_stats(_pf_snapshot.get("closed_trades", []))
         _haircut = 0.0
         if _stats and _stats.get("calibration"):
             _haircut = _stats["calibration"].get("haircut") or 0.0
-        if isinstance(_p_raw, (int, float)) and _haircut > 0:
-            _p_adj = max(0.01, _p_raw - _haircut)
+        if isinstance(_p_raw, (int, float)) and _haircut != 0:
+            _capped_haircut = max(-_HAIRCUT_CAP, min(_HAIRCUT_CAP, _haircut))
+            _p_adj = max(0.01, min(0.99, _p_raw - _capped_haircut))
         else:
             _p_adj = _p_raw
 

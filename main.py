@@ -875,6 +875,30 @@ def run_morning_prep(force: bool = False):
             wcount = len(pf.get("watch_levels", []))
             ocount = len(pf.get("open_trades", []))
             pcount = len(pf.get("pending_recommendations", []))
+            # Distinguish "Sonnet legitimately silent" from "Sonnet failed".
+            # Bug 2026-05-07: stop_sequences killed Sonnet at out=3 tokens, no
+            # tool_use, no text — _check sent "Morning OK" while bot was blind.
+            tr = pf.get("last_morning_trace") or {}
+            tool_called = bool(tr.get("tool_called"))
+            sonnet_failed = (
+                not tool_called
+                and (tr.get("output_tokens") or 0) < 20
+                and not tr.get("sonnet_text")
+            )
+            if sonnet_failed:
+                send_alert(
+                    "🚨 MORNING FAIL — Sonnet schwieg",
+                    f"Sonnet emittierte {tr.get('output_tokens')} tokens, "
+                    f"stop={tr.get('stop_reason')}, kein tool_use, kein text. "
+                    f"Bot ist heute BLIND (keine Watchlevels, keine Setup-Detection). "
+                    f"Manuell prüfen + ggf. /morning erneut.",
+                )
+                logger.error(
+                    "Morning brief: Sonnet returned empty (out_tok=%s, stop=%s) — "
+                    "alert sent, NOT marking morning prep done",
+                    tr.get("output_tokens"), tr.get("stop_reason"),
+                )
+                return  # Don't mark done so next loop tick retries.
             if wcount > 0:
                 reason = f"{wcount} Watchlevel(s) für heute aktiv"
             elif ocount > 0:
