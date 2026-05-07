@@ -531,7 +531,7 @@ def run_weekend_summary():
             starting,
             portfolio.get("cash_movements", []),
         ) or {}
-        stats = compute_hit_stats(portfolio.get("closed_trades", []))
+        stats = compute_hit_stats(portfolio.get("closed_trades", []), portfolio.get("cash_movements", []))
 
         # Mistake distribution (last 20 losses) — surfaces drift
         last_losses = [

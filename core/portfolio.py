@@ -100,6 +100,63 @@ def save_paper_portfolio(portfolio: dict):
         raise
 
 
+def trade_dividends(trade: dict, cash_movements: list[dict]) -> list[dict]:
+    """All dividend cash_movements linked to this trade (matched on composite key).
+
+    Match: ticker + entry_date both equal. exit_date matched too if both present
+    (closed trades). Open trades match on null exit_date.
+    """
+    if not cash_movements:
+        return []
+    t_ticker = (trade.get("ticker") or "").upper()
+    t_entry = trade.get("entry_date")
+    t_exit = trade.get("exit_date")
+    out = []
+    for m in cash_movements:
+        if m.get("kind") != "dividend":
+            continue
+        link = m.get("linked_trade") or {}
+        if (link.get("ticker") or "").upper() != t_ticker:
+            continue
+        if link.get("entry_date") != t_entry:
+            continue
+        if link.get("exit_date") != t_exit:
+            continue
+        out.append(m)
+    return out
+
+
+def effective_pnl_eur(trade: dict, cash_movements: list[dict] | None = None) -> float:
+    """Trade pnl_eur INCL. linked dividends.
+
+    Why: bot's pnl_eur stores price-component only (exit×shares − entry×shares).
+    Dividends paid during hold-period are real cashflow that user earned from
+    the trade — must be credited to R-Multiple/Brier so stats reflect reality
+    (Bug 2026-05-07: RWE.DE -€13.50 + €7.20 div was scored as -€13.50, hit-stats
+    distorted).
+    """
+    base = float(trade.get("pnl_eur") or 0)
+    divs = sum(float(m.get("amount") or 0) for m in trade_dividends(trade, cash_movements or []))
+    return round(base + divs, 2)
+
+
+def effective_pnl_pct(trade: dict, cash_movements: list[dict] | None = None) -> float:
+    """Trade pnl_pct INCL. dividends. Recomputed from effective_pnl_eur / size_eur."""
+    base_pct = float(trade.get("pnl_pct") or 0)
+    divs = sum(float(m.get("amount") or 0) for m in trade_dividends(trade, cash_movements or []))
+    if not divs:
+        return base_pct
+    size_eur = float(trade.get("size_eur") or 0)
+    if size_eur <= 0:
+        # Fallback: reconstruct size from entry × shares.
+        entry = float(trade.get("entry_price") or 0)
+        shares = float(trade.get("shares") or 0)
+        size_eur = entry * shares
+    if size_eur <= 0:
+        return base_pct  # Nothing reasonable to scale by.
+    return round(base_pct + (divs / size_eur * 100), 2)
+
+
 def exit_suppressed_tickers(portfolio: dict) -> set[str]:
     """Tickers für die KEINE neuen Event-/Haiku-Calls erzeugt werden sollen.
 
@@ -177,19 +234,74 @@ def add_cash_movement(
     kind: str,
     ticker: str,
     note: str = "",
+    ex_date: str | None = None,
 ) -> dict:
     """Append a cash flow (e.g. dividend) to the cash_movements ledger and adjust cash_eur.
+
+    For dividends: auto-link to the trade that was OPEN on `ex_date` (default = today).
+    If no open match, link to the most-recent closed trade on the same ticker so
+    realized R-Multiple stats include the dividend payout instead of attributing it
+    to "free cash" (Bug 2026-05-07: RWE.DE -€13.50 trade pnl + €7.20 div was shown
+    as -€13.50 in hit_stats, distorting Brier + R-Multiple downward).
+
+    `linked_trade` is a dict {ticker, entry_date, exit_date, status}. Identifies the
+    target trade unambiguously (composite key, no fragile indices).
 
     Caller must already hold portfolio_lock. Returns the appended entry. Does not save —
     the surrounding transaction is responsible for save_portfolio().
     """
+    today = datetime.now().strftime("%Y-%m-%d")
     movement = {
-        "date": datetime.now().strftime("%Y-%m-%d"),
+        "date": today,
         "amount": round(float(amount), 2),
         "kind": kind,
         "ticker": ticker,
         "note": note or "",
     }
+
+    if kind == "dividend":
+        ex = ex_date or today
+        ticker_u = (ticker or "").upper()
+        # Open trade on ex_date?
+        for tr in portfolio.get("open_trades", []) or []:
+            if (tr.get("ticker") or "").upper() != ticker_u:
+                continue
+            ed = (tr.get("entry_date") or "")[:10]
+            if ed and ed <= ex:
+                movement["linked_trade"] = {
+                    "ticker": ticker_u,
+                    "entry_date": tr.get("entry_date"),
+                    "exit_date": None,
+                    "status": "open",
+                }
+                break
+        else:
+            # No open match: link to closed trade where ex_date ∈ [entry, exit].
+            best = None
+            for tr in portfolio.get("closed_trades", []) or []:
+                if (tr.get("ticker") or "").upper() != ticker_u:
+                    continue
+                ed = (tr.get("entry_date") or "")[:10]
+                xd = (tr.get("exit_date") or "")[:10]
+                if ed and xd and ed <= ex <= xd:
+                    best = tr
+                    break  # First in-range match wins.
+            if best is None:
+                # Fallback: most recent closed trade on ticker.
+                candidates = [
+                    tr for tr in portfolio.get("closed_trades", []) or []
+                    if (tr.get("ticker") or "").upper() == ticker_u
+                ]
+                if candidates:
+                    best = max(candidates, key=lambda t: t.get("exit_date") or "")
+            if best is not None:
+                movement["linked_trade"] = {
+                    "ticker": ticker_u,
+                    "entry_date": best.get("entry_date"),
+                    "exit_date": best.get("exit_date"),
+                    "status": best.get("status") or "closed",
+                }
+
     portfolio.setdefault("cash_movements", []).append(movement)
     portfolio["cash_eur"] = round(
         float(portfolio.get("cash_eur", 0) or 0) + movement["amount"], 2
@@ -564,20 +676,32 @@ def compute_correlations(returns_by_ticker: dict, candidate: str) -> dict[str, f
 
 # ---------- Hit-rate stats ----------
 
-def compute_hit_stats(closed_trades: list[dict]) -> dict | None:
+def compute_hit_stats(closed_trades: list[dict], cash_movements: list[dict] | None = None) -> dict | None:
     """Aggregate win-rate + R-multiple + conviction breakdown from closed trades.
-    Returns None if not enough data (<3 closed trades)."""
+    Returns None if not enough data (<3 closed trades).
+
+    `cash_movements` (optional): dividends linked to trades fold into stats so
+    RWE.DE -€13.50 trade + €7.20 div = -€6.30 effective. Omit = price-only (legacy).
+    """
     if not closed_trades or len(closed_trades) < 3:
         return None
 
+    movements = cash_movements or []
+
+    def _eff_pct(t: dict) -> float:
+        return effective_pnl_pct(t, movements) if movements else float(t.get("pnl_pct") or 0)
+
+    def _eff_eur(t: dict) -> float:
+        return effective_pnl_eur(t, movements) if movements else float(t.get("pnl_eur") or 0)
+
     # Exact-zero pnl is break-even, semantically neither win nor loss — exclude
     # from both buckets so avg_loss_pct + r_multiple aren't dragged toward 0.
-    wins = [t for t in closed_trades if (t.get("pnl_pct") or 0) > 0]
-    losses = [t for t in closed_trades if (t.get("pnl_pct") or 0) < 0]
+    wins = [t for t in closed_trades if _eff_pct(t) > 0]
+    losses = [t for t in closed_trades if _eff_pct(t) < 0]
     total = len(closed_trades)
 
-    avg_win = sum((t.get("pnl_pct") or 0) for t in wins) / len(wins) if wins else 0.0
-    avg_loss = sum((t.get("pnl_pct") or 0) for t in losses) / len(losses) if losses else 0.0
+    avg_win = sum(_eff_pct(t) for t in wins) / len(wins) if wins else 0.0
+    avg_loss = sum(_eff_pct(t) for t in losses) / len(losses) if losses else 0.0
     r_multiple = (avg_win / abs(avg_loss)) if avg_loss else None
 
     by_conv: dict[int, list] = {}
@@ -587,7 +711,7 @@ def compute_hit_stats(closed_trades: list[dict]) -> dict | None:
             by_conv.setdefault(int(c), []).append(t)
     conv_stats = {
         c: {
-            "wins": sum(1 for t in ts if (t.get("pnl_pct") or 0) > 0),
+            "wins": sum(1 for t in ts if _eff_pct(t) > 0),
             "total": len(ts),
         }
         for c, ts in by_conv.items()
@@ -597,11 +721,11 @@ def compute_hit_stats(closed_trades: list[dict]) -> dict | None:
         s["rate"] = round(s["wins"] / s["total"] * 100, 1) if s["total"] else 0
 
     streak = "".join(
-        "W" if (t.get("pnl_pct") or 0) > 0 else "L"
+        "W" if _eff_pct(t) > 0 else "L"
         for t in closed_trades[-5:]
     )
 
-    total_pnl_eur = round(sum((t.get("pnl_eur") or 0) for t in closed_trades), 2)
+    total_pnl_eur = round(sum(_eff_eur(t) for t in closed_trades), 2)
 
     # --- Brier-Score + Kalibrierung (rolling 20) ---
     # Nur Trades mit p_win-Prediction zählen. Ältere Trades ohne p_win werden ignoriert.
@@ -629,7 +753,7 @@ def compute_hit_stats(closed_trades: list[dict]) -> dict | None:
         }
 
     # --- Mistake-class distribution + actionable suggestion (last 20 losses) ---
-    recent_losses = [t for t in closed_trades if (t.get("pnl_pct") or 0) < 0][-20:]
+    recent_losses = [t for t in closed_trades if _eff_pct(t) < 0][-20:]
     mistake_classes: dict[str, int] = {}
     for t in recent_losses:
         cls = t.get("mistake_class") or "untagged"

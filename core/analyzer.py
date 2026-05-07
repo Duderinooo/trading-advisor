@@ -722,7 +722,7 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
 
     # Hit-rate self-calibration (morning only, gated at ≥3 trades)
     if mode == "morning":
-        stats = compute_hit_stats(portfolio.get("closed_trades", []))
+        stats = compute_hit_stats(portfolio.get("closed_trades", []), portfolio.get("cash_movements", []))
         if stats:
             if stats.get("class_suggestion"):
                 logger.warning("Self-calibration: %s", stats["class_suggestion"])
@@ -733,7 +733,7 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
     # killed CON.DE +9% entry; surfacing the auto-correction lets Haiku set
     # p_win that already accounts for the bias direction).
     elif mode in ("event", "opening"):
-        stats = compute_hit_stats(portfolio.get("closed_trades", []))
+        stats = compute_hit_stats(portfolio.get("closed_trades", []), portfolio.get("cash_movements", []))
         cal = (stats or {}).get("calibration") or {}
         if cal.get("haircut"):
             hc = cal["haircut"]
@@ -1164,7 +1164,7 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
         # from small samples (haircut from <20 trades has high variance).
         _HAIRCUT_CAP = 0.20
         _p_raw = entry_recommendation.get("p_win")
-        _stats = compute_hit_stats(_pf_snapshot.get("closed_trades", []))
+        _stats = compute_hit_stats(_pf_snapshot.get("closed_trades", []), _pf_snapshot.get("cash_movements", []))
         _haircut = 0.0
         if _stats and _stats.get("calibration"):
             _haircut = _stats["calibration"].get("haircut") or 0.0
