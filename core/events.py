@@ -446,10 +446,15 @@ def detect_events() -> list[dict]:
         if distance_pct <= config.BREAKOUT_TRIGGER_PERCENT:
             confirm_close_above = level.get("confirm_close_above")
             if isinstance(confirm_close_above, (int, float)) and confirm_close_above > 0:
-                if current_price < confirm_close_above:
+                # Apply CONFIRM_CLOSE_TOLERANCE_PCT slack: tick-granularity +
+                # spread can leave price 1-2ct under Sonnet's confirm threshold
+                # all day even though structural breakout already happened.
+                tolerance = confirm_close_above * config.CONFIRM_CLOSE_TOLERANCE_PCT / 100
+                if current_price < (confirm_close_above - tolerance):
                     logger.info(
-                        "Watch %s @%.2f not confirmed: price %.2f < confirm_close_above %.2f",
-                        ticker, trigger_price, current_price, confirm_close_above,
+                        "Watch %s @%.2f not confirmed: price %.2f < confirm_close_above %.2f (slack %.2f)",
+                        ticker, trigger_price, current_price,
+                        confirm_close_above, tolerance,
                     )
                     continue
 

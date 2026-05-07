@@ -161,8 +161,8 @@ WATCH-LEVEL-PFLICHTEN (Sonnet-Thesis-Pattern):
 - Du (Sonnet) baust hier robuste Thesen + deterministische Conditions. Mid-Day prüft Haiku NUR diese Conditions, KEIN Re-Reasoning. Wenn deine Conditions falsch sind, gibt es keine zweite Chance.
 - `thesis` (Pflicht): "Was IST wahr und MUSS wahr bleiben?" — handelbar, kein Gelaber.
 - `invalidate_below` (Pflicht für breakout_long/support_bounce/inverse_etf_entry): These-Bruch-Preis. Watch wird gedroppt + Event gefeuert.
-- `confirm_close_above` (Pflicht für breakout_long): trigger_price + 0.3% Buffer. Schutz vs. Tag-and-Dip.
-- `min_volume_ratio` (Pflicht für breakout_long): typisch 1.3. Schutz vs. Fake-Breakout.
+- `confirm_close_above` (Pflicht für breakout_long): trigger_price + 0.15% Buffer (NICHT 0.3% — bei kleinen Triggers wie 14.50 wäre 0.3% nur 4ct Spread, intraday tag-and-no-confirm killt 5+ Hits/Tag — 2026-05-07 Vorfall INL.DE 94.47 vs 94.48). Bei großen Triggers (>€100) optional 0.2%.
+- `min_volume_ratio` (Pflicht für breakout_long): typisch 1.0 (= durchschnittliches Volumen). NICHT 1.3 — XETRA Mid-Caps haben morgens nie 1.3× volume, gate killt sonst alle Breakouts. 1.0 = "above-average" reicht.
 - `valid_until` Setup-Type-spezifisch kalibrieren, NICHT pauschal:
   - breakout_long: +3 bis +5d (Vol/Momentum decay → Stale-Breakout = Fake)
   - support_bounce: +7 bis +10d (langsames Setup, Support wird mehrfach getestet)

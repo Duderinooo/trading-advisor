@@ -51,7 +51,15 @@ US_OPEN_MINUTE = 35         # 5min nach US-Open (15:30 CET)
 
 # Event triggers für automatische Re-Analyse
 EVENT_TRIGGER_MOVE_PERCENT = 3.0  # (legacy - BIG_MOVE removed; kept for reference)
-BREAKOUT_TRIGGER_PERCENT = 0.5    # Nähe zu Watch-Level (0.5% = fast erreicht)
+# Bumped 0.5→1.0 (2026-05-07): 3OIL.MI -20.9% intraday war 0.56% über Trigger
+# (146.66 vs 145.84) → 0.06pp über Threshold = ungetriggert. 1.0% fängt
+# Overshoot-Cases ein ohne dass Watches ständig vorzeitig feuern.
+BREAKOUT_TRIGGER_PERCENT = 1.0    # Nähe zu Watch-Level (1.0% = approaching)
+# Confirm-Close-Above Toleranz: bei tag-and-no-confirm (price 1ct unter Sonnet's
+# confirm_close_above) doch noch triggern. 2026-05-07: INL.DE 94.47 vs 94.48 →
+# 11× heute knapp gemissed. 0.1% slack = €0.094 bei 94.20-Trigger, real-life
+# Spread/Tick-Granularität, kein semantischer Bruch der Confirm-Logik.
+CONFIRM_CLOSE_TOLERANCE_PCT = 0.1
 
 # Price-Alert Pre-Filter: Claude call nur wenn Ticker Watch-Level hat ODER sehr stark bewegt
 STRONG_PRICE_ALERT_PERCENT = 7.0
@@ -202,7 +210,10 @@ BIG_MOVER_PCT_BYPASS = 4.0
 
 # Breakout-Volume-Confirmation: setup_type=breakout_resistance braucht Volumen-Bestätigung.
 # Ohne Volumen = Fake-Breakout, hohe Whipsaw-Rate.
-MIN_BREAKOUT_VOLUME_RATIO = 1.3   # heute_volume / avg_volume
+# 2026-05-07: 1.3 zu strikt für XETRA Mid-Caps + early-day-volume.
+# INL.DE @94.20 vol-gate fail bei 0.34 < 1.30 — selbst "above-average" (1.0)
+# reicht für Breakout-Confirm bei diesen Liquiditäts-Profilen.
+MIN_BREAKOUT_VOLUME_RATIO = 1.0   # heute_volume / avg_volume
 
 # Relative-Strength Gate: für LONG-Entries muss Ticker ≥ Index in den letzten 20 Tagen
 # performen. Filter gegen Lagger im Aufwärtstrend. Override bei mean_reversion-Setups.
