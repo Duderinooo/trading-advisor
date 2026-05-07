@@ -154,7 +154,16 @@ SECTOR_MAP = {
 
 # Risk management
 MAX_RISK_PER_TRADE_PERCENT = 3.0  # Max % of capital to risk per trade
-MAX_POSITION_SIZE_PERCENT = 10.0  # Max % of capital in single position (8→10 2026-05-04: TR-SL-Constraint braucht ganze Stücke; €100 Cap erlaubt mehr Mid-Caps ohne Klumpen-Risiko zu sprengen)
+# Sanity-cap auf Position-Größe — bindet selten, real-Size kommt aus ATR-Risk +
+# Kelly-Fraction + Conviction (siehe core.portfolio.suggest_position_size).
+# 2026-05-07: 10→30 nach decouple (MAX_SHARE_PRICE_EUR ersetzte 10% als share-price
+# filter). Bot's adaptive Kelly + ATR-Sizing soll Position-Größe steuern, nicht
+# eine harte 10%-Wand die jede mid-cap-Position abwürgt.
+MAX_POSITION_SIZE_PERCENT = 30.0  # Sanity ceiling — Kelly/ATR/Conviction drive real size
+# Share-Price-Filter: Aktien teurer als €100 sind un-traded weil TR-SL nur auf
+# ganze Stücke geht. €100 Cap erlaubt ≥1 Stk auch bei kleinem Kapital. Entkoppelt
+# von Position-Size-Cap (war vorher beides aus MAX_POSITION_SIZE_PERCENT abgeleitet).
+MAX_SHARE_PRICE_EUR = 100.0
 MIN_CASH_RESERVE_PERCENT = 20.0   # Always keep this much in cash
 
 # Trade frequency limits

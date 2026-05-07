@@ -357,15 +357,20 @@ def compute_slippage_budget(closed_trades: list[dict]) -> float:
 
 
 def max_affordable_share_price_eur(portfolio: dict) -> float:
-    """Höchster Aktienpreis bei dem ≥1 ganzes Stück innerhalb der Position-Cap passt.
+    """Höchster Aktienpreis bei dem ≥1 ganzes Stück innerhalb der TR-SL-Order
+    platzierbar ist.
 
     TR-Stop-Loss läuft nur auf ganze Stücke; Bruchstück-Position = SL-unmöglich =
-    Verstoß gegen Full-Trust-SL-Invariant. Dynamisch aus total_capital_eur ×
-    MAX_POSITION_SIZE_PERCENT/100 × WHOLE_SHARE_PRICE_BUFFER.
+    Verstoß gegen Full-Trust-SL-Invariant. Decoupled 2026-05-07 von Position-Size-
+    Cap: jetzt eigener `MAX_SHARE_PRICE_EUR` (typisch €100), unabhängig davon
+    wie groß die Position als Ganzes werden darf. Sizing-Decision (mehr/weniger
+    Stücke) liegt beim Bot via Kelly/ATR/Conviction in suggest_position_size.
+
+    `portfolio` parameter bleibt für API-Kompatibilität — wird derzeit nicht
+    gelesen, aber Caller passen alle pf durch und falls wir zukünftig dynamisch
+    werden (z.B. Cap relativ zu Cash) ist Hook da.
     """
-    capital = float(portfolio.get("total_capital_eur", config.BUDGET_EUR) or config.BUDGET_EUR)
-    cap = capital * config.MAX_POSITION_SIZE_PERCENT / 100
-    return cap * config.WHOLE_SHARE_PRICE_BUFFER
+    return float(config.MAX_SHARE_PRICE_EUR) * config.WHOLE_SHARE_PRICE_BUFFER
 
 
 def suggest_position_size(
