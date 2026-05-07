@@ -328,28 +328,56 @@ def _get_event_key(event: dict) -> str:
 
 
 def _is_event_already_triggered(event_key: str, portfolio: dict) -> bool:
+    """Dedup check: was this event_key already fired within EVENT_DEDUP_TTL_MIN?
+
+    TTL-based instead of per-day so that a watch whose first hit was dropped
+    by a downstream gate (red-team, edge, etc.) gets a polite re-try after the
+    cooldown elapses. Bug 2026-05-07: per-day dedup made watch blind for the
+    full day after one bad analyzer pass.
+    """
     triggered = portfolio.get("triggered_events", [])
-    today = str(date.today())
+    now = datetime.now()
+    ttl_min = config.EVENT_DEDUP_TTL_MIN
     for t in triggered:
-        if t.get("key") == event_key and t.get("date") == today:
+        if t.get("key") != event_key:
+            continue
+        ts = t.get("ts")
+        if ts:
+            try:
+                fired = datetime.strptime(ts, "%Y-%m-%d %H:%M")
+                if (now - fired).total_seconds() / 60 < ttl_min:
+                    return True
+                continue  # expired entry — same key may re-fire
+            except ValueError:
+                pass
+        # Legacy entry (no ts, only date) — treat as still-active for today only.
+        if t.get("date") == str(date.today()):
             return True
     return False
 
 
 def _mark_events_triggered(events: list[dict]):
-    """Mark events as triggered so they don't repeat. Reload-merge under lock."""
+    """Mark events as triggered so they don't repeat within TTL.
+
+    Stores `ts` (full timestamp) for TTL-based dedup. Pruned to today's date so
+    triggered_events doesn't grow unbounded across days.
+    """
     with portfolio_lock:
         fresh = load_portfolio()
         today = str(date.today())
         triggered = [t for t in fresh.get("triggered_events", []) if t.get("date") == today]
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
         for event in events:
             key = _get_event_key(event)
-            if not any(t.get("key") == key for t in triggered):
-                triggered.append({
-                    "key": key,
-                    "date": today,
-                    "time": datetime.now().strftime("%H:%M"),
-                })
+            # Replace any stale entry for this key (older than TTL) instead of
+            # silently keeping it; new entry resets the cooldown clock.
+            triggered = [t for t in triggered if t.get("key") != key]
+            triggered.append({
+                "key": key,
+                "date": today,
+                "ts": now_str,
+                "time": now_str.split(" ")[1],
+            })
         fresh["triggered_events"] = triggered
         save_portfolio(fresh)
 
@@ -375,7 +403,8 @@ def detect_events() -> list[dict]:
     suppressed = {t.upper() for t in exit_suppressed_tickers(portfolio)}
     watch_levels = [
         w for w in portfolio.get("watch_levels", [])
-        if w["ticker"] not in excluded
+        if w.get("ticker")
+        and w["ticker"] not in excluded
         and (w.get("ticker") or "").upper() not in suppressed
     ]
 
@@ -418,7 +447,16 @@ def detect_events() -> list[dict]:
                     expired_indices.append(idx)
                     continue
             except ValueError:
-                logger.warning("Watch %s has invalid valid_until=%r", ticker, valid_until)
+                # Corrupt valid_until (e.g. malformed string from pre-validation
+                # Sonnet output). Treat as expired rather than continuing through
+                # gates with broken thesis-bound — corrupt data shouldn't trigger
+                # entries. Pruned alongside expired/invalidated below.
+                logger.warning(
+                    "Watch %s expired (invalid valid_until=%r — treating as expired)",
+                    ticker, valid_until,
+                )
+                expired_indices.append(idx)
+                continue
 
         invalidate_below = level.get("invalidate_below")
         if isinstance(invalidate_below, (int, float)) and invalidate_below > 0:
@@ -444,6 +482,19 @@ def detect_events() -> list[dict]:
         distance_pct = abs(current_price - trigger_price) / trigger_price * 100
 
         if distance_pct <= config.BREAKOUT_TRIGGER_PERCENT:
+            # Direction-aware proximity: for breakout_long without an explicit
+            # confirm_close_above, bot would otherwise fire when price is BELOW
+            # trigger (proximity is symmetric via abs()). Sonnet sometimes omits
+            # confirm_close_above for non-breakout_long types — add a structural
+            # check so price is at-or-above trigger for "long" levels.
+            level_type_lower = level_type.lower() if isinstance(level_type, str) else ""
+            is_long_breakout = level_type_lower in ("breakout_long", "breakout_resistance", "breakout")
+            if is_long_breakout and current_price < trigger_price:
+                logger.debug(
+                    "Watch %s @%.2f long-breakout proximity-only fail: price %.2f < trigger",
+                    ticker, trigger_price, current_price,
+                )
+                continue
             confirm_close_above = level.get("confirm_close_above")
             if isinstance(confirm_close_above, (int, float)) and confirm_close_above > 0:
                 # Apply CONFIRM_CLOSE_TOLERANCE_PCT slack: tick-granularity +
@@ -929,7 +980,9 @@ def check_price_alerts() -> list[dict]:
         ]
         market_data = get_market_data(watch_tickers)
 
-        watch_level_set = {w["ticker"] for w in portfolio.get("watch_levels", [])}
+        watch_level_set = {
+            w["ticker"] for w in portfolio.get("watch_levels", []) if w.get("ticker")
+        }
 
         for ticker, data in market_data.items():
             if "error" in data or ticker in excluded:

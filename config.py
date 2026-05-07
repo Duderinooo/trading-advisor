@@ -60,6 +60,12 @@ BREAKOUT_TRIGGER_PERCENT = 1.0    # Nähe zu Watch-Level (1.0% = approaching)
 # 11× heute knapp gemissed. 0.1% slack = €0.094 bei 94.20-Trigger, real-life
 # Spread/Tick-Granularität, kein semantischer Bruch der Confirm-Logik.
 CONFIRM_CLOSE_TOLERANCE_PCT = 0.1
+# Event-Dedup-TTL (Minuten): wie lange ein getriggerter Event-Key blockiert,
+# bevor derselbe Watch erneut feuern darf. War bisher per-Tag (zu lang —
+# wenn analyzer den ersten Hit verwarf, blieb Watch bis zum nächsten Tag
+# blind. Bug 2026-05-07: edge-gate haircut killte CON.DE +9% → triggered
+# permanent für Tag, kein Retry möglich nach Fix). 60min = polite re-fire.
+EVENT_DEDUP_TTL_MIN = 60
 
 # Price-Alert Pre-Filter: Claude call nur wenn Ticker Watch-Level hat ODER sehr stark bewegt
 STRONG_PRICE_ALERT_PERCENT = 7.0
