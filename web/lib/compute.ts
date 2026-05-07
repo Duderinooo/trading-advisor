@@ -1,5 +1,6 @@
 import type {
   CalibrationBin,
+  CashMovement,
   ClosedTrade,
   EquityPoint,
   GateAttribution,
@@ -94,24 +95,68 @@ export function liveEquityRounded(p: Portfolio): number {
   return Math.round(currentEquity(p) + unrealized);
 }
 
-export function computeHitStats(closed: ClosedTrade[]): HitStats | null {
+// Sum dividends linked to a specific closed trade (composite-key match: ticker
+// + entry_date + exit_date + status). Mirrors core.portfolio.trade_dividends.
+function tradeDividends(t: ClosedTrade, movements: CashMovement[]): number {
+  if (!movements.length) return 0;
+  let sum = 0;
+  for (const m of movements) {
+    if (m.kind !== "dividend") continue;
+    const link = m.linked_trade;
+    if (!link) continue;
+    if (link.ticker.toUpperCase() !== t.ticker.toUpperCase()) continue;
+    if (link.entry_date !== t.entry_date) continue;
+    if (link.exit_date !== t.exit_date) continue;
+    sum += Number(m.amount ?? 0);
+  }
+  return sum;
+}
+
+function effectivePnlPct(t: ClosedTrade, movements: CashMovement[]): number {
+  const base = Number(t.pnl_pct ?? 0);
+  const divs = tradeDividends(t, movements);
+  if (!divs) return base;
+  let sizeEur = 0;
+  // Reconstruct trade size from entry × shares (size_eur not on ClosedTrade type).
+  const entry = Number(t.entry_price ?? 0);
+  const shares = Number(t.shares ?? 0);
+  sizeEur = entry * shares;
+  if (sizeEur <= 0) return base;
+  return base + (divs / sizeEur) * 100;
+}
+
+function effectivePnlEur(t: ClosedTrade, movements: CashMovement[]): number {
+  return Number(t.pnl_eur ?? 0) + tradeDividends(t, movements);
+}
+
+export function computeHitStats(
+  closed: ClosedTrade[],
+  movements: CashMovement[] = [],
+): HitStats | null {
   if (closed.length < 3) return null;
-  const final = closed.filter((t) => !t.partial);
-  const wins = final.filter((t) => (t.pnl_pct ?? 0) > 0);
-  const losses = final.filter((t) => (t.pnl_pct ?? 0) <= 0);
-  const total = final.length;
+  // No `partial` filter: each closed_trades entry IS a realized event (partial-TP
+  // = locked-in profit on portion). Filtering dropped SIE.DE win on 2026-05-07
+  // when its partial-TP entry was the only record. Backend (compute_hit_stats)
+  // doesn't filter — keep parity.
+  // pnl_pct < 0 (not <= 0): exact-zero is break-even, neither win nor loss.
+  // Effective pnl: includes dividends linked to the trade.
+  const effPct = (t: ClosedTrade) => effectivePnlPct(t, movements);
+  const effEur = (t: ClosedTrade) => effectivePnlEur(t, movements);
+  const wins = closed.filter((t) => effPct(t) > 0);
+  const losses = closed.filter((t) => effPct(t) < 0);
+  const total = closed.length;
   const avgWin =
     wins.length > 0
-      ? wins.reduce((s, t) => s + (t.pnl_pct ?? 0), 0) / wins.length
+      ? wins.reduce((s, t) => s + effPct(t), 0) / wins.length
       : 0;
   const avgLoss =
     losses.length > 0
-      ? losses.reduce((s, t) => s + (t.pnl_pct ?? 0), 0) / losses.length
+      ? losses.reduce((s, t) => s + effPct(t), 0) / losses.length
       : 0;
   const rMultiple = avgLoss !== 0 ? avgWin / Math.abs(avgLoss) : null;
 
   const byConv: Record<number, ClosedTrade[]> = {};
-  for (const t of final) {
+  for (const t of closed) {
     if (typeof t.conviction === "number") {
       const c = Math.floor(t.conviction);
       (byConv[c] ??= []).push(t);
@@ -119,7 +164,7 @@ export function computeHitStats(closed: ClosedTrade[]): HitStats | null {
   }
   const convBreakdown: HitStats["conv_breakdown"] = {};
   for (const [c, ts] of Object.entries(byConv)) {
-    const w = ts.filter((t) => (t.pnl_pct ?? 0) > 0).length;
+    const w = ts.filter((t) => effPct(t) > 0).length;
     convBreakdown[Number(c)] = {
       wins: w,
       total: ts.length,
@@ -127,17 +172,15 @@ export function computeHitStats(closed: ClosedTrade[]): HitStats | null {
     };
   }
 
-  const streak = final
+  const streak = closed
     .slice(-5)
-    .map((t) => ((t.pnl_pct ?? 0) > 0 ? "W" : "L"))
+    .map((t) => (effPct(t) > 0 ? "W" : "L"))
     .join("");
 
   const totalPnlEur =
-    Math.round(
-      final.reduce((s, t) => s + Number(t.pnl_eur ?? 0), 0) * 100,
-    ) / 100;
+    Math.round(closed.reduce((s, t) => s + effEur(t), 0) * 100) / 100;
 
-  const scored = final
+  const scored = closed
     .slice(-20)
     .filter(
       (t) =>
@@ -161,8 +204,8 @@ export function computeHitStats(closed: ClosedTrade[]): HitStats | null {
     };
   }
 
-  const recentLosses = final
-    .filter((t) => (t.pnl_pct ?? 0) <= 0)
+  const recentLosses = closed
+    .filter((t) => effPct(t) < 0)
     .slice(-20);
   const mistakeClasses: Record<string, number> = {};
   for (const t of recentLosses) {
@@ -188,10 +231,15 @@ export function computeHitStats(closed: ClosedTrade[]): HitStats | null {
   };
 }
 
-export function computeSetupTypeStats(closed: ClosedTrade[]): SetupTypeStats[] {
+export function computeSetupTypeStats(
+  closed: ClosedTrade[],
+  movements: CashMovement[] = [],
+): SetupTypeStats[] {
+  const effPct = (t: ClosedTrade) => effectivePnlPct(t, movements);
+  const effEur = (t: ClosedTrade) => effectivePnlEur(t, movements);
   const buckets = new Map<string, ClosedTrade[]>();
   for (const t of closed) {
-    if (t.partial) continue;
+    // No partial filter — backend parity (each closed entry is a realized event).
     const key = t.setup_type ?? "untagged";
     const arr = buckets.get(key) ?? [];
     arr.push(t);
@@ -200,9 +248,9 @@ export function computeSetupTypeStats(closed: ClosedTrade[]): SetupTypeStats[] {
   const out: SetupTypeStats[] = [];
   for (const [setup_type, trades] of buckets) {
     const total = trades.length;
-    const wins = trades.filter((t) => (t.pnl_pct ?? 0) > 0).length;
-    const sumPnlPct = trades.reduce((s, t) => s + (t.pnl_pct ?? 0), 0);
-    const sumPnlEur = trades.reduce((s, t) => s + (t.pnl_eur ?? 0), 0);
+    const wins = trades.filter((t) => effPct(t) > 0).length;
+    const sumPnlPct = trades.reduce((s, t) => s + effPct(t), 0);
+    const sumPnlEur = trades.reduce((s, t) => s + effEur(t), 0);
     out.push({
       setup_type,
       total,

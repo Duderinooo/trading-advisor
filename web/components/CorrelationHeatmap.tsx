@@ -15,10 +15,20 @@ function colorFor(c: number | null): string {
 
 export default function CorrelationHeatmap({
   matrix,
+  openTickers,
 }: {
   matrix?: CorrelationMatrix | null;
+  // Render-side guard: filter snapshot down to tickers still open. Bug 2026-05-07:
+  // matrix persisted SIE.DE + RWE.DE for 2 days after both were closed because
+  // /close path didn't refresh the snapshot. Even with the backend fix, this
+  // guard protects against any stale snapshot reaching the dashboard.
+  openTickers?: string[];
 }) {
-  if (!matrix || matrix.tickers.length < 2) {
+  const openSet = new Set((openTickers ?? []).map((t) => t.toUpperCase()));
+  const filteredTickers = matrix
+    ? matrix.tickers.filter((t) => !openTickers || openSet.has(t.toUpperCase()))
+    : [];
+  if (!matrix || filteredTickers.length < 2) {
     return (
       <div className="text-sm text-zinc-500">
         Min. 2 offene Positionen für Korrelations-Snapshot. Snapshot wird beim
@@ -26,7 +36,8 @@ export default function CorrelationHeatmap({
       </div>
     );
   }
-  const { tickers, matrix: m, lookback_days, computed_at } = matrix;
+  const tickers = filteredTickers;
+  const { matrix: m, lookback_days, computed_at } = matrix;
 
   return (
     <div className="space-y-2">

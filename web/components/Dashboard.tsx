@@ -139,12 +139,12 @@ export default function Dashboard({
     [curveKey],
   );
   const stats = useMemo(
-    () => computeHitStats(portfolio.closed_trades),
-    [portfolio.closed_trades],
+    () => computeHitStats(portfolio.closed_trades, portfolio.cash_movements ?? []),
+    [portfolio.closed_trades, portfolio.cash_movements],
   );
   const setupStats = useMemo(
-    () => computeSetupTypeStats(portfolio.closed_trades),
-    [portfolio.closed_trades],
+    () => computeSetupTypeStats(portfolio.closed_trades, portfolio.cash_movements ?? []),
+    [portfolio.closed_trades, portfolio.cash_movements],
   );
   const premortem = useMemo(
     () => preMortemAccuracy(portfolio.closed_trades),
@@ -440,7 +440,10 @@ export default function Dashboard({
             <WhatIfShock open={portfolio.open_trades} />
           </Card>
           <Card title="Correlation Heatmap (open positions)">
-            <CorrelationHeatmap matrix={portfolio.correlation_matrix} />
+            <CorrelationHeatmap
+              matrix={portfolio.correlation_matrix}
+              openTickers={portfolio.open_trades.map((t) => t.ticker)}
+            />
           </Card>
         </CollapsibleSection>
 

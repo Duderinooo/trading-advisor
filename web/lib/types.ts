@@ -154,6 +154,13 @@ export type CashMovement = {
   kind: "dividend";
   ticker?: string;
   note?: string;
+  // Composite-key link to a closed trade so dividend folds into effective P&L.
+  linked_trade?: {
+    ticker: string;
+    entry_date: string | null;
+    exit_date: string | null;
+    status: string;
+  };
 };
 
 export type AnalyzeTrace = {

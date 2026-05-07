@@ -971,6 +971,19 @@ async def close_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         portfolio["open_trades"] = open_trades
 
         maintain_drawdown_state(portfolio)
+        # Refresh correlation matrix: when this close drops below 2 open positions,
+        # snapshot becomes meaningless. Above 2, matrix needs to drop the closed
+        # ticker. Bug 2026-05-07: SIE.DE + RWE.DE matrix persisted in dashboard
+        # for 2 days after both were closed because /close path didn't refresh.
+        try:
+            from core.analyzer import compute_correlation_snapshot
+            snap = compute_correlation_snapshot(portfolio)
+            if snap is None:
+                portfolio.pop("correlation_matrix", None)
+            else:
+                portfolio["correlation_matrix"] = snap
+        except Exception:
+            logger.exception("Correlation snapshot refresh failed at /close")
         save_portfolio(portfolio)
         new_cash = portfolio["cash_eur"]
 
