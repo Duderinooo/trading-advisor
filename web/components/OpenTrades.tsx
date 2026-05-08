@@ -51,7 +51,12 @@ export default function OpenTrades({
         </thead>
         <tbody>
           {trades.map((t, i) => {
-            const size = t.size_eur ?? t.entry_price * t.shares;
+            // Always recompute from entry × shares to stay consistent with PnL
+            // calc below (also uses entry × shares). Bug 2026-05-08: stored
+            // size_eur was 125.65 from initial 25.13 entry, but entry_price was
+            // later corrected to 25.33 — display showed 25.33×5=126.65 next to
+            // size 125.65 (1ct off). Recomputing keeps row internally consistent.
+            const size = t.entry_price * t.shares;
             const rt = t.red_team_review;
             const rtTone =
               rt?.verdict === "WEAKEN"

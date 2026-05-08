@@ -479,7 +479,10 @@ export default function Dashboard({
           onToggle={() => setOpen((o) => ({ ...o, history: !o.history }))}
         >
           <Card title="Closed Trades (recent 25)">
-            <ClosedTrades trades={portfolio.closed_trades} />
+            <ClosedTrades
+              trades={portfolio.closed_trades}
+              movements={portfolio.cash_movements ?? []}
+            />
           </Card>
           <Card title="Backtest Replay (gates × closed trades)">
             <BacktestReport />

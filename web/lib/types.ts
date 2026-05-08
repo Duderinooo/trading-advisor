@@ -92,6 +92,13 @@ export type WatchLevel = {
   thesis?: string;
   valid_until?: string;
   source?: string;
+  // Compound-condition gates (Sonnet-Thesis-Pattern). Surfaced on dashboard so
+  // user can see why a watch isn't triggering — Bug 2026-05-07: INL.DE 11× missed
+  // confirm_close_above by 1 cent, but dashboard only showed trigger_price.
+  confirm_close_above?: number;
+  invalidate_below?: number;
+  min_volume_ratio?: number;
+  current_price?: number;
 };
 
 export type PendingRecommendation = {

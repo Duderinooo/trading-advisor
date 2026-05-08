@@ -1,10 +1,28 @@
-import type { ClosedTrade } from "@/lib/types";
+import type { CashMovement, ClosedTrade } from "@/lib/types";
+
+// Sum dividends linked to a trade (mirrors core.portfolio.trade_dividends).
+function tradeDivsEur(t: ClosedTrade, movements: CashMovement[]): number {
+  if (!movements.length) return 0;
+  let sum = 0;
+  for (const m of movements) {
+    if (m.kind !== "dividend") continue;
+    const link = m.linked_trade;
+    if (!link) continue;
+    if (link.ticker.toUpperCase() !== t.ticker.toUpperCase()) continue;
+    if (link.entry_date !== t.entry_date) continue;
+    if (link.exit_date !== t.exit_date) continue;
+    sum += Number(m.amount ?? 0);
+  }
+  return sum;
+}
 
 export default function ClosedTrades({
   trades,
+  movements = [],
   limit = 25,
 }: {
   trades: ClosedTrade[];
+  movements?: CashMovement[];
   limit?: number;
 }) {
   if (trades.length === 0) {
@@ -30,7 +48,16 @@ export default function ClosedTrades({
         </thead>
         <tbody>
           {recent.map((t, i) => {
-            const win = (t.pnl_pct ?? 0) > 0;
+            const divs = tradeDivsEur(t, movements);
+            const basePnlEur = Number(t.pnl_eur ?? 0);
+            const effPnlEur = basePnlEur + divs;
+            // Effective % uses size-from-entry-and-shares since size_eur isn't on
+            // ClosedTrade type.
+            const sizeEur = Number(t.entry_price ?? 0) * Number(t.shares ?? 0);
+            const basePnlPct = Number(t.pnl_pct ?? 0);
+            const effPnlPct =
+              divs && sizeEur > 0 ? basePnlPct + (divs / sizeEur) * 100 : basePnlPct;
+            const win = effPnlPct > 0;
             return (
               <tr
                 key={`${t.ticker}-${t.exit_date}-${i}`}
@@ -50,12 +77,22 @@ export default function ClosedTrades({
                 <td
                   className={`py-2 pr-3 font-medium ${win ? "text-emerald-400" : "text-rose-400"}`}
                 >
-                  {(t.pnl_pct ?? 0).toFixed(2)}%
+                  {effPnlPct.toFixed(2)}%
+                  {divs > 0 && (
+                    <span className="ml-1 text-[10px] text-emerald-300">
+                      (+€{divs.toFixed(2)} div)
+                    </span>
+                  )}
                 </td>
                 <td
                   className={`py-2 pr-3 ${win ? "text-emerald-400" : "text-rose-400"}`}
+                  title={
+                    divs > 0
+                      ? `Price ${basePnlEur.toFixed(2)} + Div ${divs.toFixed(2)} = ${effPnlEur.toFixed(2)}`
+                      : undefined
+                  }
                 >
-                  {(t.pnl_eur ?? 0).toFixed(2)}
+                  {effPnlEur.toFixed(2)}
                 </td>
                 <td className="py-2 pr-3 text-zinc-400 max-w-xs truncate">
                   {t.exit_reason ?? "—"}
