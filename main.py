@@ -1397,6 +1397,75 @@ def graceful_shutdown(signum, frame):
     sys.exit(0)
 
 
+def _startup_cleanup():
+    """Prune stale per-day fields that older code paths may have left behind.
+
+    Per-day prunes already happen on each save (seen_news, triggered_events,
+    triggered_price_alerts), but a long-uptime bot or a downgrade from an older
+    version can leave residue. One-shot scrub at startup keeps portfolio.json
+    lean without relying on every save path being perfect.
+    """
+    try:
+        with portfolio_lock:
+            pf = load_portfolio()
+            today = str(date.today())
+            yesterday = (date.today() - timedelta(days=1)).isoformat()
+            dirty = False
+
+            # seen_news: keep today + yesterday only
+            sn = pf.get("seen_news") or {}
+            if sn:
+                sn_pruned = {k: v for k, v in sn.items() if k in (today, yesterday)}
+                if len(sn_pruned) != len(sn):
+                    pf["seen_news"] = sn_pruned
+                    dirty = True
+                    logger.info("Cleanup: seen_news %d → %d days", len(sn), len(sn_pruned))
+
+            # triggered_events: keep today only (pruned on save but be defensive)
+            te = pf.get("triggered_events") or []
+            te_today = [t for t in te if t.get("date") == today]
+            if len(te_today) != len(te):
+                pf["triggered_events"] = te_today
+                dirty = True
+                logger.info("Cleanup: triggered_events %d → %d", len(te), len(te_today))
+
+            # triggered_price_alerts: keep today only
+            tpa = pf.get("triggered_price_alerts") or []
+            tpa_today = [t for t in tpa if t.get("date") == today]
+            if len(tpa_today) != len(tpa):
+                pf["triggered_price_alerts"] = tpa_today
+                dirty = True
+                logger.info("Cleanup: triggered_price_alerts %d → %d", len(tpa), len(tpa_today))
+
+            # geo_news_fired: prune entries older than 24h
+            gnf = pf.get("geo_news_fired") or {}
+            if gnf:
+                cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
+                gnf_pruned = {k: v for k, v in gnf.items() if v > cutoff}
+                if len(gnf_pruned) != len(gnf):
+                    pf["geo_news_fired"] = gnf_pruned
+                    dirty = True
+                    logger.info("Cleanup: geo_news_fired %d → %d entries",
+                                len(gnf), len(gnf_pruned))
+
+            # equity_history: prune to 14d rolling
+            eh = pf.get("equity_history") or []
+            if eh:
+                cutoff_eh = (datetime.now() - timedelta(days=14)).strftime("%Y-%m-%d %H:%M")
+                eh_pruned = [p for p in eh if (p.get("ts") or "") >= cutoff_eh]
+                if len(eh_pruned) != len(eh):
+                    pf["equity_history"] = eh_pruned
+                    dirty = True
+                    logger.info("Cleanup: equity_history %d → %d points",
+                                len(eh), len(eh_pruned))
+
+            if dirty:
+                save_portfolio(pf)
+                logger.info("✅ Startup cleanup persisted")
+    except Exception:
+        logger.exception("Startup cleanup failed (non-fatal)")
+
+
 def main():
     """Main entry point."""
     signal.signal(signal.SIGINT, graceful_shutdown)
@@ -1417,6 +1486,9 @@ def main():
     )
     logger.info("Weekend News Scan: Sonntag 18-22 CET (geo-news catch-up)")
     logger.info("=" * 50)
+
+    # One-shot scrub of per-day fields that may have accumulated across restarts.
+    _startup_cleanup()
 
     # Background Telegram listener for /confirm, /close, /positions, /cancel
     start_listener_thread()
@@ -1492,12 +1564,14 @@ def main():
                     # /close handler. Insight: where would 1-bar-tighter SL have
                     # caught more profit, where would looser SL have prevented stops.
                     # build_trade_dict seeds both at entry; we only ratchet here.
+                    _unrealized_eur = 0.0
                     for _ot in _pf.get("open_trades", []) or []:
                         _tk = (_ot.get("ticker") or "").upper()
                         _live = _live_prices.get(_tk)
                         if not isinstance(_live, (int, float)) or _live <= 0:
                             continue
                         _entry = float(_ot.get("entry_price") or 0)
+                        _shares = float(_ot.get("shares") or 0)
                         if _entry <= 0:
                             continue
                         _mae = _ot.get("mae", _entry)
@@ -1506,6 +1580,48 @@ def main():
                             _ot["mae"] = round(_live, 4)
                         if _live > _mfe:
                             _ot["mfe"] = round(_live, 4)
+                        if _shares > 0:
+                            _unrealized_eur += (_live - _entry) * _shares
+
+                    # Equity history: append a snapshot every heartbeat so the
+                    # dashboard can render an intraday equity curve, not just a
+                    # static line connecting realized events. Pruned to last 14
+                    # days (rolling window). Skip if no live quotes — keeps the
+                    # series clean across off-hours / LS-TC outages instead of
+                    # padding with stale points.
+                    if _live_prices:
+                        _starting = float(
+                            _pf.get("total_capital_eur", config.BUDGET_EUR)
+                            or config.BUDGET_EUR
+                        )
+                        _realized = sum(
+                            float(t.get("pnl_eur") or 0)
+                            for t in _pf.get("closed_trades", []) or []
+                        )
+                        _movements = sum(
+                            float(m.get("amount") or 0)
+                            for m in _pf.get("cash_movements", []) or []
+                        )
+                        _equity_now = round(
+                            _starting + _realized + _movements + _unrealized_eur, 2,
+                        )
+                        _hist = _pf.get("equity_history", []) or []
+                        # Dedup: skip append if same minute already recorded
+                        # (heartbeat throttle is 60s but if it overshoots we
+                        # avoid duplicates).
+                        _ts = now.strftime("%Y-%m-%d %H:%M")
+                        if not _hist or _hist[-1].get("ts") != _ts:
+                            _hist.append({
+                                "ts": _ts,
+                                "equity": _equity_now,
+                                "unrealized": round(_unrealized_eur, 2),
+                                "market_hours": is_market_hours(),
+                            })
+                        # Prune to last 14 days. ts string sorts lexicographically.
+                        _cutoff = (now - timedelta(days=14)).strftime("%Y-%m-%d %H:%M")
+                        _hist = [p for p in _hist if (p.get("ts") or "") >= _cutoff]
+                        _pf["equity_history"] = _hist
+
                     save_portfolio(_pf)
                 last_heartbeat_write = time.monotonic()
             except Exception:

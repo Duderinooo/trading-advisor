@@ -191,6 +191,13 @@ export type AnalyzeTrace = {
   final_tickers?: string[];
 };
 
+export type EquitySnapshot = {
+  ts: string;             // "%Y-%m-%d %H:%M"
+  equity: number;         // cash + realized + unrealized
+  unrealized: number;
+  market_hours?: boolean;
+};
+
 export type Portfolio = {
   open_trades: OpenTrade[];
   closed_trades: ClosedTrade[];
@@ -199,6 +206,7 @@ export type Portfolio = {
   cash_eur: number;
   total_capital_eur: number;
   cash_movements?: CashMovement[];
+  equity_history?: EquitySnapshot[];
   last_analysis?: string;
   last_updated?: string;
   notes?: string;

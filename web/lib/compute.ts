@@ -15,7 +15,14 @@ import type {
 } from "./types";
 
 export function computeEquityCurve(p: Portfolio): EquityPoint[] {
-  type Event = { date: string; delta: number };
+  // Two data sources merged:
+  //   1. realized events (closed_trade exits + cash_movements) — the historical
+  //      anchors. Each event jumps the curve at its date.
+  //   2. equity_history snapshots — minute-by-minute heartbeat samples. These
+  //      densify the curve into a real intraday line instead of a step plot.
+  // Both feed a unified sorted event stream; we walk it forward maintaining
+  // running peak + drawdown.
+  type Event = { date: string; equity?: number; delta?: number };
   const events: Event[] = [];
   for (const t of p.closed_trades) {
     if (!t.exit_date) continue;
@@ -25,6 +32,10 @@ export function computeEquityCurve(p: Portfolio): EquityPoint[] {
     if (!m.date) continue;
     events.push({ date: m.date, delta: Number(m.amount ?? 0) });
   }
+  for (const s of p.equity_history ?? []) {
+    if (!s.ts) continue;
+    events.push({ date: s.ts, equity: Number(s.equity ?? 0) });
+  }
   events.sort((a, b) => a.date.localeCompare(b.date));
 
   let equity = p.total_capital_eur;
@@ -33,7 +44,13 @@ export function computeEquityCurve(p: Portfolio): EquityPoint[] {
     { date: "start", equity, peak, dd_pct: 0 },
   ];
   for (const e of events) {
-    equity += e.delta;
+    if (typeof e.equity === "number") {
+      // Snapshot — set absolute equity (already includes realized + unrealized)
+      equity = e.equity;
+    } else if (typeof e.delta === "number") {
+      // Delta event (closed_trade or movement) — additive
+      equity += e.delta;
+    }
     if (equity > peak) peak = equity;
     const dd_pct = peak > 0 ? ((peak - equity) / peak) * 100 : 0;
     points.push({
@@ -44,9 +61,8 @@ export function computeEquityCurve(p: Portfolio): EquityPoint[] {
     });
   }
 
-  // Live "now" point: realized equity + unrealized PnL from open trades.
-  // Rounded to whole € so cent-level price ticks don't cause Recharts to
-  // re-paint every poll (curveKey in Dashboard hashes the rounded value).
+  // Live "now" point: only append if there's no recent equity_history snapshot
+  // (within last 5 min). Avoids double-rendering when bot heartbeat is fresh.
   const liveQuotes = p.heartbeat?.live_quotes ?? {};
   const fallbackPrices = p.heartbeat?.prices ?? {};
   let unrealized = 0;
@@ -62,7 +78,16 @@ export function computeEquityCurve(p: Portfolio): EquityPoint[] {
       liveCount += 1;
     }
   }
-  if (liveCount > 0) {
+  const recentHistory = (p.equity_history ?? []).slice(-1)[0];
+  const recentTs = recentHistory?.ts;
+  let recentFresh = false;
+  if (recentTs) {
+    const recentMs = new Date(recentTs.replace(" ", "T")).getTime();
+    if (Number.isFinite(recentMs)) {
+      recentFresh = Date.now() - recentMs < 5 * 60 * 1000;
+    }
+  }
+  if (liveCount > 0 && !recentFresh) {
     const liveEquity = Math.round(equity + unrealized);
     const livePeak = Math.max(peak, liveEquity);
     const dd_pct = livePeak > 0 ? ((livePeak - liveEquity) / livePeak) * 100 : 0;
