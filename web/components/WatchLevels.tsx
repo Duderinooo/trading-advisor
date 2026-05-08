@@ -79,41 +79,59 @@ export default function WatchLevels({ levels, liveQuotes }: Props) {
     return <div className="text-sm text-zinc-500">Keine aktiven Watch-Level.</div>;
   }
   return (
-    <ul className="space-y-2">
+    <ul className="divide-y divide-zinc-900/60">
       {levels.map((w, i) => {
         const lq = liveQuotes?.[w.ticker];
         const live = lq?.price ?? null;
         const dist = distancePct(live, w.trigger_price);
+        const distNeg = dist?.startsWith("-");
+        const thesis = w.thesis || w.note;
         return (
           <li
             key={`${w.ticker}-${w.type}-${i}`}
-            className="flex items-start gap-3 text-sm flex-wrap"
+            className="py-3 first:pt-0 last:pb-0 space-y-1.5"
           >
-            <span className="font-mono text-zinc-100 min-w-20">{w.ticker}</span>
-            <span className="text-xs px-2 py-0.5 rounded bg-zinc-800 text-zinc-300">
-              {w.type}
-            </span>
-            <span className="text-zinc-300">@ {w.trigger_price}</span>
-            {live != null && (
-              <span className="text-xs font-mono text-zinc-300">
-                live {fmtPrice(live)}
-                {dist && (
-                  <span
-                    className={
-                      dist.startsWith("-")
-                        ? "ml-1 text-rose-400"
-                        : "ml-1 text-emerald-400"
-                    }
-                  >
-                    ({dist})
-                  </span>
-                )}
-                {lq?.ts && <span className="ml-1 text-zinc-600">{lq.ts}</span>}
+            {/* Row 1: header */}
+            <div className="flex items-center gap-3 flex-wrap text-sm">
+              <span className="font-mono text-zinc-100 font-medium">{w.ticker}</span>
+              <span className="text-[11px] px-2 py-0.5 rounded bg-zinc-800 text-zinc-300">
+                {w.type}
               </span>
-            )}
-            <ConditionPills w={w} live={live} />
-            {w.note && (
-              <span className="text-zinc-500 text-xs flex-1">{w.note}</span>
+              <span className="text-zinc-400 text-xs">trigger</span>
+              <span className="text-zinc-200 tabular-nums">€{w.trigger_price}</span>
+              {live != null && (
+                <>
+                  <span className="text-zinc-700">·</span>
+                  <span className="text-zinc-400 text-xs">live</span>
+                  <span className="font-mono text-zinc-200 tabular-nums">
+                    €{fmtPrice(live)}
+                  </span>
+                  {dist && (
+                    <span
+                      className={`tabular-nums text-xs ${distNeg ? "text-rose-400" : "text-emerald-400"}`}
+                    >
+                      ({dist})
+                    </span>
+                  )}
+                  {lq?.ts && (
+                    <span className="ml-auto text-[11px] text-zinc-600 tabular-nums">
+                      {lq.ts}
+                    </span>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* Row 2: condition pills (full width, wraps if needed) */}
+            <div className="w-full">
+              <ConditionPills w={w} live={live} />
+            </div>
+
+            {/* Row 3: thesis / note (full width) */}
+            {thesis && (
+              <div className="w-full text-xs text-zinc-500 leading-relaxed">
+                {thesis}
+              </div>
             )}
           </li>
         );
