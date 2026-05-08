@@ -4,7 +4,7 @@
 
 Local-only, read-only dashboard for the Python bot in the parent dir. Single user, runs on `localhost:3000` via `npm run dev`. No deploy target, no prod build pipeline (yet).
 
-> Read `docs/ARCHITECTURE.md` for system overview and `docs/CONVENTIONS.md` for React/Next.js patterns used in this codebase **before writing or editing components**. Both files are short and load-bearing.
+> Read `docs/ARCHITECTURE.md` for system overview and `docs/CONVENTIONS.md` for React/Next.js patterns + best-practices used in this codebase **before writing or editing components**. Both files are load-bearing.
 
 ## Stack pinned in [package.json](package.json)
 
