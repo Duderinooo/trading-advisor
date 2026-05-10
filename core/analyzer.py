@@ -1564,6 +1564,11 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 f"{_rt_modes_str}\n"
             )
 
+        # TR-WKN line: surface Trade-Republic WKN if the yfinance ticker maps to
+        # a different listing on TR (e.g. 3OIL.MI yfinance-feed but A3GM4L on TR).
+        _wkn = config.TR_WKN_MAP.get(_ticker)
+        _wkn_line = f"\n📱 TR-WKN: `{_wkn}` (yfinance: {_ticker})" if _wkn else ""
+
         # Anchor message for reply-based /confirm. User replies `/confirm 3` on this post.
         # Schema header (🎯 ACTION | TICKER | SIZE) matches send_actionable() format so
         # all actionable telegrams visually rhyme. Rich body needed for /confirm flow.
@@ -1573,6 +1578,7 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             f"Conv {_conv}/5\n"
             f"SL €{_sl:.2f} | TP {_tp_str} | Risk €{_risk_eur:.2f} ({_risk_pct:.2f}% Kap.) | "
             f"Hold {_hmin}-{_hmax}d | Cash €{_cash:.0f}{_trail_line}"
+            f"{_wkn_line}"
             f"{_rt_block}\n"
             f"_Reply `/confirm` (auto={_shares_str}) oder `/confirm <stück> @<preis>` für override._"
         )
@@ -1791,10 +1797,13 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             )
             _pnl_str = f"{_pnl_pct:+.2f}%" if _pnl_pct is not None else "?"
             _urgency_emoji = {"now": "🚨", "today": "⚠️", "eod": "🕐"}.get(_eurg, "⚠️")
+            _exit_wkn = config.TR_WKN_MAP.get(_et)
+            _exit_wkn_line = f"\n📱 TR-WKN: `{_exit_wkn}`" if _exit_wkn else ""
             exit_msg_id = _notify(
                 f"🎯 *EXIT* | `{_et}` | {_urgency_emoji} {_eurg}\n"
                 f"Grund: {_ereason}\n"
-                f"Bestand: €{_orig_size:.0f} @ €{_orig_entry:.2f} | Jetzt: {_curr_str} ({_pnl_str})\n"
+                f"Bestand: €{_orig_size:.0f} @ €{_orig_entry:.2f} | Jetzt: {_curr_str} ({_pnl_str})"
+                f"{_exit_wkn_line}\n"
                 f"_Reply `/confirm` um auf TR zu schließen, dann `/close {_et} @PREIS [#tag]`._"
             )
             exit_persisted = {

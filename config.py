@@ -145,6 +145,7 @@ SECTOR_MAP = {
     "HEI.DE": "building_materials",  # legacy
     # Commodities (already risk-diversified by nature but track)
     "3OIL.MI": "oil",
+    "3BRL.MI": "oil",   # Brent 3x — same sector cluster as WTI for diversification gate
     "4GLD.DE": "gold",
     "EXX1.DE": "silver",
     "U3O8.DE": "uranium",
@@ -361,7 +362,10 @@ WATCHLIST = [
 # Alle via yfinance verifiziert!
 COMMODITIES = [
     # 🛢️ ÖL - Iran/Nahost/OPEC
-    "3OIL.MI",      # WisdomTree WTI 3x Long (Borsa Italiana, EUR ~€48; XETRA-Listing delisted/no yfinance feed)
+    # WTI + Brent 3x Long (Borsa Italiana yfinance-feed). User trades via TR-WKN
+    # A3GM4L (WTI) und A3GM4K (Brent) — gleiche ISIN/Vintage, einfach anderer Markt.
+    "3OIL.MI",      # WisdomTree WTI 3x Daily Long, ~€47, TR-WKN A3GM4L
+    "3BRL.MI",      # WisdomTree Brent 3x Daily Long, ~€54, TR-WKN A3GM4K
     
     # 🥇 GOLD - Safe Haven bei Krisen
     "4GLD.DE",      # Xetra-Gold - €130
@@ -390,6 +394,20 @@ COMMODITY_TRIGGERS = {
         "saudi", "saudi-arabien", "saudi arabia",
         "krieg", "war",
         "sanktion", "sanktionen", "sanctions",
+    ],
+    # Brent 3x: gleiche Geo-Trigger wie WTI (Märkte korreliert), Brent ist
+    # europe/middle-east-bias → leicht stärker auf MENA-news, daher zusätzlich
+    # russia/ukraine/north-sea Trigger.
+    "3BRL.MI": [
+        "iran", "iranian", "iranische", "iranisch",
+        "opec", "opec+",
+        "nahost", "middle east",
+        "öl", "ölpreis", "rohöl", "crude oil", "brent", "wti",
+        "saudi", "saudi-arabien", "saudi arabia",
+        "krieg", "war",
+        "sanktion", "sanktionen", "sanctions",
+        "russland", "russia", "ukraine",
+        "north sea", "nordsee",
     ],
     "4GLD.DE": [
         "rezession", "recession",
@@ -429,6 +447,15 @@ MARKET_INDICATORS = [
     "EQQQ.DE",      # Nasdaq 100 ETF
     "^VIX",         # Volatilitätsindex
 ]
+
+# TR-WKN mapping: yfinance-Ticker → Trade-Republic WKN für Telegram-alerts.
+# Notwendig wenn User-tradable-Listing andere ISIN/Vintage hat als yfinance-feed.
+# Beispiel: 3OIL.MI yfinance-listing = neue 2062-Vintage (auch auf Borsa Italiana),
+# aber user kauft auf TR via WKN — Alert zeigt WKN damit user direkt suchen kann.
+TR_WKN_MAP = {
+    "3OIL.MI": "A3GM4L",  # WisdomTree WTI 3x Daily Long
+    "3BRL.MI": "A3GM4K",  # WisdomTree Brent 3x Daily Long
+}
 
 # Mapping: Common names -> XETRA tickers (for convenience)
 TICKER_ALIASES = {

@@ -214,20 +214,33 @@ def _enrich_extras_for_add(parsed: dict, base_extras: dict, portfolio: dict | No
     look up the open trade and surface Bestand/SL so user has actionable context.
     Without this, ADD text-mode shows just '🎯 ADD | TICKER' with no size hint.
 
+    Also: inject TR-WKN for all actions if the ticker maps in `config.TR_WKN_MAP`.
+    User trades on TR via WKN, not yfinance ticker — alert must surface what to type
+    in the broker app.
+
     Pass `portfolio` if already loaded (e.g. by _parse_actionable) to avoid a duplicate
     file read on the hot path."""
+    enriched = dict(base_extras)
+
+    # WKN-injection for any action (ENTRY/EXIT/ADD/REDUCE) — only present when
+    # yfinance-ticker differs from TR-tradable WKN. Surfaced first so user sees it
+    # at a glance.
+    ticker = (parsed or {}).get("ticker", "").upper()
+    wkn = config.TR_WKN_MAP.get(ticker)
+    if wkn:
+        enriched = {"TR-WKN": wkn, **enriched}
+
     if (parsed or {}).get("action") != "ADD":
-        return base_extras
+        return enriched
     if portfolio is None:
         portfolio = load_portfolio()
     open_trade = next(
         (t for t in portfolio.get("open_trades", [])
-         if (t.get("ticker") or "").upper() == parsed["ticker"]),
+         if (t.get("ticker") or "").upper() == ticker),
         None,
     )
     if not open_trade:
-        return base_extras
-    enriched = dict(base_extras)
+        return enriched
     enriched["Bestand"] = (
         f"€{float(open_trade.get('size_eur') or 0):.0f} "
         f"@ €{float(open_trade.get('entry_price') or 0):.2f}"
