@@ -41,7 +41,7 @@ export function computeEquityCurve(p: Portfolio): EquityPoint[] {
   let equity = p.total_capital_eur;
   let peak = equity;
   const points: EquityPoint[] = [
-    { date: "start", equity, peak, dd_pct: 0 },
+    { ts: "start", date: "start", equity, peak, dd_pct: 0 },
   ];
   for (const e of events) {
     if (typeof e.equity === "number") {
@@ -53,7 +53,10 @@ export function computeEquityCurve(p: Portfolio): EquityPoint[] {
     }
     if (equity > peak) peak = equity;
     const dd_pct = peak > 0 ? ((peak - equity) / peak) * 100 : 0;
+    // ts preserves intraday HH:MM; date stays YYYY-MM-DD for sparkline filters.
+    const ts = e.date.includes(" ") ? e.date.replace(" ", "T") : e.date;
     points.push({
+      ts,
       date: e.date.split(" ")[0],
       equity: Math.round(equity * 100) / 100,
       peak: Math.round(peak * 100) / 100,
@@ -92,6 +95,7 @@ export function computeEquityCurve(p: Portfolio): EquityPoint[] {
     const livePeak = Math.max(peak, liveEquity);
     const dd_pct = livePeak > 0 ? ((livePeak - liveEquity) / livePeak) * 100 : 0;
     points.push({
+      ts: "now",
       date: "now",
       equity: liveEquity,
       peak: livePeak,
@@ -750,7 +754,7 @@ export type SparkPoint = { v: number };
 
 export function returnSpark(curve: EquityPoint[], n = 14): SparkPoint[] {
   // Use the equity curve's last n points (excluding the synthetic "start" anchor).
-  const real = curve.filter((p) => p.date !== "start");
+  const real = curve.filter((p) => p.ts !== "start");
   return real.slice(-n).map((p) => ({ v: p.equity }));
 }
 
@@ -797,28 +801,45 @@ export function filterEquityByTimeframe(
   tf: Timeframe,
 ): EquityPoint[] {
   if (tf === "ALL" || curve.length <= 1) return curve;
-  const days = tf === "1D" ? 1 : tf === "1W" ? 7 : tf === "1M" ? 30 : 365;
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - days);
-  cutoff.setHours(0, 0, 0, 0);
-  const cutoffISO = cutoff.toISOString().slice(0, 10);
 
-  // Find anchor: last point with date < cutoff so curve doesn't start at 0.
+  // 1D uses a rolling 24h window against the full ISO ts (preserves HH:MM
+  // granularity). 1W/1M/1Y compare on the YYYY-MM-DD prefix.
+  const isIntraday = tf === "1D";
+  let cutoffKey: string;
+  let pointKey: (p: EquityPoint) => string;
+  if (isIntraday) {
+    cutoffKey = new Date(Date.now() - 24 * 3600_000).toISOString();
+    pointKey = (p) => (p.ts === "now" ? "9999" : p.ts);
+  } else {
+    const days = tf === "1W" ? 7 : tf === "1M" ? 30 : 365;
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - days);
+    cutoff.setHours(0, 0, 0, 0);
+    cutoffKey = cutoff.toISOString().slice(0, 10);
+    pointKey = (p) => (p.ts === "now" ? "9999" : p.date);
+  }
+
+  // Anchor: last point before the cutoff, so the line doesn't start at 0.
   let anchorIdx = -1;
   for (let i = 0; i < curve.length; i++) {
     const p = curve[i];
-    if (p.date === "start") {
+    if (p.ts === "start") {
       anchorIdx = i;
       continue;
     }
-    if (p.date < cutoffISO) anchorIdx = i;
+    if (p.ts === "now") continue;
+    if (pointKey(p) < cutoffKey) anchorIdx = i;
     else break;
   }
   const inRange = curve.filter(
-    (p) => p.date !== "start" && p.date >= cutoffISO,
+    (p) => p.ts !== "start" && pointKey(p) >= cutoffKey,
   );
   if (anchorIdx >= 0) {
-    return [{ ...curve[anchorIdx], date: cutoffISO }, ...inRange];
+    const anchor = curve[anchorIdx];
+    const projected: EquityPoint = isIntraday
+      ? { ...anchor, ts: cutoffKey, date: cutoffKey.slice(0, 10) }
+      : { ...anchor, ts: cutoffKey, date: cutoffKey };
+    return [projected, ...inRange];
   }
   return inRange.length > 0 ? inRange : curve.slice(-1);
 }

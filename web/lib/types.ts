@@ -283,7 +283,8 @@ export type ShockResult = {
 };
 
 export type EquityPoint = {
-  date: string;
+  ts: string;        // ISO datetime "2026-05-12T14:35:00" | sentinel "start" | "now"
+  date: string;      // YYYY-MM-DD | sentinel "start" | "now" — back-compat for sparkline filters
   equity: number;
   peak: number;
   dd_pct: number;
