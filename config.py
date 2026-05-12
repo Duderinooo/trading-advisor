@@ -160,7 +160,10 @@ MAX_RISK_PER_TRADE_PERCENT = 3.0  # Max % of capital to risk per trade
 # 2026-05-07: 10→30 nach decouple (MAX_SHARE_PRICE_EUR ersetzte 10% als share-price
 # filter). Bot's adaptive Kelly + ATR-Sizing soll Position-Größe steuern, nicht
 # eine harte 10%-Wand die jede mid-cap-Position abwürgt.
-MAX_POSITION_SIZE_PERCENT = 30.0  # Sanity ceiling — Kelly/ATR/Conviction drive real size
+# 2026-05-12: 30→20 — bei R-Multiple 0.81 (Loser > Winner) und 1k Kapital sind
+# 30% pro Position emotional + finanziell zu groß. 20% erlaubt mehr parallele
+# Trades = schnellere Sample-Akkumulation + Diversifikation.
+MAX_POSITION_SIZE_PERCENT = 20.0  # Sanity ceiling — Kelly/ATR/Conviction drive real size
 # Share-Price-Filter: Aktien teurer als €100 sind un-traded weil TR-SL nur auf
 # ganze Stücke geht. €100 Cap erlaubt ≥1 Stk auch bei kleinem Kapital. Entkoppelt
 # von Position-Size-Cap (war vorher beides aus MAX_POSITION_SIZE_PERCENT abgeleitet).
@@ -178,7 +181,9 @@ DRAWDOWN_RECOVERY_PERCENT = 2.0   # Resume after equity gains 2% back from halt 
 MAX_PORTFOLIO_HEAT_PERCENT = 10.0 # Max summed open risk (entry-SL) across all positions
 
 # Edge gate — require positive expectancy before recommending entry
-MIN_EXPECTED_EDGE = 0.04          # (p*b - (1-p)) ≥ 0.04 else force PASS
+# 2026-05-12: 0.04→0.06 — strenger Edge-Filter bei Fee-Drag von €2/Trade auf 1k.
+# Nur Trades mit dickem mathematischem Vorteil sollen durch — quality > quantity.
+MIN_EXPECTED_EDGE = 0.06          # (p*b - (1-p)) ≥ 0.06 else force PASS
 KELLY_FRACTION = 0.25             # Quarter-Kelly cap on size_pct
 
 # TR-Fixkosten pro Order: €1 Kauf + €1 Verkauf = €2 Roundtrip. Bei kleinen Positionen
@@ -233,7 +238,10 @@ MIN_BREAKOUT_VOLUME_RATIO = 1.0   # heute_volume / avg_volume
 
 # Relative-Strength Gate: für LONG-Entries muss Ticker ≥ Index in den letzten 20 Tagen
 # performen. Filter gegen Lagger im Aufwärtstrend. Override bei mean_reversion-Setups.
-MIN_RS_20D_VS_INDEX_PCT = -1.0    # ticker_perf_20d − spy_perf_20d ≥ −1pp (kleine Toleranz)
+# 2026-05-12: -1.0→0.0 — nur Outperformer-Stocks. Lagger im Aufwärtstrend
+# haben empirisch schlechtere Forward-Returns. PUM.DE entry hatte -0.57pp RS,
+# danach auf -5.8pp gecrasht → genau das was diese Schwelle verhindern soll.
+MIN_RS_20D_VS_INDEX_PCT = 0.0     # ticker_perf_20d − spy_perf_20d ≥ 0pp (strict, no tolerance)
 RS_INDEX_TICKER = "SPY5.DE"
 
 # Partial-TP-Execution: bei TP1-Hit X% der Position schließen, Rest mit BE-SL + Trailing weiterlaufen.
@@ -253,7 +261,10 @@ MAX_CORRELATED_HOLDINGS = 1       # max 1 hochkorrelierte Position erlaubt; ab 2
 
 # Confluence-Score: deterministisches Setup-Quality-Scoring.
 # Surface in Prompt, Sizing-konditional. Min-Score für Entry.
-MIN_CONFLUENCE_SCORE = 5          # von 10 möglichen — darunter PASS
+# 2026-05-12: 5→6 — strenger Quality-Filter. Bei R-Multiple 0.81 sind 5/10 Setups
+# nicht überzeugend genug für Fee-Drag-Hürde. Mean-Reversion-Family kriegt
+# weiterhin -2 Relax (siehe Gate 12) → de facto 4/10 für Reversion.
+MIN_CONFLUENCE_SCORE = 6          # von 10 möglichen — darunter PASS
 
 # Regime gate — RISK_OFF blocks new LONG entries (conservative full-trust bias)
 RISK_OFF_BLOCKS_LONGS = True
