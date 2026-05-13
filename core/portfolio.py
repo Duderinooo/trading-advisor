@@ -627,9 +627,14 @@ def compute_confluence(snap: dict, regime: str) -> dict:
     items["wk_trend_up"] = (wk_trend == "UP")
     items["price_gt_ma50"] = bool(price and ma50 and price > ma50)
     items["price_gt_ma20"] = bool(price and ma20 and price > ma20)
-    items["rsi_healthy"] = isinstance(rsi, (int, float)) and 40 <= rsi <= 70
+    # 2026-05-13: rsi_healthy 40-70 → 35-75. Pullbacks zu MA20 haben oft RSI 35-40
+    # (Setup-konform aber bestraft), Trending-Stocks oft RSI 70+ (Strength = Bestrafung).
+    items["rsi_healthy"] = isinstance(rsi, (int, float)) and 35 <= rsi <= 75
     items["macd_bullish"] = isinstance(macd, (int, float)) and isinstance(macd_sig, (int, float)) and macd > macd_sig
-    items["volume_ok"] = isinstance(vol_ratio, (int, float)) and vol_ratio >= 1.0
+    # 2026-05-13: volume_ok ≥ 1.0 → ≥ 0.8. Mid-Caps haben oft Vol-Ratio 0.6-1.0
+    # ohne dass Setup kaputt ist. Breakout-spezifische Vol-Confirm läuft separat
+    # über MIN_BREAKOUT_VOLUME_RATIO Gate (1.0) für setup_type=breakout_resistance.
+    items["volume_ok"] = isinstance(vol_ratio, (int, float)) and vol_ratio >= 0.8
     items["spread_tight"] = isinstance(spread, (int, float)) and spread <= config.MAX_SPREAD_PERCENT / 2
     items["rs_positive"] = isinstance(rs, (int, float)) and rs >= 0
     items["analyst_bullish"] = (rec_key in ("strong_buy", "buy")) or (
@@ -746,8 +751,13 @@ def compute_hit_stats(closed_trades: list[dict], cash_movements: list[dict] | No
         avg_p_pred = sum(t["p_win"] for t in scored) / n
         actual_win_rate = sum(t.get("outcome", 0) for t in scored) / n
         bias = avg_p_pred - actual_win_rate  # >0 = overconfident
-        # Suggested haircut: wenn overconfident >5%-Punkte, p_effective = p_raw - bias
-        haircut = round(bias, 3) if abs(bias) >= 0.05 else 0.0
+        # Haircut nur aktiv ab MIN_CALIBRATION_N — drunter ist bias = Noise.
+        # Stats werden trotzdem exposed (für Dashboard-Sichtbarkeit), aber Bot
+        # zieht keine p_win-Korrektur aus n<10 ab.
+        if n >= config.MIN_CALIBRATION_N:
+            haircut = round(bias, 3) if abs(bias) >= 0.05 else 0.0
+        else:
+            haircut = 0.0
         calibration = {
             "n": n,
             "avg_brier": round(avg_brier, 4),

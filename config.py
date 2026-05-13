@@ -186,6 +186,12 @@ MAX_PORTFOLIO_HEAT_PERCENT = 10.0 # Max summed open risk (entry-SL) across all p
 MIN_EXPECTED_EDGE = 0.06          # (p*b - (1-p)) ≥ 0.06 else force PASS
 KELLY_FRACTION = 0.25             # Quarter-Kelly cap on size_pct
 
+# 2026-05-13: Brier-Haircut auf p_win nur ab statistisch belastbarer Sample-Größe.
+# Bei n<10 ist bias = Noise — drunter würde haircut willkürlich p_win shiften.
+# Aktueller Bot-Stand n=1, bias=-0.38 → Bot würde ohne diesen Floor jedem p_win
+# +20% (gecapped) drauflegen basierend auf einem einzigen Brier-Sample.
+MIN_CALIBRATION_N = 10            # Min scored Trades für Haircut-Aktivierung
+
 # TR-Fixkosten pro Order: €1 Kauf + €1 Verkauf = €2 Roundtrip. Bei kleinen Positionen
 # (€80–100) frisst Fee einen merklichen Anteil am 1R-Gewinn → Gate fordert Brutto-
 # Gewinn @ TP1 ≥ Fees + MIN_NET_PROFIT_EUR. Verhindert Null-Summen-Trades nach Kosten.
