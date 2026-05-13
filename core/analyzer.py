@@ -359,6 +359,60 @@ def _trace_key(mode: str, event_context: str | None) -> str | None:
     return None
 
 
+def _exit_thesis_decay_confirmed(ticker: str, reason: str, market_data: dict) -> bool:
+    """Multi-signal confirmation for thesis-decay exit-recs.
+
+    Hard exits (SL-hit, earnings, TP, panic) always pass through. Thesis-decay
+    exits (confluence-downgrade, RS-deterioration, MA-break) need confirmation
+    via three intraday-signals to avoid whipsaw-exits on transient weakness.
+
+    Suppression triggers if ANY signal indicates "this is not a real exit-event":
+      - vol_ratio < EXIT_GATE_MIN_VOL_RATIO: thin volume = no capitulation
+      - rsi14 < EXIT_GATE_MIN_RSI: oversold-bounce-zone → wait
+      - vwap_dev_atr in [EXIT_GATE_MAX_VWAP_DEV_ATR, 0]: mild dip, not panic
+
+    Bot calls recommend_exit again next bar if signal persists, so this is a
+    soft delay, not a hard block. log_gate emits suppression-reason for /brain.
+    """
+    reason_lower = reason.lower()
+    HARD_EXIT_MARKERS = (
+        "sl-hit", "stop-loss", "stop loss", "sl hit",
+        "earnings", "panic", "tp1", "tp2", "take-profit", "take profit",
+    )
+    if any(m in reason_lower for m in HARD_EXIT_MARKERS):
+        return True
+
+    md = market_data.get(ticker) or {}
+
+    vol_ratio = md.get("volume_ratio")
+    if isinstance(vol_ratio, (int, float)) and vol_ratio < config.EXIT_GATE_MIN_VOL_RATIO:
+        log_gate(ticker, "exit_confirm_volume", True,
+                 f"vol_ratio {vol_ratio:.2f} < {config.EXIT_GATE_MIN_VOL_RATIO} — thin selloff, whipsaw-risk",
+                 {"vol_ratio": vol_ratio})
+        logger.info("Exit suppress %s: vol_ratio %.2f below %.2f",
+                    ticker, vol_ratio, config.EXIT_GATE_MIN_VOL_RATIO)
+        return False
+
+    rsi = md.get("rsi14")
+    if isinstance(rsi, (int, float)) and rsi < config.EXIT_GATE_MIN_RSI:
+        log_gate(ticker, "exit_confirm_rsi", True,
+                 f"rsi14 {rsi:.1f} < {config.EXIT_GATE_MIN_RSI} — oversold-bounce-zone, wait",
+                 {"rsi14": rsi})
+        logger.info("Exit suppress %s: rsi %.1f below %.1f",
+                    ticker, rsi, config.EXIT_GATE_MIN_RSI)
+        return False
+
+    vdev = md.get("vwap_dev_atr")
+    if isinstance(vdev, (int, float)) and config.EXIT_GATE_MAX_VWAP_DEV_ATR < vdev < 0:
+        log_gate(ticker, "exit_confirm_vwap", True,
+                 f"vwap_dev {vdev:+.2f}×ATR mild — not panic-selling, await sustained break",
+                 {"vwap_dev_atr": vdev})
+        logger.info("Exit suppress %s: vwap_dev %.2f mild", ticker, vdev)
+        return False
+
+    return True
+
+
 def _auto_paper_open(rec: dict) -> None:
     """Mirror a passing entry-rec into the paper portfolio for parallel learning.
 
@@ -1786,6 +1840,10 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
         elif not _ereason:
             log_gate(_et, "exit_no_reason", True, "reason empty", {})
             logger.info("Exit suppressed: %s no reason", _et)
+        elif not _exit_thesis_decay_confirmed(_et, _ereason, market_data):
+            # Multi-signal confirmation gate — siehe _exit_thesis_decay_confirmed.
+            # log_gate emitted inside helper so dashboard sees suppression reason.
+            logger.info("Exit suppressed: %s thesis-decay not confirmed", _et)
         else:
             _orig_entry = float(_epos.get("entry_price") or 0)
             _orig_size = float(_epos.get("size_eur") or 0)

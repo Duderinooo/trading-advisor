@@ -199,6 +199,15 @@ MIN_NET_PROFIT_EUR = 2.0          # Mindest-Netto-Gewinn nach Fees am TP1 (auf w
 EXIT_AUTO_DROP_GAP_MIN = 60             # Pause zwischen Reminder und Auto-Drop
 EXIT_REC_COOLDOWN_MIN_AFTER_DROP = 240  # 4h: keine neue Exit-Rec für Ticker nach Drop
 
+# Exit-Confirmation Gate (2026-05-13): thesis-decay Exit-Recs werden suppressed
+# wenn intraday-Snapshot nicht durch Multi-Signal bestätigt ist. Verhindert
+# Whipsaw-Exits wie PUM.DE 2026-05-12 (Bot exit @ 24.58 wegen RS-Collapse +
+# RSI 38, nächster Tag +4.8% Rip, TP1 26.73 fast getagged).
+# Hard-Exits (SL-hit, Earnings-Defense, Panic) bleiben unbeeinflusst.
+EXIT_GATE_MIN_VOL_RATIO = 0.5      # Echter Selloff = vol_ratio ≥ 0.5; drunter = niemand verkauft = whipsaw
+EXIT_GATE_MIN_RSI = 35             # RSI < 35 = oversold-Bounce-Zone → warten statt exit
+EXIT_GATE_MAX_VWAP_DEV_ATR = -0.5  # Price ≥ -0.5 ATR von VWAP = mild, kein Panic → warten
+
 # Execution-quality gates
 MAX_ENTRY_SLIPPAGE_PERCENT = 2.0  # /confirm @filled_price rejected if |filled-rec|/rec > 2%
 PENDING_REC_TTL_HOURS = 4         # Rec veraltet nach 4h — Preis weg, Kontext veraltet → reject
