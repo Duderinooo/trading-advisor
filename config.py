@@ -192,6 +192,13 @@ KELLY_FRACTION = 0.25             # Quarter-Kelly cap on size_pct
 # +20% (gecapped) drauflegen basierend auf einem einzigen Brier-Sample.
 MIN_CALIBRATION_N = 10            # Min scored Trades für Haircut-Aktivierung
 
+# 2026-05-17: Entry-Gate-Cooldown. RS-20d + edge sind intraday-stabil — failt ein
+# Ticker eines dieser Gates, ist Re-Eval in derselben Stunde sinnlos (BAS.DE 05-15:
+# 3× RS-Block in 2h). Cooldown markiert den Ticker im market_data-Dump, Claude
+# überspringt ihn. Hard-Gate bleibt als Backstop auf Live-Daten — improved sich RS
+# echt, lässt der Live-Check trotzdem durch (Cooldown ist Hinweis, kein Hard-Block).
+ENTRY_GATE_COOLDOWN_MIN = 240     # 4h: kein erneuter Entry-Eval-Hinweis nach RS/edge-Fail
+
 # TR-Fixkosten pro Order: €1 Kauf + €1 Verkauf = €2 Roundtrip. Bei kleinen Positionen
 # (€80–100) frisst Fee einen merklichen Anteil am 1R-Gewinn → Gate fordert Brutto-
 # Gewinn @ TP1 ≥ Fees + MIN_NET_PROFIT_EUR. Verhindert Null-Summen-Trades nach Kosten.

@@ -190,6 +190,52 @@ def exit_suppressed_tickers(portfolio: dict) -> set[str]:
     return out
 
 
+def record_entry_gate_cooldown(ticker: str, gate: str, reason: str) -> None:
+    """Persist an entry-gate cooldown after a RS/edge gate-block.
+
+    RS-20d and edge are intraday-stable — a ticker that just failed one will
+    fail it again next cycle. The cooldown lets the analyzer mark the ticker
+    in the market_data dump so Claude skips re-recommending it. The hard gate
+    still re-checks live data, so a genuine improvement is never missed.
+    """
+    t = (ticker or "").upper()
+    if not t or t == "?":
+        return
+    with portfolio_lock:
+        pf = load_portfolio()
+        cds = pf.setdefault("entry_gate_cooldowns", {})
+        cds[t] = {
+            "gate": gate,
+            "reason": reason,
+            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        save_portfolio(pf)
+
+
+def active_entry_gate_cooldowns(portfolio: dict) -> dict[str, dict]:
+    """Return {ticker: cooldown} for cooldowns younger than ENTRY_GATE_COOLDOWN_MIN.
+
+    Expired entries are skipped here and pruned lazily on the next
+    record_entry_gate_cooldown save.
+    """
+    out: dict[str, dict] = {}
+    cds = portfolio.get("entry_gate_cooldowns") or {}
+    if not cds:
+        return out
+    now = datetime.now()
+    for tkr, cd in cds.items():
+        ts = cd.get("ts")
+        if not ts:
+            continue
+        try:
+            age_min = (now - datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")).total_seconds() / 60.0
+        except (ValueError, TypeError):
+            continue
+        if age_min < config.ENTRY_GATE_COOLDOWN_MIN:
+            out[(tkr or "").upper()] = cd
+    return out
+
+
 def build_trade_dict(rec: dict, filled_price: float, shares: float,
                      entry_snapshot: dict | None = None,
                      paper: bool = False) -> dict:

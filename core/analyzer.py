@@ -39,6 +39,7 @@ from core.portfolio import (
     compute_confluence, format_confluence,
     compute_correlations, dd_scaling_factor,
     max_affordable_share_price_eur,
+    record_entry_gate_cooldown, active_entry_gate_cooldowns,
 )
 from core.market_data import (
     get_market_data, get_earnings_warnings, fetch_news, market_regime,
@@ -545,6 +546,21 @@ def analyze_portfolio(
         logger.info("Whole-share gate dropped (cap=€%.2f): %s",
                     _max_share_price, ", ".join(_dropped_unaffordable))
     market_data = _kept
+
+    # Entry-gate cooldown annotation: tickers that recently failed RS-20d or the
+    # edge gate get an `entry_cooldown` marker in their market_data dict. Claude
+    # sees it in the dump and skips re-recommending them. Both metrics are
+    # intraday-stable, so re-eval within the cooldown window is wasted work
+    # (BAS.DE 2026-05-15: 3× RS-block in 2h). The hard gate still re-checks live
+    # data downstream — a genuine RS improvement is never missed.
+    _entry_cooldowns = active_entry_gate_cooldowns(portfolio)
+    for _ct, _cd in _entry_cooldowns.items():
+        _cdata = market_data.get(_ct)
+        if isinstance(_cdata, dict) and not _cdata.get("error"):
+            _cdata["entry_cooldown"] = (
+                f"{_cd.get('gate')}: {_cd.get('reason')} — KEIN recommend_entry, "
+                f"Gate würde ohnehin blocken (Cooldown bis {config.ENTRY_GATE_COOLDOWN_MIN}min nach Fail)"
+            )
 
     regime = market_regime(market_ctx)
     cash = portfolio.get("cash_eur", config.BUDGET_EUR)
@@ -1239,11 +1255,14 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 "Entry BLOCKED by edge gate: edge=%.3f < %.3f (p_raw=%s, haircut=%s, p_adj=%s)",
                 _edge, config.MIN_EXPECTED_EDGE, _p_raw, _haircut, _p_adj,
             )
+            _edge_ticker = entry_recommendation.get("ticker", "?")
             log_gate(
-                entry_recommendation.get("ticker", "?"), "edge", True,
+                _edge_ticker, "edge", True,
                 f"edge {_edge:.3f} < {config.MIN_EXPECTED_EDGE}",
                 {"edge": round(_edge, 3), "p_raw": _p_raw, "p_adj": _p_adj, "haircut": _haircut},
             )
+            record_entry_gate_cooldown(_edge_ticker, "edge",
+                                       f"edge {_edge:.3f} < {config.MIN_EXPECTED_EDGE}")
             entry_recommendation = None
 
     if entry_recommendation:
@@ -1365,6 +1384,8 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                 log_gate(_t, "relative_strength", True,
                          f"rs_20d {_rs:+.1f}pp < {config.MIN_RS_20D_VS_INDEX_PCT}pp",
                          {"rs_20d": _rs, "setup": _setup})
+                record_entry_gate_cooldown(_t, "relative_strength",
+                                           f"rs_20d {_rs:+.1f}pp < {config.MIN_RS_20D_VS_INDEX_PCT}pp")
                 entry_recommendation = None
 
     if entry_recommendation:

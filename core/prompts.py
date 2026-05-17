@@ -102,6 +102,10 @@ _EXCLUDED_SUFFIX = (
 
 # Static section semantics — moved here so they live in the cached system prompt
 # instead of being re-sent in every user-message section header.
+_no_entry_windows_str = ", ".join(
+    f"{sh:02d}:{sm:02d}-{eh:02d}:{em:02d}"
+    for sh, sm, eh, em in config.NO_ENTRY_WINDOWS
+)
 _SECTION_LEGEND = f"""
 
 KONTEXT-SEKTIONEN (User-Message kann diese enthalten — wende Regeln stumm an):
@@ -120,7 +124,9 @@ KONTEXT-SEKTIONEN (User-Message kann diese enthalten — wende Regeln stumm an):
   - Kelly-Mult: adaptiver Kelly-Faktor aus Brier (0.10 schlecht kalibriert, 0.50 sehr gut). Beeinflusst max position-size.
 - ## CONFLUENCE-SCORES: 10 Items: wk_trend_up, MA-Stack, RSI healthy, MACD bullish, Volumen, Spread tight, RS vs Index ≥0, Analyst bullish, Regime RISK_ON. Score ≥7 = full Size, 5-6 = halbe Size, <5 = PASS. Tradeable-Schwelle: ≥{config.MIN_CONFLUENCE_SCORE}.
 - ## Earnings Kalender: Positionen in earnings-nahen Titeln prüfen — vor Earnings schließen oder Size reduzieren.
-- ## GAPS: Tickers mit Move ≥{config.GAP_FLAG_PERCENT}% vs prev close. POS = offene Position, WATCH = Watch Level."""
+- ## GAPS: Tickers mit Move ≥{config.GAP_FLAG_PERCENT}% vs prev close. POS = offene Position, WATCH = Watch Level.
+- market_data-Feld `entry_cooldown`: Ticker hat kürzlich RS- oder edge-Gate gefailt. KEIN recommend_entry darauf — Gate würde ohnehin blocken. Watch-Level-Pflege bleibt erlaubt.
+- KEINE-ENTRY-ZEITFENSTER (XETRA/US Auktions-Chop): {_no_entry_windows_str}. recommend_entry in diesen Fenstern wird geblockt — gar nicht erst empfehlen. SL/TP-Monitoring + Watch-Level laufen weiter."""
 
 STRATEGY_SYSTEM = STRATEGY_PROMPT + _EXCLUDED_SUFFIX + _SECTION_LEGEND
 
@@ -542,7 +548,15 @@ RECOMMEND_ENTRY_TOOL = {
         "properties": {
             "ticker": {"type": "string", "description": "XETRA-Ticker (z.B. NVD.DE)"},
             "entry_price": {"type": "number", "description": "Aktueller Entry-Preis"},
-            "stop_loss": {"type": "number", "description": "Stop-Loss Preis"},
+            "stop_loss": {
+                "type": "number",
+                "description": (
+                    "Stop-Loss Preis. PFLICHT: Abstand entry−SL muss 0.8×ATR bis "
+                    "3.0×ATR betragen (ATR14 steht im market_data-Dump). Zu enger SL "
+                    "(<0.8×ATR) = Whipsaw-garantiert → Gate blockt. Bei Low-ATR-Tickern "
+                    "(ATR%<2.5) explizit gegen ATR14 prüfen, nicht pauschal -3% setzen."
+                ),
+            },
             "take_profit": {
                 "type": "array",
                 "items": {"type": "number"},
