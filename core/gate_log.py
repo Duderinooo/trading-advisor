@@ -70,3 +70,63 @@ def read_gate_blocks(limit: int = 500) -> list[dict]:
     except OSError as e:
         logger.warning("gate_log read failed: %s", e)
         return []
+
+
+def summarize_gate_activity(day: str) -> dict:
+    """Aggregate one day's gate decisions for the EOD digest.
+
+    `day` is a "YYYY-MM-DD" prefix. Returns counts plus a `flags` list of
+    human-readable anomalies worth a human look — the meta-learning layer
+    that surfaces bot-logic bugs (repeated re-eval spam, Claude incoherence,
+    chronic SL-sizing). Returns {} if no events that day.
+    """
+    events = [e for e in read_gate_blocks(limit=2000)
+              if str(e.get("ts", "")).startswith(day)]
+    if not events:
+        return {}
+
+    blocks = [e for e in events if e.get("blocked")]
+    passes = [e for e in events if not e.get("blocked")]
+
+    by_gate: dict[str, int] = {}
+    pair_counts: dict[tuple, int] = {}   # (ticker, gate) -> block count
+    for e in blocks:
+        g = e.get("gate") or "?"
+        by_gate[g] = by_gate.get(g, 0) + 1
+        key = ((e.get("ticker") or "?"), g)
+        pair_counts[key] = pair_counts.get(key, 0) + 1
+
+    flags: list[str] = []
+
+    # Re-eval spam: same ticker + same gate blocked ≥3× in one day. RS/edge are
+    # intraday-stable — repeated blocks mean wasted Claude recs (cooldown target).
+    for (tkr, gate), n in sorted(pair_counts.items(), key=lambda kv: -kv[1]):
+        if n >= 3:
+            flags.append(
+                f"{tkr} × {gate} {n}× — Re-Eval-Spam (Cooldown sollte greifen)"
+            )
+
+    # Claude incoherence: recommend_exit on a ticker with no open position.
+    no_pos = sorted({e.get("ticker") for e in blocks
+                     if e.get("gate") == "exit_no_position"})
+    for tkr in no_pos:
+        flags.append(f"{tkr} exit_no_position — Claude empfahl Exit ohne Position")
+
+    # Chronic SL-sizing: same ticker hits sl_distance ≥2× — Claude sets SL too
+    # tight/wide for that name repeatedly (prompt-quality signal, not a one-off).
+    sl_by_ticker: dict[str, int] = {}
+    for e in blocks:
+        if e.get("gate") == "sl_distance":
+            t = e.get("ticker") or "?"
+            sl_by_ticker[t] = sl_by_ticker.get(t, 0) + 1
+    for tkr, n in sl_by_ticker.items():
+        if n >= 2:
+            flags.append(f"{tkr} × sl_distance {n}× — Claude SL-Sizing-Pattern")
+
+    return {
+        "day": day,
+        "n_blocks": len(blocks),
+        "n_passes": len(passes),
+        "by_gate": dict(sorted(by_gate.items(), key=lambda kv: -kv[1])),
+        "flags": flags,
+    }

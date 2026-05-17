@@ -61,7 +61,7 @@ from core.api_usage import (
     get_minutes_since_last_analysis,
 )
 from core.auto_kill import maybe_auto_kill, check_macro_shock
-from core.gate_log import read_gate_blocks
+from core.gate_log import read_gate_blocks, summarize_gate_activity
 
 __all__ = [
     # portfolio
@@ -91,4 +91,5 @@ __all__ = [
     "can_make_api_call", "get_daily_usage", "get_minutes_since_last_analysis",
     # auto kill + gate log
     "maybe_auto_kill", "check_macro_shock", "read_gate_blocks",
+    "summarize_gate_activity",
 ]
