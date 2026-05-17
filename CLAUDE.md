@@ -100,8 +100,18 @@ Do **not** call Opus from this bot — per-call cost doesn't justify it at €1k
 
 ## Test surface
 
-No test suite. Verify changes with:
+`tests/` — stdlib `unittest` suite, pure-logic only (no network, no `portfolio.json` mutation). Run from the repo root:
+```
+./venv/bin/python -m unittest discover -s tests -v
+```
+Smoke-check imports separately:
 ```
 ./venv/bin/python -c "import main, telegram_listener; from core import *; print('OK')"
 ```
-For logic changes, write a small inline assertion block (see how `compute_hit_stats` was smoke-tested) rather than introducing pytest.
+
+Scope is deliberately limited to pure functions in `core.portfolio` / `core.events` / `core.livefeed` / `macro` — position sizing, risk/edge gates, confluence, correlation, hit-stats, keyword/headline matching, TP/trailing-stop transitions. I/O paths (`load/save_portfolio`, Claude calls, Telegram handlers, `market_data` fetch, `main.py` loop) are **not** covered — testing them needs heavy mocking and the tests turn brittle.
+
+Rules for new tests:
+- Reference `config.*` constants, never hard-code gate thresholds — tests must survive config tuning.
+- Adding a pure function → add its tests to the matching `tests/test_*.py`.
+- Touching an I/O function is still verified by the import smoke-check + a small inline assertion block, not the suite.
