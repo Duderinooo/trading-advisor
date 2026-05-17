@@ -608,6 +608,93 @@ export function aggregateGateBlocks(blocks: GateBlock[]): GateAttribution[] {
   return out.sort((a, b) => b.blocks - a.blocks);
 }
 
+// ---------- Gate-activity day digest (bug-hunting meta-review) ----------
+
+export type GateActivityDay = {
+  day: string;                              // YYYY-MM-DD
+  nBlocks: number;
+  nPasses: number;
+  byGate: Array<{ gate: string; count: number }>;
+  flags: string[];                          // human-readable anomalies
+};
+
+// One day's gate decisions aggregated + scanned for anomalies worth a human
+// look. The flags are the bug-hunting layer: re-eval spam, Claude incoherence,
+// chronic SL-sizing. `day` is a YYYY-MM-DD prefix. Returns null if no events.
+export function summarizeGateActivityDay(
+  blocks: GateBlock[],
+  day: string,
+): GateActivityDay | null {
+  const events = blocks.filter((e) => (e.ts ?? "").startsWith(day));
+  if (events.length === 0) return null;
+
+  const blocked = events.filter((e) => e.blocked);
+  const passed = events.filter((e) => !e.blocked);
+
+  const gateCounts = new Map<string, number>();
+  const pairCounts = new Map<string, number>();   // `${ticker}|${gate}`
+  const slByTicker = new Map<string, number>();
+  for (const e of blocked) {
+    const gate = e.gate || "?";
+    const ticker = e.ticker || "?";
+    gateCounts.set(gate, (gateCounts.get(gate) ?? 0) + 1);
+    const pk = `${ticker}|${gate}`;
+    pairCounts.set(pk, (pairCounts.get(pk) ?? 0) + 1);
+    if (gate === "sl_distance") {
+      slByTicker.set(ticker, (slByTicker.get(ticker) ?? 0) + 1);
+    }
+  }
+
+  const flags: string[] = [];
+
+  // Re-eval spam: same ticker + same gate blocked ≥3× — RS/edge are intraday-
+  // stable, so repeats mean wasted Claude recs. The entry-gate cooldown should
+  // suppress this; a persisting flag means the cooldown is not working.
+  for (const [pk, n] of [...pairCounts.entries()].sort((a, b) => b[1] - a[1])) {
+    if (n >= 3) {
+      const [ticker, gate] = pk.split("|");
+      flags.push(`${ticker} × ${gate} ${n}× — Re-Eval-Spam (Cooldown sollte greifen)`);
+    }
+  }
+
+  // Claude incoherence: recommend_exit on a ticker with no open position.
+  const noPos = [...new Set(
+    blocked.filter((e) => e.gate === "exit_no_position").map((e) => e.ticker),
+  )].sort();
+  for (const ticker of noPos) {
+    flags.push(`${ticker} exit_no_position — Claude empfahl Exit ohne Position`);
+  }
+
+  // Chronic SL-sizing: same ticker hits sl_distance ≥2× — repeated SL-distance
+  // misses on one name = a prompt-quality signal, not a one-off.
+  for (const [ticker, n] of slByTicker.entries()) {
+    if (n >= 2) {
+      flags.push(`${ticker} × sl_distance ${n}× — Claude SL-Sizing-Pattern`);
+    }
+  }
+
+  return {
+    day,
+    nBlocks: blocked.length,
+    nPasses: passed.length,
+    byGate: [...gateCounts.entries()]
+      .map(([gate, count]) => ({ gate, count }))
+      .sort((a, b) => b.count - a.count),
+    flags,
+  };
+}
+
+// Distinct YYYY-MM-DD days present in the gate-log, newest first, capped to
+// `limit`. Drives the multi-day gate-activity review.
+export function recentGateDays(blocks: GateBlock[], limit = 7): string[] {
+  const days = new Set<string>();
+  for (const b of blocks) {
+    const d = (b.ts ?? "").slice(0, 10);
+    if (d.length === 10) days.add(d);
+  }
+  return [...days].sort((a, b) => b.localeCompare(a)).slice(0, limit);
+}
+
 // ---------- Calibration bins (predicted p_win vs realized win-rate) ----------
 
 const BINS: Array<[number, number]> = [

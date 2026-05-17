@@ -12,12 +12,20 @@ export default function LogsPage() {
             Tail von bot.log und bot.err — live aus Working Dir
           </p>
         </div>
-        <a
-          href="/"
-          className="text-xs px-3 py-1.5 rounded border border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700"
-        >
-          ← Dashboard
-        </a>
+        <div className="flex items-center gap-3">
+          <a
+            href="/"
+            className="text-xs px-3 py-1.5 rounded border border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700"
+          >
+            ← Dashboard
+          </a>
+          <a
+            href="/learning"
+            className="text-xs px-3 py-1.5 rounded border border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700"
+          >
+            Learning →
+          </a>
+        </div>
       </header>
       <main className="p-6 max-w-7xl mx-auto">
         <LogsViewer />

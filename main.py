@@ -413,75 +413,6 @@ def _mark_eod_summary_done():
     save_portfolio(portfolio)
 
 
-def _build_learning_digest(portfolio: dict, compute_hit_stats) -> list[str]:
-    """Trade-side meta-stats for the EOD digest: mistake-class mix, calibration
-    drift, pre-mortem accuracy, active self-calibration suggestion. Returns []
-    if the sample is too thin to say anything."""
-    stats = compute_hit_stats(
-        portfolio.get("closed_trades", []), portfolio.get("cash_movements", []),
-    )
-    if not stats:
-        n_closed = len(portfolio.get("closed_trades", []))
-        return [f"Sample zu klein ({n_closed} closed, <3) — noch nichts zu lernen."]
-
-    lines: list[str] = []
-
-    mc = stats.get("mistake_classes") or {}
-    if mc:
-        mix = ", ".join(f"{c} {n}" for c, n in sorted(mc.items(), key=lambda kv: -kv[1]))
-        lines.append(f"Mistakes (last 20): {mix}")
-    else:
-        lines.append("Mistakes: keine getaggten Losses")
-
-    cal = stats.get("calibration")
-    if cal:
-        hc = cal.get("haircut") or 0.0
-        n = cal.get("n", 0)
-        if hc:
-            hc_str = f"Haircut {hc:+.2f} aktiv"
-        else:
-            hc_str = f"Haircut inaktiv (n<{config.MIN_CALIBRATION_N})" if n < config.MIN_CALIBRATION_N else "Haircut 0 (gut kalibriert)"
-        lines.append(
-            f"Calibration: n={n}, bias {cal.get('bias', 0):+.2f}, "
-            f"Brier {cal.get('avg_brier', 0):.3f} — {hc_str}"
-        )
-
-    pm = stats.get("premortem_stats")
-    if pm:
-        lines.append(f"Pre-Mortem-Accuracy: {pm.get('accuracy_pct', 0)}% (n={pm.get('n', 0)})")
-
-    sugg = stats.get("class_suggestion")
-    if sugg:
-        lines.append(f"⚙️ Vorschlag: {sugg}")
-
-    return lines
-
-
-def _build_gate_activity_digest(today: str, summarize_gate_activity) -> list[str]:
-    """Bot-decision meta-review for the EOD digest: per-gate block counts plus
-    flagged anomalies (re-eval spam, Claude incoherence, chronic SL-sizing).
-    This is the bug-hunting layer — it surfaces bot-logic issues for review."""
-    summary = summarize_gate_activity(today)
-    if not summary:
-        return ["Keine Gate-Events heute."]
-
-    lines = [f"Blocks: {summary['n_blocks']} | Passes: {summary['n_passes']}"]
-
-    by_gate = summary.get("by_gate") or {}
-    if by_gate:
-        top = ", ".join(f"{g} ×{n}" for g, n in list(by_gate.items())[:5])
-        lines.append(f"Gates: {top}")
-
-    flags = summary.get("flags") or []
-    if flags:
-        for f in flags:
-            lines.append(f"⚠️ {f}")
-    else:
-        lines.append("✅ keine Anomalien")
-
-    return lines
-
-
 def run_eod_summary():
     """One-shot EOD digest: realized P&L, open positions w/ unrealized, gates state."""
     if _eod_summary_done_today():
@@ -511,7 +442,7 @@ def run_eod_summary():
             except Exception:
                 logger.exception("EOD live-pull failed")
 
-        from core import get_daily_usage, compute_hit_stats, summarize_gate_activity
+        from core import get_daily_usage
         calls_today = get_daily_usage()
         ks_state = "🛑 AKTIV" if kill_switch_active(portfolio) else "✅ aus"
         dd_state = "🚫 DD-LATCH" if portfolio.get("dd_halt_active") else "—"
@@ -529,17 +460,6 @@ def run_eod_summary():
             f"Claude calls: {calls_today}/{config.MAX_ANALYSES_PER_DAY}\n"
             f"Kill-Switch: {ks_state} | DD-Halt: {dd_state}"
         )
-
-        # --- Learning digest: trade-side meta-stats (mistakes, calibration) ---
-        learning_lines = _build_learning_digest(portfolio, compute_hit_stats)
-        if learning_lines:
-            msg += "\n\n🎯 *LEARNING*\n" + "\n".join(learning_lines)
-
-        # --- Gate-activity digest: bot-decision meta-review (bug-hunting) ---
-        gate_lines = _build_gate_activity_digest(today, summarize_gate_activity)
-        if gate_lines:
-            msg += "\n\n🔍 *GATE-ACTIVITY*\n" + "\n".join(gate_lines)
-
         send_notification(msg)
         _mark_eod_summary_done()
         logger.info("✅ EOD summary sent")

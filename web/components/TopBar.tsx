@@ -151,6 +151,9 @@ export default function TopBar({
             {refreshedLabel}
           </span>
           <span className="topbar-divider" />
+          <a href="/learning" className="icon-btn" title="/learning">
+            <span className="icon-btn-mono">LRN</span>
+          </a>
           <a href="/brain" className="icon-btn" title="/brain">
             <span className="icon-btn-mono">BR</span>
           </a>

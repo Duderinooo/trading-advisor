@@ -24,6 +24,12 @@ export default async function BrainPage() {
             ← Dashboard
           </a>
           <a
+            href="/learning"
+            className="text-xs px-3 py-1.5 rounded border border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700"
+          >
+            Learning →
+          </a>
+          <a
             href="/logs"
             className="text-xs px-3 py-1.5 rounded border border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700"
           >
