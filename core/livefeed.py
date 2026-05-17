@@ -77,6 +77,12 @@ _BASE = "https://www.ls-tc.de"
 _SEARCH_URL = f"{_BASE}/_rpc/json/.lstc/instrument/search/main"
 _INSTRUMENT_URL_FMT = f"{_BASE}/de/aktie/{{id}}"
 _TIMEOUT_SEC = 3.0
+# 2026-05-17: flat 3s read-timeout spammed ~25 quote-fails/day on ls-tc HTML
+# pages (search RPC stays at 3s — small JSON, rarely re-hit once id-cached).
+# Split connect/read for the heavier instrument page and retry once on a
+# transient timeout / dropped connection before falling back to yfinance.
+_QUOTE_TIMEOUT: tuple[float, float] = (3.0, 8.0)
+_QUOTE_RETRIES = 1
 _USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15"
@@ -231,37 +237,45 @@ def get_live_quote(isin: str) -> dict | None:
     if cached and (now - cached[0]) < _QUOTE_TTL_SEC:
         return cached[1]
     url = _INSTRUMENT_URL_FMT.format(id=iid)
-    try:
-        r = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT_SEC, allow_redirects=True)
-        if r.status_code != 200:
-            logger.info("LS-TC quote %s (%s) status=%d", isin, iid, r.status_code)
+    r = None
+    for attempt in range(_QUOTE_RETRIES + 1):
+        try:
+            r = requests.get(url, headers=_HEADERS, timeout=_QUOTE_TIMEOUT, allow_redirects=True)
+            break
+        except (requests.Timeout, requests.ConnectionError) as e:
+            if attempt < _QUOTE_RETRIES:
+                continue  # transient — one more shot before yfinance fallback
+            logger.warning("LS-TC quote fetch failed %s: %s", isin, e)
             return None
-        fields = _extract_quote_fields(r.text)
-        if "mid" not in fields and "bid" not in fields:
+        except requests.RequestException as e:
+            logger.warning("LS-TC quote fetch failed %s: %s", isin, e)
             return None
-        quote = {
-            "price": _parse_de_number(fields.get("mid")),
-            "bid": _parse_de_number(fields.get("bid")),
-            "ask": _parse_de_number(fields.get("ask")),
-            "bid_size": int(_parse_de_number(fields.get("bidSize")) or 0) or None,
-            "ask_size": int(_parse_de_number(fields.get("askSize")) or 0) or None,
-            "change_abs": _parse_de_number(fields.get("midPerf1d")),
-            "change_pct": _parse_de_number(fields.get("midPerf1dRelWithPercentSign")),
-            "ts": fields.get("midTime"),
-            "market_status": _market_status(r.text),
-            "source": "ls-tc",
-            "instrument_id": iid,
-            "fetched_at": time.time(),
-        }
-        if quote["price"] is None and quote["bid"] is not None and quote["ask"] is not None:
-            quote["price"] = (quote["bid"] + quote["ask"]) / 2.0
-        if quote["price"] is None:
-            return None
-        _QUOTE_CACHE[iid] = (now, quote)
-        return quote
-    except requests.RequestException as e:
-        logger.warning("LS-TC quote fetch failed %s: %s", isin, e)
+    if r.status_code != 200:
+        logger.info("LS-TC quote %s (%s) status=%d", isin, iid, r.status_code)
         return None
+    fields = _extract_quote_fields(r.text)
+    if "mid" not in fields and "bid" not in fields:
+        return None
+    quote = {
+        "price": _parse_de_number(fields.get("mid")),
+        "bid": _parse_de_number(fields.get("bid")),
+        "ask": _parse_de_number(fields.get("ask")),
+        "bid_size": int(_parse_de_number(fields.get("bidSize")) or 0) or None,
+        "ask_size": int(_parse_de_number(fields.get("askSize")) or 0) or None,
+        "change_abs": _parse_de_number(fields.get("midPerf1d")),
+        "change_pct": _parse_de_number(fields.get("midPerf1dRelWithPercentSign")),
+        "ts": fields.get("midTime"),
+        "market_status": _market_status(r.text),
+        "source": "ls-tc",
+        "instrument_id": iid,
+        "fetched_at": time.time(),
+    }
+    if quote["price"] is None and quote["bid"] is not None and quote["ask"] is not None:
+        quote["price"] = (quote["bid"] + quote["ask"]) / 2.0
+    if quote["price"] is None:
+        return None
+    _QUOTE_CACHE[iid] = (now, quote)
+    return quote
 
 
 def live_quote_for_ticker(ticker: str) -> dict | None:
