@@ -4,12 +4,10 @@ import {
   preMortemAccuracy,
   summarizeGateActivityDay,
   recentGateDays,
+  MIN_CALIBRATION_N,
 } from "@/lib/compute";
 
 export const dynamic = "force-dynamic";
-
-// Haircut activation floor — mirrors config.MIN_CALIBRATION_N in the Python bot.
-const MIN_CALIBRATION_N = 10;
 
 const MISTAKE_COLORS: Record<string, string> = {
   prediction: "text-rose-400",

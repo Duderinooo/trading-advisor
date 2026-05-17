@@ -14,6 +14,10 @@ import type {
   ThesisDecayFlag,
 } from "./types";
 
+// Min scored trades before the Brier-haircut activates. Mirrors
+// config.MIN_CALIBRATION_N in the Python bot — below this, bias is noise.
+export const MIN_CALIBRATION_N = 10;
+
 export function computeEquityCurve(p: Portfolio): EquityPoint[] {
   // Two data sources merged:
   //   1. realized events (closed_trade exits + cash_movements) — the historical
@@ -222,7 +226,12 @@ export function computeHitStats(
     const avgPPred = scored.reduce((s, t) => s + (t.p_win ?? 0), 0) / n;
     const actual = scored.reduce((s, t) => s + (t.outcome ?? 0), 0) / n;
     const bias = avgPPred - actual;
-    const haircut = Math.abs(bias) >= 0.05 ? Math.round(bias * 1000) / 1000 : 0;
+    // Haircut only fires at MIN_CALIBRATION_N+ scored trades — below that, bias
+    // is noise. Mirrors the Python guard in core.portfolio.compute_hit_stats.
+    const haircut =
+      n >= MIN_CALIBRATION_N && Math.abs(bias) >= 0.05
+        ? Math.round(bias * 1000) / 1000
+        : 0;
     calibration = {
       n,
       avg_brier: Math.round(avgBrier * 10000) / 10000,
