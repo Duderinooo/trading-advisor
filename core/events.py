@@ -16,8 +16,9 @@ import config
 from core.portfolio import (
     portfolio_lock, load_portfolio, save_portfolio, maintain_drawdown_state,
     exit_suppressed_tickers, active_entry_gate_cooldowns,
+    risk_halt_status, compute_sector_exposure, compute_confluence,
 )
-from core.market_data import get_market_data
+from core.market_data import get_market_data, market_regime
 from core.news_rss import fetch_rss_news
 from core.api_usage import get_minutes_since_last_analysis
 
@@ -396,6 +397,88 @@ def _in_no_entry_window(now: datetime) -> bool:
     return False
 
 
+def prefilter_entry_events(
+    events: list[dict], portfolio: dict, market_data: dict, regime: str,
+) -> list[dict]:
+    """Drop WATCH_LEVEL_HIT events whose entry a *deterministic* analyzer gate
+    guarantees will be rejected — skips a doomed Haiku event-call.
+
+    Strict-lenient: an event is dropped only when the block holds across every
+    choice Claude could make. Gates with a Claude-controlled override
+    (earnings_drift, mean-reversion RS, breakout volume) are intentionally NOT
+    mirrored here — those stay soft so a legit override is never lost.
+
+    Mirrors analyzer gates #1 risk-halt, #2 regime, #6 sector-cap, #8 wk_trend,
+    #12 confluence. WATCH_INVALIDATED events pass through untouched — an
+    invalidation is not an entry.
+    """
+    hits = [e for e in events if e.get("type") == "WATCH_LEVEL_HIT"]
+    if not hits:
+        return events
+    others = [e for e in events if e.get("type") != "WATCH_LEVEL_HIT"]
+
+    # --- Portfolio-wide blocks: one fails → every pending entry is doomed. ---
+    halt = risk_halt_status(portfolio)
+    if halt["halt"]:
+        logger.info(
+            "prefilter: %d watch-hit(s) dropped — risk-halt active (%s)",
+            len(hits), "; ".join(halt["reasons"]),
+        )
+        return others
+    if (config.RISK_OFF_BLOCKS_LONGS and isinstance(regime, str)
+            and regime.startswith("RISK_OFF")):
+        logger.info(
+            "prefilter: %d watch-hit(s) dropped — regime %s blocks longs",
+            len(hits), regime,
+        )
+        return others
+
+    # --- Per-ticker deterministic blocks. ---
+    sector_counts = {
+        sec: len(tks) for sec, tks in compute_sector_exposure(portfolio).items()
+    }
+    # mean-reversion confluence relaxation (-2) baked into the floor → the most
+    # lenient threshold any setup family could face. Below it = guaranteed block.
+    conf_floor = config.MIN_CONFLUENCE_SCORE - 2
+
+    kept: list[dict] = []
+    for e in hits:
+        t = e["ticker"]
+        snap = market_data.get(t, {})
+        # gate #8 — no LONG against a DOWN weekly trend
+        if snap.get("wk_trend") == "DOWN":
+            logger.info("prefilter: %s watch-hit dropped — wk_trend DOWN", t)
+            continue
+        # gate #6 — sector cluster cap
+        sec = config.SECTOR_MAP.get(t, "other")
+        if sector_counts.get(sec, 0) >= config.MAX_POSITIONS_PER_SECTOR:
+            logger.info(
+                "prefilter: %s watch-hit dropped — sector '%s' at cap %d",
+                t, sec, config.MAX_POSITIONS_PER_SECTOR,
+            )
+            continue
+        # gate #12 — confluence floor. Skipped when regime is UNKNOWN: the score
+        # would be understated by the missing regime_risk_on point (false drop).
+        if (regime != "UNKNOWN" and snap and not snap.get("error")
+                and snap.get("price")):
+            score = compute_confluence(snap, regime)["score"]
+            if score < conf_floor:
+                logger.info(
+                    "prefilter: %s watch-hit dropped — confluence %d < %d floor",
+                    t, score, conf_floor,
+                )
+                continue
+        kept.append(e)
+
+    dropped = len(hits) - len(kept)
+    if dropped:
+        logger.info(
+            "prefilter: %d/%d watch-hit(s) deferred by deterministic gates",
+            dropped, len(hits),
+        )
+    return others + kept
+
+
 def detect_events() -> list[dict]:
     """Returns NEW watch-level hits (dedup'd today). Skips EXCLUDED_TICKERS.
 
@@ -648,6 +731,18 @@ def detect_events() -> list[dict]:
                 "detect_events: %d watch-hit(s) deferred — no-entry window: %s",
                 len(deferred), ", ".join(e["ticker"] for e in deferred),
             )
+
+    # Pre-Claude entry-gate filter: drop watch-hits a deterministic analyzer
+    # gate would reject anyway (risk-halt, regime, sector-cap, wk_trend,
+    # confluence) — saves a doomed Haiku call. Runs BEFORE the dedup-mark so a
+    # dropped hit re-fires once conditions change (regime flips, sector frees).
+    if any(e.get("type") == "WATCH_LEVEL_HIT" for e in events):
+        try:
+            _regime = market_regime(get_market_data(list(config.MARKET_INDICATORS)))
+        except Exception:
+            logger.warning("prefilter: regime fetch failed — regime gate skipped")
+            _regime = "UNKNOWN"
+        events = prefilter_entry_events(events, portfolio, market_data, _regime)
 
     # Filter out events that were already triggered today
     new_events = [e for e in events if not _is_event_already_triggered(_get_event_key(e), portfolio)]

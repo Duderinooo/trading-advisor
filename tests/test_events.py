@@ -197,5 +197,77 @@ class TestShouldAnalyzeEvents(unittest.TestCase):
         self.assertIn("high-priority", reason)
 
 
+class TestPrefilterEntryEvents(unittest.TestCase):
+    # full bullish snapshot — compute_confluence scores 10 under RISK_ON
+    HEALTHY = {
+        "price": 110, "ma20": 100, "ma50": 95, "rsi14": 55,
+        "macd": 1.0, "macd_signal": 0.5, "volume_ratio": 1.2,
+        "spread_pct": 0.2, "wk_trend": "UP", "rs_20d_vs_index_pct": 3.0,
+        "analyst_rec_key": "buy", "analyst_upside_pct": 10,
+    }
+
+    @staticmethod
+    def _pf(**kw):
+        base = {"open_trades": [], "closed_trades": [], "total_capital_eur": 1000.0}
+        base.update(kw)
+        return base
+
+    @staticmethod
+    def _hit(t):
+        return {"type": "WATCH_LEVEL_HIT", "ticker": t}
+
+    @staticmethod
+    def _inval(t):
+        return {"type": "WATCH_INVALIDATED", "ticker": t}
+
+    def test_clean_event_kept(self):
+        events = [self._hit("AAA")]
+        out = E.prefilter_entry_events(events, self._pf(), {"AAA": self.HEALTHY}, "RISK_ON")
+        self.assertEqual(out, events)
+
+    def test_risk_halt_drops_all_hits(self):
+        events = [self._hit("AAA"), self._inval("BBB")]
+        out = E.prefilter_entry_events(
+            events, self._pf(kill_switch=True), {"AAA": self.HEALTHY}, "RISK_ON")
+        self.assertEqual(out, [self._inval("BBB")])
+
+    def test_risk_off_regime_drops_all_hits(self):
+        events = [self._hit("AAA"), self._inval("BBB")]
+        out = E.prefilter_entry_events(
+            events, self._pf(), {"AAA": self.HEALTHY}, "RISK_OFF ⚡ VIX_ELEVATED")
+        self.assertEqual(out, [self._inval("BBB")])
+
+    def test_wk_trend_down_drops_that_ticker(self):
+        md = {"AAA": dict(self.HEALTHY, wk_trend="DOWN"), "BBB": self.HEALTHY}
+        out = E.prefilter_entry_events(
+            [self._hit("AAA"), self._hit("BBB")], self._pf(), md, "RISK_ON")
+        self.assertEqual(out, [self._hit("BBB")])
+
+    def test_sector_cap_drops_candidate(self):
+        # 2 open trades + candidate all map to 'other' → sector already at cap
+        pf = self._pf(open_trades=[{"ticker": "ZZQ1"}, {"ticker": "ZZQ2"}])
+        out = E.prefilter_entry_events(
+            [self._hit("ZZQ3")], pf, {"ZZQ3": self.HEALTHY}, "RISK_ON")
+        self.assertEqual(out, [])
+
+    def test_low_confluence_dropped(self):
+        # bare snap → confluence 1, below the MIN_CONFLUENCE_SCORE-2 floor
+        out = E.prefilter_entry_events(
+            [self._hit("AAA")], self._pf(), {"AAA": {"price": 100}}, "RISK_ON")
+        self.assertEqual(out, [])
+
+    def test_low_confluence_kept_when_regime_unknown(self):
+        # regime UNKNOWN → confluence gate skipped (score would be understated)
+        out = E.prefilter_entry_events(
+            [self._hit("AAA")], self._pf(), {"AAA": {"price": 100}}, "UNKNOWN")
+        self.assertEqual(out, [self._hit("AAA")])
+
+    def test_invalidation_always_passes(self):
+        inval = [self._inval("AAA")]
+        for regime, pf in [("RISK_ON", self._pf()), ("RISK_OFF", self._pf()),
+                           ("RISK_ON", self._pf(kill_switch=True))]:
+            self.assertEqual(E.prefilter_entry_events(inval, pf, {}, regime), inval)
+
+
 if __name__ == "__main__":
     unittest.main()
