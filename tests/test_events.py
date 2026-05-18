@@ -6,6 +6,7 @@ out of scope.
 """
 
 import unittest
+from datetime import datetime
 
 import config
 import core.events as E
@@ -156,6 +157,33 @@ class TestEventKey(unittest.TestCase):
     def test_watch_invalidated_key(self):
         ev = {"type": "WATCH_INVALIDATED", "ticker": "AAPL", "invalidate_below": 140}
         self.assertEqual(E._get_event_key(ev), "watch_invalid_AAPL_140")
+
+
+class TestInNoEntryWindow(unittest.TestCase):
+    @staticmethod
+    def _at(h, m):
+        return datetime(2026, 5, 18, h, m)
+
+    def test_inside_opening_auction_window(self):
+        # 09:00-09:10 is the first NO_ENTRY_WINDOW
+        self.assertTrue(E._in_no_entry_window(self._at(9, 5)))
+
+    def test_window_start_inclusive(self):
+        self.assertTrue(E._in_no_entry_window(self._at(9, 0)))
+
+    def test_window_end_exclusive(self):
+        # 09:10 is the exclusive end — must be allowed
+        self.assertFalse(E._in_no_entry_window(self._at(9, 10)))
+
+    def test_outside_all_windows(self):
+        self.assertFalse(E._in_no_entry_window(self._at(11, 30)))
+
+    def test_matches_every_configured_window(self):
+        for sh, sm, eh, em in config.NO_ENTRY_WINDOWS:
+            self.assertTrue(E._in_no_entry_window(self._at(sh, sm)))
+            # one minute before the start is always outside
+            before = sh * 60 + sm - 1
+            self.assertFalse(E._in_no_entry_window(self._at(before // 60, before % 60)))
 
 
 class TestShouldAnalyzeEvents(unittest.TestCase):

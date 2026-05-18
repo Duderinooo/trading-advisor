@@ -15,7 +15,7 @@ import yfinance as yf
 import config
 from core.portfolio import (
     portfolio_lock, load_portfolio, save_portfolio, maintain_drawdown_state,
-    exit_suppressed_tickers,
+    exit_suppressed_tickers, active_entry_gate_cooldowns,
 )
 from core.market_data import get_market_data
 from core.news_rss import fetch_rss_news
@@ -382,6 +382,20 @@ def _mark_events_triggered(events: list[dict]):
         save_portfolio(fresh)
 
 
+def _in_no_entry_window(now: datetime) -> bool:
+    """True if local `now` falls inside a config.NO_ENTRY_WINDOWS span.
+
+    Mirrors the analyzer's no_entry_zone gate (gate #3) exactly so a watch-hit
+    landing in an auction/EOD window is dropped before it spends a Haiku call
+    on a rec that gate would reject post-Claude anyway.
+    """
+    cur = now.hour * 60 + now.minute
+    for sh, sm, eh, em in config.NO_ENTRY_WINDOWS:
+        if sh * 60 + sm <= cur < eh * 60 + em:
+            return True
+    return False
+
+
 def detect_events() -> list[dict]:
     """Returns NEW watch-level hits (dedup'd today). Skips EXCLUDED_TICKERS.
 
@@ -401,21 +415,32 @@ def detect_events() -> list[dict]:
     # Exit-suppressed: pending Exit-Rec aktiv ODER Cooldown nach Auto-Drop. Diese
     # Tickers triggern KEINE neuen Events (spart Haiku-€ + verhindert Re-Loop).
     suppressed = {t.upper() for t in exit_suppressed_tickers(portfolio)}
+    # Entry-gate-cooldown: Ticker der gerade das edge/RS-Gate gerissen hat. Ein
+    # Watch-Hit würde nur einen Haiku-Call für einen Rec verbrennen, den das harte
+    # Gate erneut ablehnt (incident 2026-05-18: BAS.DE 2× edge-block 61min
+    # auseinander — der soft market_data-Hinweis stoppte den Re-Call nicht). Nach
+    # Ablauf des Cooldowns (ENTRY_GATE_COOLDOWN_MIN) detektiert die Schleife den
+    # Ticker wieder normal — Setup wird aufgeschoben, nicht verworfen.
+    entry_cd = set(active_entry_gate_cooldowns(portfolio).keys())
+    skip = suppressed | entry_cd
     watch_levels = [
         w for w in portfolio.get("watch_levels", [])
         if w.get("ticker")
         and w["ticker"] not in excluded
-        and (w.get("ticker") or "").upper() not in suppressed
+        and (w.get("ticker") or "").upper() not in skip
     ]
 
     watch_tickers = [w["ticker"] for w in watch_levels]
     all_tickers = [
         t for t in set(watch_tickers + config.WATCHLIST + config.COMMODITIES)
-        if t not in excluded and t.upper() not in suppressed
+        if t not in excluded and t.upper() not in skip
     ]
     if suppressed:
         logger.info("detect_events: %d ticker(s) exit-suppressed: %s",
                     len(suppressed), ", ".join(sorted(suppressed)))
+    if entry_cd:
+        logger.info("detect_events: %d ticker(s) entry-gate-cooldown: %s",
+                    len(entry_cd), ", ".join(sorted(entry_cd)))
 
     if not all_tickers:
         return events
@@ -607,6 +632,22 @@ def detect_events() -> list[dict]:
                     "Watch-levels pruned: %d → %d (expired=%d, invalidated=%d)",
                     len(current), len(kept), len(expired_indices), len(invalidated_indices),
                 )
+
+    # No-entry-window pre-filter: a WATCH_LEVEL_HIT inside a NO_ENTRY_WINDOW can
+    # only ever yield an entry that the analyzer's no_entry_zone gate rejects
+    # post-Claude (gate #3) — drop it here to skip the Haiku call. Dropped BEFORE
+    # the dedup-mark below, and left UN-marked, so the hit re-fires normally once
+    # the window passes (incident 2026-05-18: CON.DE 09:05 watch-hit burned a
+    # Haiku call for the 09:00–09:10 auction block). WATCH_INVALIDATED is exempt —
+    # an invalidation is not an entry and must still alert + prune the watch.
+    if _in_no_entry_window(datetime.now()):
+        deferred = [e for e in events if e.get("type") == "WATCH_LEVEL_HIT"]
+        if deferred:
+            events = [e for e in events if e.get("type") != "WATCH_LEVEL_HIT"]
+            logger.info(
+                "detect_events: %d watch-hit(s) deferred — no-entry window: %s",
+                len(deferred), ", ".join(e["ticker"] for e in deferred),
+            )
 
     # Filter out events that were already triggered today
     new_events = [e for e in events if not _is_event_already_triggered(_get_event_key(e), portfolio)]
