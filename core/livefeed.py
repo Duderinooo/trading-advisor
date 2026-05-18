@@ -59,7 +59,6 @@ TICKER_ISIN_MAP: dict[str, str] = {
     "DTE.DE":  "DE0005557508",  # Deutsche Telekom
     "DHL.DE":  "DE0005552004",  # DHL Group
     "FRE.DE":  "DE0005785604",  # Fresenius
-    "1COV.DE": "DE0006062144",  # Covestro
     "HEN3.DE": "DE0006048432",  # Henkel Vz
     "PUM.DE":  "DE0006969603",  # Puma
     "ZAL.DE":  "DE000ZAL1111",  # Zalando

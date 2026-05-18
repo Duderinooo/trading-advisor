@@ -126,7 +126,6 @@ SECTOR_MAP = {
     "FRE.DE": "healthcare",
     # Chemicals
     "BAS.DE": "chemicals",
-    "1COV.DE": "chemicals",
     # Auto (ICE + Massenmarkt)
     "BMW.DE": "auto_ice",
     "MBG.DE": "auto_ice",
@@ -379,7 +378,8 @@ WATCHLIST = [
 
     # Chemicals
     "BAS.DE",       # BASF - €53 (Global Chemicals, China-Zyklus)
-    "1COV.DE",      # Covestro - €60 (Spezial-Chemie)
+    # 1COV.DE (Covestro) removed 2026-05-18 — delisted after ADNOC squeeze-out,
+    # yfinance history empty (5d), bot can't price/trade it.
 
     # Consumer
     "HEN3.DE",      # Henkel Vz - €62 (Consumer-Goods, Defensive)
