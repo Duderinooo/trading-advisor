@@ -41,7 +41,7 @@ Located in `core/analyzer.analyze_portfolio`, applied in this order on a `recomm
 1. `risk_halt_status` (kill-switch, daily loss, drawdown, heat)
 2. Regime gate (`RISK_OFF_BLOCKS_LONGS`)
 3. No-entry-zone (auction/EOD windows)
-4. SL-distance sanity (0.8×ATR ≤ dist ≤ 3.0×ATR)
+4. SL-distance sanity (`MIN_SL_DISTANCE_ATR`×ATR ≤ dist ≤ `MAX_SL_DISTANCE_ATR`×ATR). Too-tight → SL **clamped** wider to the floor (modifier, not blocker — the edge gate below re-validates on the clamped SL). Too-wide → hard reject (clamping tighter would stop before Claude's thesis-invalidation level).
 5. Edge gate (`edge_ok`, with Brier-haircut)
 6. Sector cluster cap (`MAX_POSITIONS_PER_SECTOR`)
 7. VIX size-dampening (modifier, not blocker)

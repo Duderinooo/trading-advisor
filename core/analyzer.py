@@ -1205,14 +1205,26 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
         if _entry > _sl > 0 and isinstance(_atr, (int, float)) and _atr > 0:
             _sl_dist_atr = (_entry - _sl) / _atr
             if _sl_dist_atr < config.MIN_SL_DISTANCE_ATR:
+                # Too-tight SL → clamp wider to the MIN_SL_DISTANCE_ATR floor
+                # instead of rejecting. A few-cent-too-tight stop shouldn't kill
+                # an otherwise valid rec (incident 2026-05-18: MBG 0.71×ATR).
+                # Widening is strictly more conservative and the stop stays well
+                # inside the 1.5×ATR distance that suggest_position_size assumes,
+                # so risk-sizing is unaffected. The edge gate immediately below
+                # re-runs edge_ok on the clamped SL — a rec whose math only
+                # worked because of the flatteringly-tight stop is still rejected
+                # there. Too-wide stays a hard reject (clamping tighter would
+                # stop the trade before Claude's thesis-invalidation level).
+                _clamped_sl = round(_entry - config.MIN_SL_DISTANCE_ATR * _atr, 2)
                 logger.warning(
-                    "Entry BLOCKED by SL-too-tight: %s SL %.2f×ATR < %.2f×ATR",
-                    _t, _sl_dist_atr, config.MIN_SL_DISTANCE_ATR,
+                    "SL clamped (too tight): %s %.2f→%.2f (%.2f×ATR → %.2f×ATR)",
+                    _t, _sl, _clamped_sl, _sl_dist_atr, config.MIN_SL_DISTANCE_ATR,
                 )
-                log_gate(_t, "sl_distance", True,
-                         f"SL {_sl_dist_atr:.2f}×ATR < {config.MIN_SL_DISTANCE_ATR}",
-                         {"sl_dist_atr": round(_sl_dist_atr, 2), "kind": "tight"})
-                entry_recommendation = None
+                log_gate(_t, "sl_distance", False,
+                         f"SL clamped {_sl_dist_atr:.2f}×ATR → {config.MIN_SL_DISTANCE_ATR}×ATR",
+                         {"sl_dist_atr": round(_sl_dist_atr, 2), "kind": "tight_clamped",
+                          "sl_from": _sl, "sl_to": _clamped_sl})
+                entry_recommendation["stop_loss"] = _clamped_sl
             elif _sl_dist_atr > config.MAX_SL_DISTANCE_ATR:
                 logger.warning(
                     "Entry BLOCKED by SL-too-wide: %s SL %.2f×ATR > %.2f×ATR",
