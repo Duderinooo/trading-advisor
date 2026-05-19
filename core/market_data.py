@@ -205,6 +205,33 @@ def _compute_indicators(daily_hist, intraday_hist) -> dict:
 
 # ---------- Fetching ----------
 
+# Xetra regular session 09:00–17:30 CET. yfinance `volume` is intraday-cumulative
+# (volume-so-far), not a completed day — comparing it raw to averageVolume makes
+# vol_ratio climb through the session (2026-05-19: PUM vol_ratio 0.12→0.17 all
+# day, breakout volume-gate structurally unreachable before late afternoon).
+_XETRA_OPEN_MIN = 9 * 60
+_XETRA_CLOSE_MIN = 17 * 60 + 30
+_MIN_SESSION_FRACTION = 0.15  # floor — don't over-project on thin early data
+
+
+def _session_fraction(now: datetime) -> float:
+    """Fraction of the Xetra regular session elapsed at local time `now`.
+
+    Returns 1.0 outside session hours / on weekends — there the yfinance volume
+    figure is a completed day and needs no projection. During the session the
+    fraction is floored at _MIN_SESSION_FRACTION so the first ~75min don't blow
+    the projection up on a tiny denominator (early understatement is
+    conservative — it defers a volume-confirm, never false-passes one).
+    """
+    if now.weekday() >= 5:
+        return 1.0
+    cur = now.hour * 60 + now.minute
+    if cur <= _XETRA_OPEN_MIN or cur >= _XETRA_CLOSE_MIN:
+        return 1.0
+    frac = (cur - _XETRA_OPEN_MIN) / (_XETRA_CLOSE_MIN - _XETRA_OPEN_MIN)
+    return max(_MIN_SESSION_FRACTION, frac)
+
+
 def _fetch_ticker(ticker: str) -> dict:
     """Fetch ticker snapshot: info, 1y daily (for weekly resample + MA200), intraday, indicators."""
     stock = yf.Ticker(ticker)
@@ -226,7 +253,12 @@ def _fetch_ticker(ticker: str) -> dict:
 
     avg_volume = info.get("averageVolume")
     current_volume = info.get("volume") or info.get("regularMarketVolume")
-    volume_ratio = current_volume / avg_volume if avg_volume and current_volume else None
+    # Project intraday-cumulative volume to a full-day equivalent before the
+    # ratio, so vol_ratio is time-of-day-neutral and comparable to averageVolume
+    # (raw, it would climb all session — see _session_fraction).
+    volume_ratio = None
+    if avg_volume and current_volume:
+        volume_ratio = (current_volume / _session_fraction(datetime.now())) / avg_volume
 
     bid, ask = info.get("bid"), info.get("ask")
     spread_pct = None

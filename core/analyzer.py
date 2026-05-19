@@ -1489,6 +1489,12 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
                          f"verdict={_verdict} conf={_conf}",
                          {"verdict": _verdict, "confidence": _conf,
                           "failure_modes": _modes, "reason": _reason})
+                # Cooldown like edge/RS: a red-team verdict is intraday-stable —
+                # without it the same ticker re-recommends within the hour and
+                # burns another event-Haiku *plus* red-team call (2026-05-19:
+                # CON.DE KILL 10:07 → re-rec 12:53). detect_events then skips it.
+                record_entry_gate_cooldown(_t, "red_team",
+                                           f"verdict={_verdict} conf={_conf}")
                 # Silent block: user has no action on a killed entry — only logs +
                 # dashboard (gate_log) keep the trail. Past Telegram alert was pure noise.
                 entry_recommendation = None
