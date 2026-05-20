@@ -245,6 +245,13 @@ def build_trade_dict(rec: dict, filled_price: float, shares: float,
     Schema haben. shares = float weil TR-Bruchstücke (rounded 4 decimals).
     """
     size_eur = round(filled_price * shares, 2)
+    # Snapshot-derived attribution fields — captured at entry for later outcome
+    # analysis (validates whether high base_quality_score / confluence_score
+    # trades actually perform). Stored top-level for cheap bucketing in
+    # compute_hit_stats without nested entry_snapshot traversal.
+    snap = entry_snapshot or {}
+    base_quality_at_entry = snap.get("base_quality_score")
+    confluence_at_entry = snap.get("confluence_score")
     return {
         "ticker": rec.get("ticker"),
         "entry_price": filled_price,
@@ -262,6 +269,8 @@ def build_trade_dict(rec: dict, filled_price: float, shares: float,
         "trailing_stop_pct": rec.get("trailing_stop_pct"),
         "regime_at_entry": rec.get("regime_at_entry"),
         "vix_at_entry": rec.get("vix_at_entry"),
+        "base_quality_at_entry": base_quality_at_entry,
+        "confluence_at_entry": confluence_at_entry,
         "entry_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "status": "open",
         "entry_snapshot": entry_snapshot,
@@ -693,6 +702,68 @@ def compute_confluence(snap: dict, regime: str) -> dict:
     return {"score": score, "items": items, "missing": missing}
 
 
+def compute_base_quality(snap: dict) -> dict:
+    """Structural base-formation score (0-10). Complements compute_confluence
+    (momentum/trend) with structure/repair signals — the swing-low family's
+    primary quality indicator (manifest point 8 / 2).
+
+    Per the manifest weighting: selling-exhaustion / atr-contraction /
+    failed-breakdown-reclaim each carry +2, the rest +1, capped at 10.
+
+    Items:
+      +2 selling_exhaustion        — volume_ratio < 0.7 (proxy: dünnes Volumen = Verkäufer ausgegangen)
+      +2 atr_contraction           — range_compression < 0.5 (Volatility dry-up)
+      +2 failed_breakdown_reclaim  — intraday_low < ma50 < price (Verkäufer haben Support gerissen aber Recovery)
+      +1 higher_lows               — higher_lows_5d ≥ 2 (Tiefs ziehen sich höher)
+      +1 strong_higher_lows        — higher_lows_5d ≥ 4 (sehr robuste Folge, Bonus über higher_lows)
+      +1 tight_close               — heutige Tages-Range < 0.7 × atr14_pct (Stabilisierung)
+      +1 in_base_zone              — -25% ≤ pct_below_52w_high ≤ -8% (klassische Konsolidierungs-Distanz)
+
+    Returns {"score": 0-10, "items": {name: weight_contribution}, "missing": [names with 0 contribution]}.
+    """
+    if not isinstance(snap, dict) or snap.get("error") or not snap.get("price"):
+        return {"score": 0, "items": {}, "missing": ["no_data"]}
+
+    price = snap.get("price")
+    items: dict[str, int] = {}
+
+    vr = snap.get("volume_ratio")
+    items["selling_exhaustion"] = 2 if (isinstance(vr, (int, float)) and vr < 0.7) else 0
+
+    rc = snap.get("range_compression")
+    items["atr_contraction"] = 2 if (isinstance(rc, (int, float)) and rc < 0.5) else 0
+
+    intraday_low = snap.get("intraday_low")
+    ma50 = snap.get("ma50")
+    items["failed_breakdown_reclaim"] = 2 if (
+        isinstance(intraday_low, (int, float)) and isinstance(ma50, (int, float))
+        and intraday_low < ma50 < price
+    ) else 0
+
+    hl = snap.get("higher_lows_5d")
+    items["higher_lows"] = 1 if (isinstance(hl, (int, float)) and hl >= 2) else 0
+    items["strong_higher_lows"] = 1 if (isinstance(hl, (int, float)) and hl >= 4) else 0
+
+    day_high = snap.get("day_high")
+    day_low = snap.get("day_low")
+    atr_pct = snap.get("atr14_pct")
+    if (isinstance(day_high, (int, float)) and isinstance(day_low, (int, float))
+            and isinstance(atr_pct, (int, float)) and atr_pct > 0):
+        day_range_pct = (day_high - day_low) / price * 100
+        items["tight_close"] = 1 if day_range_pct < 0.7 * atr_pct else 0
+    else:
+        items["tight_close"] = 0
+
+    pct_below = snap.get("pct_below_52w_high")
+    items["in_base_zone"] = 1 if (
+        isinstance(pct_below, (int, float)) and -25 <= pct_below <= -8
+    ) else 0
+
+    score = min(10, sum(items.values()))
+    missing = [k for k, w in items.items() if w == 0]
+    return {"score": score, "items": items, "missing": missing}
+
+
 def format_confluence(c: dict) -> str:
     if not c or "score" not in c:
         return ""
@@ -943,6 +1014,36 @@ def compute_hit_stats(closed_trades: list[dict], cash_movements: list[dict] | No
     for k, s in by_setup_regime.items():
         s["rate"] = round(s["wins"] / s["total"] * 100, 1) if s["total"] else 0
 
+    # --- base_quality_score × outcome (validates swing-low philosophy) ---
+    # Empirical test of the manifest claim "BQ ≥7 = A+ Swing-Low-Material". Buckets:
+    #   strong   = BQ ≥ 7  (manifest's A+ swing-low threshold)
+    #   building = 4 ≤ BQ ≤ 6 (base forming, half-size territory)
+    #   no_base  = BQ < 4  (manifest says "no swing-low material")
+    # Old trades without `base_quality_at_entry` are excluded — bucket only
+    # accumulates as new trades close, so meaningful sample needs several closes
+    # after the 2026-05-20 instrumentation. Lets us *validate* (not just assume)
+    # whether high-BQ trades actually outperform low-BQ trades.
+    by_base_quality: dict[str, dict] = {}
+    for t in closed_trades:
+        bq = t.get("base_quality_at_entry")
+        if not isinstance(bq, (int, float)):
+            continue
+        if bq >= 7:
+            bucket = "strong"
+        elif bq >= 4:
+            bucket = "building"
+        else:
+            bucket = "no_base"
+        by_base_quality.setdefault(bucket, {"wins": 0, "total": 0, "pnl_pct_sum": 0.0})
+        by_base_quality[bucket]["total"] += 1
+        if _eff_pct(t) > 0:
+            by_base_quality[bucket]["wins"] += 1
+        by_base_quality[bucket]["pnl_pct_sum"] += _eff_pct(t)
+    for bk, s in by_base_quality.items():
+        s["rate"] = round(s["wins"] / s["total"] * 100, 1) if s["total"] else 0
+        s["avg_pnl_pct"] = round(s["pnl_pct_sum"] / s["total"], 2) if s["total"] else 0
+        del s["pnl_pct_sum"]
+
     # --- Alpha vs Beta attribution (was loss skill or market noise?) ---
     attributed = [
         t for t in closed_trades
@@ -1017,6 +1118,7 @@ def compute_hit_stats(closed_trades: list[dict], cash_movements: list[dict] | No
         "by_conviction": conv_stats,
         "by_setup": by_setup,
         "by_setup_regime": by_setup_regime,
+        "by_base_quality": by_base_quality,
         "by_dow": by_dow,
         "by_hour": by_hour_bucket,
         "by_hold": by_hold,

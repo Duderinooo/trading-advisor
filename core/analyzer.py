@@ -1195,6 +1195,33 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             entry_recommendation = None
 
     if entry_recommendation:
+        # Extended-UP-Day Gate: blocks recommend_entry when today's gain
+        # already exceeds 1.5×ATR. Chase-protection — entering AFTER the day
+        # has burned through 1.5 ATRs of upside means the next natural move
+        # is statistically a pullback that hits any reasonable SL.
+        # Asymmetric on purpose: only UP-extended days are blocked; DOWN-
+        # extended days are potential swing-entry candidates (selling
+        # exhaustion / capitulation). Enforces HARD-BLOCK #2 from the
+        # 2026-05-20 swing-structure-filter manifest at gate-level so it
+        # doesn't depend on Sonnet self-policing.
+        _t = (entry_recommendation.get("ticker") or "").upper()
+        _snap = market_data.get(_t) or {}
+        _change_pct = _snap.get("change_pct")
+        _atr_pct = _snap.get("atr14_pct")
+        if (isinstance(_change_pct, (int, float))
+                and isinstance(_atr_pct, (int, float)) and _atr_pct > 0
+                and _change_pct > 1.5 * _atr_pct):
+            logger.warning(
+                "Entry BLOCKED by extended-UP-day gate: %s change=%+.2f%% > 1.5×ATR%%=%.2f%%",
+                _t, _change_pct, 1.5 * _atr_pct,
+            )
+            log_gate(_t, "extended_up_day", True,
+                     f"change_pct {_change_pct:+.2f}% > 1.5×atr14_pct ({1.5 * _atr_pct:.2f}%)",
+                     {"change_pct": _change_pct, "atr14_pct": _atr_pct,
+                      "threshold_pct": 1.5 * _atr_pct})
+            entry_recommendation = None
+
+    if entry_recommendation:
         # SL-distance sanity: block if entry-SL is too tight or too wide vs. ATR.
         # Why: tight SL (<0.8×ATR) = guaranteed whipsaw; wide SL (>3×ATR) inflates
         # edge_ok's reward/risk math and breaks risk sizing. Runs before edge gate.

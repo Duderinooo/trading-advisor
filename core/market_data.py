@@ -197,6 +197,16 @@ def _compute_indicators(daily_hist, intraday_hist) -> dict:
             if px_20d_ago > 0:
                 out["perf_20d_pct"] = round((px_now - px_20d_ago) / px_20d_ago * 100, 2)
 
+        # Higher-Lows base-formation signal (0-4 over last 5 daily bars).
+        # Sonnet uses this as a positive confirm for the swing-structure setup
+        # family ("Higher Lows entwickeln sich" — manifest point 7 / 9).
+        if len(daily_hist) >= 5:
+            try:
+                recent_lows = [float(x) for x in daily_hist["Low"].tail(5).tolist()]
+                out["higher_lows_5d"] = _count_consecutive_higher_lows(recent_lows)
+            except (TypeError, ValueError):
+                pass
+
     except (KeyError, ValueError, IndexError) as e:
         logger.debug("Indicator calc failed: %s", e)
 
@@ -230,6 +240,31 @@ def _session_fraction(now: datetime) -> float:
         return 1.0
     frac = (cur - _XETRA_OPEN_MIN) / (_XETRA_CLOSE_MIN - _XETRA_OPEN_MIN)
     return max(_MIN_SESSION_FRACTION, frac)
+
+
+def _count_consecutive_higher_lows(lows: list[float]) -> int:
+    """Count consecutive higher-lows starting from the second element.
+
+    Used as a base-formation signal — `Higher Lows entwickeln sich` per the
+    swing-structure-filter manifest. Each subsequent low strictly greater than
+    its predecessor counts; the streak breaks on the first non-higher low.
+
+    Examples:
+        [10, 11, 12, 13, 14] → 4 (every step strictly higher)
+        [10, 11, 12, 11, 13] → 2 (streak breaks at index 3)
+        [10, 10, 11]         → 0 (10 == 10 breaks immediately)
+        [10]                 → 0 (no pair to compare)
+        []                   → 0
+    """
+    if len(lows) < 2:
+        return 0
+    count = 0
+    for i in range(1, len(lows)):
+        if lows[i] > lows[i - 1]:
+            count += 1
+        else:
+            break
+    return count
 
 
 def _fetch_ticker(ticker: str) -> dict:
@@ -344,6 +379,19 @@ def _fetch_ticker(ticker: str) -> dict:
                     )
     except Exception as e:
         logger.debug("LS-TC overlay failed for %s: %s", ticker, e)
+
+    # Base-Quality score (0-10) — structural-repair signal complementing the
+    # confluence (momentum/trend) score. Primary quality indicator for the
+    # swing-low setup family per the 2026-05-20 swing-structure-filter
+    # manifest (point 8). Imported locally to avoid module-load cycle if
+    # core.portfolio ever imports market_data.
+    try:
+        from core.portfolio import compute_base_quality
+        bq = compute_base_quality(snapshot)
+        snapshot["base_quality_score"] = bq["score"]
+        snapshot["base_quality_items"] = bq["items"]
+    except Exception as e:
+        logger.debug("base_quality calc failed for %s: %s", ticker, e)
 
     return snapshot
 

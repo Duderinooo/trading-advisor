@@ -33,6 +33,7 @@ from core.portfolio import (
     set_kill_switch,
     compute_confluence,
     format_confluence,
+    compute_base_quality,
     compute_correlations,
     dd_scaling_factor,
     exit_suppressed_tickers,
@@ -76,6 +77,7 @@ __all__ = [
     "risk_halt_status", "maintain_drawdown_state", "edge_ok",
     "kill_switch_active", "set_kill_switch",
     "compute_confluence", "format_confluence",
+    "compute_base_quality",
     "compute_correlations", "dd_scaling_factor",
     "exit_suppressed_tickers",
     # market data

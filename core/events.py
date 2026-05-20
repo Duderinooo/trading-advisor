@@ -587,35 +587,55 @@ def detect_events() -> list[dict]:
                 invalidated_indices.append(idx)
                 continue
 
-        distance_pct = abs(current_price - trigger_price) / trigger_price * 100
+        # Proximity check — zone-mode if explicit bounds are set, else legacy
+        # line-mode (±BREAKOUT_TRIGGER_PERCENT around trigger_price). Zone-mode
+        # is for accumulation/reversal setups where the entry zone is a band,
+        # not a precise line. When zone-mode fires, the line-only confirm gates
+        # below (direction-aware-proximity, confirm_close_above, support/
+        # resistance buffer) are skipped — being in the zone IS the trigger.
+        # Fake-signal protections (min_volume_ratio, VWAP-anomaly) still apply.
+        zone_low = level.get("zone_low")
+        zone_high = level.get("zone_high")
+        zone_mode = (
+            isinstance(zone_low, (int, float))
+            and isinstance(zone_high, (int, float))
+            and zone_low < zone_high
+        )
+        if zone_mode:
+            in_proximity = zone_low <= current_price <= zone_high
+            distance_pct = 0.0
+        else:
+            distance_pct = abs(current_price - trigger_price) / trigger_price * 100
+            in_proximity = distance_pct <= config.BREAKOUT_TRIGGER_PERCENT
 
-        if distance_pct <= config.BREAKOUT_TRIGGER_PERCENT:
-            # Direction-aware proximity: for breakout_long without an explicit
-            # confirm_close_above, bot would otherwise fire when price is BELOW
-            # trigger (proximity is symmetric via abs()). Sonnet sometimes omits
-            # confirm_close_above for non-breakout_long types — add a structural
-            # check so price is at-or-above trigger for "long" levels.
-            level_type_lower = level_type.lower() if isinstance(level_type, str) else ""
-            is_long_breakout = level_type_lower in ("breakout_long", "breakout_resistance", "breakout")
-            if is_long_breakout and current_price < trigger_price:
-                logger.debug(
-                    "Watch %s @%.2f long-breakout proximity-only fail: price %.2f < trigger",
-                    ticker, trigger_price, current_price,
-                )
-                continue
-            confirm_close_above = level.get("confirm_close_above")
-            if isinstance(confirm_close_above, (int, float)) and confirm_close_above > 0:
-                # Apply CONFIRM_CLOSE_TOLERANCE_PCT slack: tick-granularity +
-                # spread can leave price 1-2ct under Sonnet's confirm threshold
-                # all day even though structural breakout already happened.
-                tolerance = confirm_close_above * config.CONFIRM_CLOSE_TOLERANCE_PCT / 100
-                if current_price < (confirm_close_above - tolerance):
-                    logger.info(
-                        "Watch %s @%.2f not confirmed: price %.2f < confirm_close_above %.2f (slack %.2f)",
+        if in_proximity:
+            if not zone_mode:
+                # Direction-aware proximity: for breakout_long without an explicit
+                # confirm_close_above, bot would otherwise fire when price is BELOW
+                # trigger (proximity is symmetric via abs()). Sonnet sometimes omits
+                # confirm_close_above for non-breakout_long types — add a structural
+                # check so price is at-or-above trigger for "long" levels.
+                level_type_lower = level_type.lower() if isinstance(level_type, str) else ""
+                is_long_breakout = level_type_lower in ("breakout_long", "breakout_resistance", "breakout")
+                if is_long_breakout and current_price < trigger_price:
+                    logger.debug(
+                        "Watch %s @%.2f long-breakout proximity-only fail: price %.2f < trigger",
                         ticker, trigger_price, current_price,
-                        confirm_close_above, tolerance,
                     )
                     continue
+                confirm_close_above = level.get("confirm_close_above")
+                if isinstance(confirm_close_above, (int, float)) and confirm_close_above > 0:
+                    # Apply CONFIRM_CLOSE_TOLERANCE_PCT slack: tick-granularity +
+                    # spread can leave price 1-2ct under Sonnet's confirm threshold
+                    # all day even though structural breakout already happened.
+                    tolerance = confirm_close_above * config.CONFIRM_CLOSE_TOLERANCE_PCT / 100
+                    if current_price < (confirm_close_above - tolerance):
+                        logger.info(
+                            "Watch %s @%.2f not confirmed: price %.2f < confirm_close_above %.2f (slack %.2f)",
+                            ticker, trigger_price, current_price,
+                            confirm_close_above, tolerance,
+                        )
+                        continue
 
             min_vol = level.get("min_volume_ratio")
             if isinstance(min_vol, (int, float)) and min_vol > 0:
@@ -627,32 +647,35 @@ def detect_events() -> list[dict]:
                     )
                     continue
 
-            # Direction-confirm gate: a `resistance_reject` is only meaningful if
-            # price is actually back below the trigger; a `support_bounce` only if
-            # back above. Without this, bot fires on the natural tag-and-continue
-            # of a breakout (Bug 2026-04-27: RWE @60.70 → tag → continue → bot saw
-            # 15-min snapshot of dip and recommended EXIT).
-            # Buffer: 0.25×ATR when available, else 0.3% absolute.
-            atr_pct = data.get("atr14_pct")
-            if isinstance(atr_pct, (int, float)) and atr_pct > 0:
-                buf_pct = 0.25 * atr_pct
-            else:
-                buf_pct = 0.3
-            buf_abs = trigger_price * buf_pct / 100
-            if level_type == "resistance_reject" and current_price > trigger_price - buf_abs:
-                logger.info(
-                    "Watch %s resistance_reject @%.2f not confirmed: price %.2f "
-                    "(needs ≤ %.2f for reject)",
-                    ticker, trigger_price, current_price, trigger_price - buf_abs,
-                )
-                continue
-            if level_type == "support_bounce" and current_price < trigger_price + buf_abs:
-                logger.info(
-                    "Watch %s support_bounce @%.2f not confirmed: price %.2f "
-                    "(needs ≥ %.2f for bounce)",
-                    ticker, trigger_price, current_price, trigger_price + buf_abs,
-                )
-                continue
+            if not zone_mode:
+                # Direction-confirm gate: a `resistance_reject` is only meaningful if
+                # price is actually back below the trigger; a `support_bounce` only if
+                # back above. Without this, bot fires on the natural tag-and-continue
+                # of a breakout (Bug 2026-04-27: RWE @60.70 → tag → continue → bot saw
+                # 15-min snapshot of dip and recommended EXIT).
+                # Buffer: 0.25×ATR when available, else 0.3% absolute.
+                # Zone-mode bypasses this: a zone-watchlevel intentionally fires on
+                # AT-zone price, not after a confirming move out of the zone.
+                atr_pct = data.get("atr14_pct")
+                if isinstance(atr_pct, (int, float)) and atr_pct > 0:
+                    buf_pct = 0.25 * atr_pct
+                else:
+                    buf_pct = 0.3
+                buf_abs = trigger_price * buf_pct / 100
+                if level_type == "resistance_reject" and current_price > trigger_price - buf_abs:
+                    logger.info(
+                        "Watch %s resistance_reject @%.2f not confirmed: price %.2f "
+                        "(needs ≤ %.2f for reject)",
+                        ticker, trigger_price, current_price, trigger_price - buf_abs,
+                    )
+                    continue
+                if level_type == "support_bounce" and current_price < trigger_price + buf_abs:
+                    logger.info(
+                        "Watch %s support_bounce @%.2f not confirmed: price %.2f "
+                        "(needs ≥ %.2f for bounce)",
+                        ticker, trigger_price, current_price, trigger_price + buf_abs,
+                    )
+                    continue
             vwap_dev = data.get("vwap_dev_atr")
             extreme = isinstance(vwap_dev, (int, float)) and abs(vwap_dev) >= 3.0
             if extreme:

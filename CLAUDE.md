@@ -41,26 +41,33 @@ Located in `core/analyzer.analyze_portfolio`, applied in this order on a `recomm
 1. `risk_halt_status` (kill-switch, daily loss, drawdown, heat)
 2. Regime gate (`RISK_OFF_BLOCKS_LONGS`)
 3. No-entry-zone (auction/EOD windows)
-4. SL-distance sanity (`MIN_SL_DISTANCE_ATR`×ATR ≤ dist ≤ `MAX_SL_DISTANCE_ATR`×ATR). Too-tight → SL **clamped** wider to the floor (modifier, not blocker — the edge gate below re-validates on the clamped SL). Too-wide → hard reject (clamping tighter would stop before Claude's thesis-invalidation level).
-5. Edge gate (`edge_ok`, with Brier-haircut)
-6. Sector cluster cap (`MAX_POSITIONS_PER_SECTOR`)
-7. VIX size-dampening (modifier, not blocker)
-8. Weekly-trend (no LONG vs `wk_trend=DOWN`)
-9. Earnings hard-block (T-`EARNINGS_ENTRY_BLOCK_DAYS` to T+0; override: `setup_type=earnings_drift`)
-10. Relative-Strength gate (`rs_20d_vs_index_pct ≥ MIN_RS_20D_VS_INDEX_PCT`; override: mean_reversion / reversal_oversold / gap_fill / pre_breakout_squeeze)
-11. Volume-Confirm for `setup_type=breakout_resistance` (vol_ratio ≥ `MIN_BREAKOUT_VOLUME_RATIO`)
-12. Confluence-Score gate (deterministic 0-10 score ≥ `MIN_CONFLUENCE_SCORE`; relaxed by 2 for mean-reversion family + pre_breakout_squeeze)
-13. Correlation gate (≥`MAX_CORRELATED_HOLDINGS+1` holdings with corr ≥ `MAX_CORRELATION` over `CORRELATION_LOOKBACK_DAYS`)
-14. DD-soft scaling (modifier: size *= 0.5 between SOFT and HALT thresholds)
-15. Auto-split TP at 1R (modifier: single-TP recs get 1R-TP1 prepended for partial scale-out)
-16. Whole-share gate (after all size-modifiers: `int(size_eur / entry_price) ≥ 1` — TR-SL läuft nur auf ganzen Stücken; Bruchstück-Position = SL-unmöglich = Verstoß gegen Full-Trust-Invariant)
-17. Fee gate (Brutto-Gewinn @ TP1 in €: `(TP1 − entry) × whole_shares ≥ 2 × FIXED_FEE_EUR_PER_SIDE + MIN_NET_PROFIT_EUR` — sonst Trade nach €1+€1 TR-Order-Fees Null-Summe)
+4. Extended-UP-Day gate (block when `change_pct > 1.5 × atr14_pct` — chase-protection enforcing manifest HARD-BLOCK #2; asymmetric, only blocks UP-extended days, DOWN-extended remains a potential swing-entry candidate).
+5. SL-distance sanity (`MIN_SL_DISTANCE_ATR`×ATR ≤ dist ≤ `MAX_SL_DISTANCE_ATR`×ATR). Too-tight → SL **clamped** wider to the floor (modifier, not blocker — the edge gate below re-validates on the clamped SL). Too-wide → hard reject (clamping tighter would stop before Claude's thesis-invalidation level).
+6. Edge gate (`edge_ok`, with Brier-haircut)
+7. Sector cluster cap (`MAX_POSITIONS_PER_SECTOR`)
+8. VIX size-dampening (modifier, not blocker)
+9. Weekly-trend (no LONG vs `wk_trend=DOWN`; override: `reversal_oversold` with RSI<30 + Selling-Exhaustion)
+10. Earnings hard-block (T-`EARNINGS_ENTRY_BLOCK_DAYS` to T+0; override: `setup_type=earnings_drift`)
+11. Relative-Strength gate (`rs_20d_vs_index_pct ≥ MIN_RS_20D_VS_INDEX_PCT`; override: mean_reversion / reversal_oversold / gap_fill / pre_breakout_squeeze)
+12. Volume-Confirm for `setup_type=breakout_resistance` (vol_ratio ≥ `MIN_BREAKOUT_VOLUME_RATIO`)
+13. Confluence-Score gate (deterministic 0-10 score ≥ `MIN_CONFLUENCE_SCORE`; relaxed by 2 for mean-reversion family + pre_breakout_squeeze)
+14. Correlation gate (≥`MAX_CORRELATED_HOLDINGS+1` holdings with corr ≥ `MAX_CORRELATION` over `CORRELATION_LOOKBACK_DAYS`)
+15. DD-soft scaling (modifier: size *= 0.5 between SOFT and HALT thresholds)
+16. Auto-split TP at 1R (modifier: single-TP recs get 1R-TP1 prepended for partial scale-out)
+17. Whole-share gate (after all size-modifiers: `int(size_eur / entry_price) ≥ 1` — TR-SL läuft nur auf ganzen Stücken; Bruchstück-Position = SL-unmöglich = Verstoß gegen Full-Trust-Invariant)
+18. Fee gate (Brutto-Gewinn @ TP1 in €: `(TP1 − entry) × whole_shares ≥ 2 × FIXED_FEE_EUR_PER_SIDE + MIN_NET_PROFIT_EUR` — sonst Trade nach €1+€1 TR-Order-Fees Null-Summe)
 
 Liquidity gate runs earlier, before data even reaches Claude: tickers with `volume_ratio < MIN_VOLUME_RATIO`, `spread_pct > MAX_SPREAD_PERCENT`, or `price > total_capital × MAX_POSITION_SIZE_PERCENT/100 × WHOLE_SHARE_PRICE_BUFFER` (Whole-Share-Pre-Filter, helper `core.portfolio.max_affordable_share_price_eur`) are dropped from `market_data` — open trades + bestehende watch_levels werden geschützt (Exit-/Trigger-Sichtbarkeit). Stage-2-Filter im `set_watch_levels`-Merge verhindert, dass das Protected-Set sich neu mit teuren Tickers füllt.
 
 Slippage gate runs on `/confirm @price`: if `|filled − rec|/rec > MAX_ENTRY_SLIPPAGE_PERCENT`, confirm is rejected and user must re-quote.
 
 VWAP-anomaly gate runs in `core.events.detect_events`: watch-level hits with `|vwap_dev_atr| ≥ 3.0` are dropped (no Claude call). Between 2.0 and 3.0, the event is tagged with a flash-spike warning.
+
+Watch-level proximity has two modes (`core.events.detect_events`): **line-mode** (default) fires on price within ±`BREAKOUT_TRIGGER_PERCENT` of `trigger_price` with all the line-confirm gates active (direction-aware-proximity, `confirm_close_above`, support/resistance buffer). **Zone-mode** (when `zone_low` + `zone_high` are both set on the watch-level) fires on `zone_low ≤ price ≤ zone_high` and **skips** the line-confirm gates — being inside the zone IS the trigger. Volume + VWAP-anomaly checks still apply in both modes. Zone-mode is for accumulation / reversal setups where the entry zone is a band, not a precise line (manifest point 4).
+
+Snapshot field `higher_lows_5d` (`core.market_data._fetch_ticker`): 0-4 consecutive higher-lows over the last 5 daily bars. Base-formation signal for the swing-low family — Sonnet uses it as a positive confirm for `accumulation_zone` / `support_bounce` / `pre_breakout_squeeze` setups.
+
+Snapshot fields `base_quality_score` (0-10) and `base_quality_items` (`core.portfolio.compute_base_quality`, called by `_fetch_ticker`): structural-repair score per the 2026-05-20 manifest point 8. Weighted: selling_exhaustion / atr_contraction / failed_breakdown_reclaim each +2, higher_lows / strong_higher_lows / tight_close / in_base_zone each +1, capped at 10. Primary quality signal for swing-low setups — Sonnet treats it as more important than `confluence_score` (which is momentum/trend-leaning) when picking the Swing-Low family.
 
 ## Trade-state automation (events.py SL/TP loop)
 

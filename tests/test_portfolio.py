@@ -171,6 +171,62 @@ class TestComputeConfluence(unittest.TestCase):
         self.assertFalse(res["items"]["regime_risk_on"])
 
 
+class TestComputeBaseQuality(unittest.TestCase):
+    # Perfect base snapshot — should hit every positive item (max score 10).
+    PERFECT = {
+        "price": 50.0,
+        "volume_ratio": 0.5,           # selling_exhaustion (+2)
+        "range_compression": 0.4,      # atr_contraction (+2)
+        "intraday_low": 48.5,          # below ma50
+        "ma50": 49.5,                  # < price → failed_breakdown_reclaim (+2)
+        "higher_lows_5d": 4,           # higher_lows (+1) + strong_higher_lows (+1)
+        "day_high": 50.4,
+        "day_low": 49.8,               # range 0.6 / 50 = 1.2% < 0.7 × 2% = 1.4% → tight (+1)
+        "atr14_pct": 2.0,
+        "pct_below_52w_high": -15,     # in_base_zone (+1)
+    }
+
+    def test_no_data_returns_zero(self):
+        for bad in ({}, {"error": "x"}, {"price": None}):
+            res = P.compute_base_quality(bad)
+            self.assertEqual(res["score"], 0)
+            self.assertIn("no_data", res["missing"])
+
+    def test_perfect_snap_scores_ten(self):
+        res = P.compute_base_quality(self.PERFECT)
+        self.assertEqual(res["score"], 10)
+
+    def test_selling_exhaustion_weighted_two(self):
+        bare = {"price": 50.0, "volume_ratio": 0.5}
+        self.assertEqual(P.compute_base_quality(bare)["items"]["selling_exhaustion"], 2)
+        full_vol = {"price": 50.0, "volume_ratio": 1.2}
+        self.assertEqual(P.compute_base_quality(full_vol)["items"]["selling_exhaustion"], 0)
+
+    def test_failed_breakdown_reclaim_requires_low_below_ma50_and_price_above(self):
+        good = {"price": 50.0, "intraday_low": 48.0, "ma50": 49.0}
+        self.assertEqual(P.compute_base_quality(good)["items"]["failed_breakdown_reclaim"], 2)
+        # price still under ma50 → no reclaim
+        bad = {"price": 48.5, "intraday_low": 48.0, "ma50": 49.0}
+        self.assertEqual(P.compute_base_quality(bad)["items"]["failed_breakdown_reclaim"], 0)
+
+    def test_higher_lows_thresholds(self):
+        self.assertEqual(P.compute_base_quality({"price": 50, "higher_lows_5d": 1})["items"]["higher_lows"], 0)
+        self.assertEqual(P.compute_base_quality({"price": 50, "higher_lows_5d": 2})["items"]["higher_lows"], 1)
+        self.assertEqual(P.compute_base_quality({"price": 50, "higher_lows_5d": 4})["items"]["strong_higher_lows"], 1)
+        self.assertEqual(P.compute_base_quality({"price": 50, "higher_lows_5d": 3})["items"]["strong_higher_lows"], 0)
+
+    def test_base_zone_window(self):
+        self.assertEqual(P.compute_base_quality({"price": 50, "pct_below_52w_high": -15})["items"]["in_base_zone"], 1)
+        # Outside [-25, -8] both ends
+        self.assertEqual(P.compute_base_quality({"price": 50, "pct_below_52w_high": -5})["items"]["in_base_zone"], 0)
+        self.assertEqual(P.compute_base_quality({"price": 50, "pct_below_52w_high": -30})["items"]["in_base_zone"], 0)
+
+    def test_score_capped_at_ten(self):
+        # Even if all bonuses fire, score never exceeds 10
+        res = P.compute_base_quality(self.PERFECT)
+        self.assertLessEqual(res["score"], 10)
+
+
 class TestComputeCorrelations(unittest.TestCase):
     def setUp(self):
         import pandas as pd
@@ -270,6 +326,53 @@ class TestComputeHitStats(unittest.TestCase):
         ]
         stats = P.compute_hit_stats(trades)
         self.assertEqual(stats["calibration"]["haircut"], 0.0)
+
+    def test_by_base_quality_buckets_correctly(self):
+        # Mix of trades across the three BQ buckets, with explicit outcomes
+        trades = [
+            {"pnl_pct": 5, "base_quality_at_entry": 8},   # strong, win
+            {"pnl_pct": -2, "base_quality_at_entry": 7},  # strong, loss
+            {"pnl_pct": 3, "base_quality_at_entry": 5},   # building, win
+            {"pnl_pct": -4, "base_quality_at_entry": 4},  # building, loss
+            {"pnl_pct": -3, "base_quality_at_entry": 2},  # no_base, loss
+        ]
+        stats = P.compute_hit_stats(trades)
+        bbq = stats["by_base_quality"]
+        self.assertEqual(bbq["strong"]["total"], 2)
+        self.assertEqual(bbq["strong"]["wins"], 1)
+        self.assertEqual(bbq["strong"]["rate"], 50.0)
+        self.assertEqual(bbq["building"]["total"], 2)
+        self.assertEqual(bbq["building"]["wins"], 1)
+        self.assertEqual(bbq["no_base"]["total"], 1)
+        self.assertEqual(bbq["no_base"]["wins"], 0)
+        self.assertEqual(bbq["no_base"]["avg_pnl_pct"], -3.0)
+
+    def test_by_base_quality_skips_trades_without_field(self):
+        # Legacy closed_trades (no `base_quality_at_entry`) must not appear
+        # in the bucket — the metric only accumulates for instrumented trades
+        # going forward (no retroactive data).
+        trades = [
+            {"pnl_pct": 4},                              # legacy, skipped
+            {"pnl_pct": -1},                             # legacy, skipped
+            {"pnl_pct": 5, "base_quality_at_entry": 8},  # new, bucketed
+        ]
+        stats = P.compute_hit_stats(trades)
+        self.assertEqual(stats["by_base_quality"]["strong"]["total"], 1)
+        # Total trades count stays 3 (overall stats unaffected)
+        self.assertEqual(stats["total"], 3)
+
+    def test_by_base_quality_threshold_boundaries(self):
+        # Boundary: 7 → strong, 6 → building; 4 → building, 3 → no_base.
+        trades = [
+            {"pnl_pct": 1, "base_quality_at_entry": 7},  # strong
+            {"pnl_pct": 1, "base_quality_at_entry": 6},  # building
+            {"pnl_pct": 1, "base_quality_at_entry": 4},  # building
+            {"pnl_pct": 1, "base_quality_at_entry": 3},  # no_base
+        ]
+        stats = P.compute_hit_stats(trades)
+        self.assertEqual(stats["by_base_quality"]["strong"]["total"], 1)
+        self.assertEqual(stats["by_base_quality"]["building"]["total"], 2)
+        self.assertEqual(stats["by_base_quality"]["no_base"]["total"], 1)
 
 
 class TestRiskHaltStatus(unittest.TestCase):

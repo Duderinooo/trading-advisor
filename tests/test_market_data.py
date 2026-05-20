@@ -52,5 +52,31 @@ class TestSessionFraction(unittest.TestCase):
             prev = f
 
 
+class TestCountConsecutiveHigherLows(unittest.TestCase):
+    def test_all_higher(self):
+        self.assertEqual(M._count_consecutive_higher_lows([10, 11, 12, 13, 14]), 4)
+
+    def test_streak_breaks_midway(self):
+        # 10→11→12 ok (2 higher), 12→11 breaks
+        self.assertEqual(M._count_consecutive_higher_lows([10, 11, 12, 11, 13]), 2)
+
+    def test_equal_breaks_streak(self):
+        # strict greater-than: equal does NOT count
+        self.assertEqual(M._count_consecutive_higher_lows([10, 10, 11]), 0)
+
+    def test_descending_returns_zero(self):
+        self.assertEqual(M._count_consecutive_higher_lows([14, 13, 12, 11, 10]), 0)
+
+    def test_single_element_returns_zero(self):
+        self.assertEqual(M._count_consecutive_higher_lows([10]), 0)
+
+    def test_empty_returns_zero(self):
+        self.assertEqual(M._count_consecutive_higher_lows([]), 0)
+
+    def test_first_pair_higher_only(self):
+        # 10→11 ok (1), 11→9 breaks
+        self.assertEqual(M._count_consecutive_higher_lows([10, 11, 9, 12, 13]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
