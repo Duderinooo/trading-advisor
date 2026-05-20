@@ -871,8 +871,16 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
     # Bug 2026-05-07: opening hit max_tokens=500/500 twice same day (XETRA + US),
     # both dropped recommend_entry for missing ['setup_type', 'top_fail_mode'].
     # recommend_entry's full schema serialized = ~600-800 output tokens.
+    # Bug 2026-05-20: morning hit max_tokens=1200 — manifest-2 rewrite enlarged
+    # STRATEGY_PROMPT (BASE-QUALITY-SCORE, ENTRY-STATE-TAXONOMIE, swing-low
+    # philosophy sections), added zone_low/zone_high/accumulation_zone to the
+    # set_watch_levels tool schema, and WATCHLIST grew 20→27. Sonnet's new
+    # set_watch_levels(9 levels) + optional recommend_entry serialized through
+    # the richer schema overflows the old cap → tool_use cuts off mid-stream,
+    # malformed_tool_input, zero raw_levels parsed, stale levels kept. Bumped
+    # to 2500 to give comfortable headroom for 7-level set + 1 recommend_entry.
     if mode == "morning":
-        max_tokens = 1200
+        max_tokens = 2500
     elif mode == "opening":
         max_tokens = 900   # was 500 — truncated 2026-05-07 (PUM.DE recommend_entry x2)
     elif mode == "event":
