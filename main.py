@@ -14,6 +14,7 @@ import threading
 from datetime import datetime, date, timedelta
 from logging.handlers import RotatingFileHandler
 
+import anthropic
 import config
 from core import (
     analyze_portfolio,
@@ -352,6 +353,48 @@ def _mark_opening_check_done(market: str):
     portfolio = load_portfolio()
     portfolio[f"last_{market}_open_check_date"] = str(date.today())
     save_portfolio(portfolio)
+
+
+# Anthropic 529 / network blips are recurring at EU peak (Xetra open ~09:05 —
+# see 2026-05-19/-20 incidents). Once-per-day checks treat them as terminal,
+# killing the day. The transient bucket below lets the natural 15-min loop tick
+# retry instead, capped so a multi-hour outage doesn't loop forever.
+_TRANSIENT_RETRY_CAP = 3
+_TRANSIENT_RETRY_STATUSES = frozenset({429, 502, 503, 504, 529})
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """True if `exc` is a transient API / network error worth retrying."""
+    if isinstance(exc, anthropic.APIStatusError):
+        return getattr(exc, "status_code", None) in _TRANSIENT_RETRY_STATUSES
+    return isinstance(exc, (
+        anthropic.APIConnectionError, anthropic.APITimeoutError,
+        ConnectionError, TimeoutError, OSError,
+    ))
+
+
+def _transient_retry_inc(key: str) -> int:
+    """Bump today's transient-retry counter for `key`; return the new count.
+    Counter is per-day — stale entries from earlier dates are reset on bump."""
+    pf = load_portfolio()
+    bucket = pf.setdefault("transient_retries", {})
+    today = str(date.today())
+    entry = bucket.get(key) or {}
+    if entry.get("date") != today:
+        entry = {"date": today, "count": 0}
+    entry["count"] += 1
+    bucket[key] = entry
+    save_portfolio(pf)
+    return entry["count"]
+
+
+def _transient_retry_reset(key: str) -> None:
+    """Clear today's transient counter on a successful run."""
+    pf = load_portfolio()
+    bucket = pf.get("transient_retries") or {}
+    if key in bucket:
+        bucket.pop(key)
+        save_portfolio(pf)
 
 
 def _is_trading_day(d: date) -> bool:
@@ -927,15 +970,26 @@ def run_morning_prep(force: bool = False):
         else:
             send_daily_summary(analysis)
             logger.info("✅ Morning prep sent")
-        _mark_morning_prep_done()
-    except (ConnectionError, TimeoutError, OSError) as e:
-        logger.exception("Morning prep failed (network/IO)")
-        send_alert("Morning Prep Error", f"{e}\n\nKein Auto-Retry. Manuell: /morning")
+        _transient_retry_reset("morning")
         _mark_morning_prep_done()
     except Exception as e:
-        logger.exception("Morning prep failed (unexpected)")
-        send_alert("Morning Prep Error", f"{e}\n\nKein Auto-Retry. Manuell: /morning")
-        _mark_morning_prep_done()
+        if _is_transient(e):
+            n = _transient_retry_inc("morning")
+            logger.warning(
+                "Morning prep transient error (%d/%d): %s",
+                n, _TRANSIENT_RETRY_CAP, e,
+            )
+            if n >= _TRANSIENT_RETRY_CAP:
+                send_alert(
+                    "Morning Prep Error",
+                    f"{e}\n\n{n} transiente Versuche fehlgeschlagen — aufgegeben. Manuell: /morning",
+                )
+                _mark_morning_prep_done()
+            # else: silent skip — next 15-min loop tick retries naturally
+        else:
+            logger.exception("Morning prep failed (persistent)")
+            send_alert("Morning Prep Error", f"{e}\n\nKein Auto-Retry. Manuell: /morning")
+            _mark_morning_prep_done()
 
 
 def run_opening_check(market: str):
@@ -981,11 +1035,27 @@ def run_opening_check(market: str):
                 logger.info("%s open: non-actionable verdict, no notification: %s",
                             market.upper(), analysis[:80])
 
+        _transient_retry_reset(f"opening_{market}")
         _mark_opening_check_done(market)
     except Exception as e:
-        logger.exception("%s open check failed", market.upper())
-        send_alert(f"{market.upper()} Open Check Error", f"{e}\n\nKein Auto-Retry heute.")
-        _mark_opening_check_done(market)
+        if _is_transient(e):
+            key = f"opening_{market}"
+            n = _transient_retry_inc(key)
+            logger.warning(
+                "%s open check transient error (%d/%d): %s",
+                market.upper(), n, _TRANSIENT_RETRY_CAP, e,
+            )
+            if n >= _TRANSIENT_RETRY_CAP:
+                send_alert(
+                    f"{market.upper()} Open Check Error",
+                    f"{e}\n\n{n} transiente Versuche fehlgeschlagen — aufgegeben.",
+                )
+                _mark_opening_check_done(market)
+            # else: silent skip — next 15-min loop tick retries naturally
+        else:
+            logger.exception("%s open check failed (persistent)", market.upper())
+            send_alert(f"{market.upper()} Open Check Error", f"{e}\n\nKein Auto-Retry heute.")
+            _mark_opening_check_done(market)
 
 
 def run_event_check():
