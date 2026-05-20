@@ -62,6 +62,14 @@ TICKER_ISIN_MAP: dict[str, str] = {
     "HEN3.DE": "DE0006048432",  # Henkel Vz
     "PUM.DE":  "DE0006969603",  # Puma
     "ZAL.DE":  "DE000ZAL1111",  # Zalando
+    # Watchlist-Expansion 2026-05-20 (AI-Infra + Energy mid/small-caps)
+    "AIXA.DE": "DE000A0WMPJ6",  # Aixtron
+    "WAF.DE":  "DE000WAF3001",  # Siltronic
+    "SMHN.DE": "DE000A1K0235",  # Suss MicroTec
+    "NDX1.DE": "DE000A0D6554",  # Nordex
+    "S92.DE":  "DE000A0DJ6J9",  # SMA Solar
+    "VH2.DE":  "DE000A255F11",  # Friedrich Vorwerk
+    "VBK.DE":  "DE000A0JL9W6",  # VERBIO
     # Commodities / ETFs
     "4GLD.DE": "DE000A0S9GB0",  # Xetra-Gold
     "EXX1.DE": "IE00B4NCWG09",  # iShares Physical Silver

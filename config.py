@@ -97,6 +97,11 @@ SECTOR_MAP = {
     "AMD.DE": "semis",       # legacy
     "INL.DE": "semis",
     "IFX.DE": "semis",
+    # Semi-Equipment / AI-Infra (added 2026-05-20 — eigenes Cluster, damit nicht
+    # alle Halbleiter-Namen in einer Sektor-Cap-Linie liegen)
+    "AIXA.DE": "semi_equipment",   # Aixtron
+    "WAF.DE": "semi_equipment",    # Siltronic
+    "SMHN.DE": "semi_equipment",   # Suss MicroTec
     # Enterprise Software / Cloud
     "MSF.DE": "software_cloud",  # legacy
     "SAP.DE": "software_cloud",  # legacy
@@ -138,6 +143,10 @@ SECTOR_MAP = {
     # Utility / Renewables
     "RWE.DE": "utility",
     "ENR.DE": "energy_transition",
+    "NDX1.DE": "energy_transition",  # added 2026-05-20: Nordex (Wind)
+    "S92.DE": "energy_transition",   # added 2026-05-20: SMA Solar
+    "VH2.DE": "energy_transition",   # added 2026-05-20: Friedrich Vorwerk (Energie-Infra / H2)
+    "VBK.DE": "energy_transition",   # added 2026-05-20: VERBIO (Biofuels)
     # Aerospace / Defense
     "AIR.DE": "aerospace",       # legacy
     # Building Materials (cyclical)
@@ -355,6 +364,13 @@ WATCHLIST = [
     # Tech EU
     "IFX.DE",       # Infineon - €57 (Semis-EU, Auto-/IoT-Exposure)
 
+    # Semi-Equipment / AI-Infra (added 2026-05-20 — effektive Watchlist war zu
+    # eng, 9 von 20 stocks wurden in 5 Mornings nie armiert — mehr AI-Infra
+    # Kandidaten für Setup-Vielfalt)
+    "AIXA.DE",      # Aixtron - €52 (compound semis, SiC/GaN für AI/EV)
+    "WAF.DE",       # Siltronic - €89 (Silicon-Wafer für AI-Chips)
+    "SMHN.DE",      # Suss MicroTec - €87 (Wafer-Bonder, Fab-Equipment)
+
     # Auto (ICE + EV-Exposure)
     "BMW.DE",       # BMW - €78
     "MBG.DE",       # Mercedes-Benz - €50
@@ -389,6 +405,10 @@ WATCHLIST = [
     # Utility / Energy Transition
     "RWE.DE",       # RWE - €60 (Stromproduzent, Renewables)
     # ENR.DE entfernt 2026-05-04: €178 — über €100 Cap, würde dynamisch gefiltert.
+    "NDX1.DE",      # Nordex - €43 (Wind-Turbinen, added 2026-05-20)
+    "S92.DE",       # SMA Solar - €62 (Solar-Inverter, added 2026-05-20)
+    "VH2.DE",       # Friedrich Vorwerk - €70 (Energie-Infra / H2, added 2026-05-20)
+    "VBK.DE",       # VERBIO - €35 (Biofuels, added 2026-05-20)
 ]
 
 # 🛢️ ROHSTOFFE - für geopolitische Events (Iran, Krieg, etc.)
