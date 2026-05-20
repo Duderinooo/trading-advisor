@@ -676,12 +676,21 @@ def analyze_portfolio(
     format_header = ""
     if mode == "morning":
         format_header = (
-            "🚨 OUTPUT-REGEL (ZWINGEND): Dein Text-Output MUSS mit GENAU einer dieser Zeilen beginnen:\n"
+            "🚨 OUTPUT-REGEL (ZWINGEND): Dein Text-Output MUSS mit GENAU einer dieser Zeilen beginnen UND ENDEN:\n"
             "  • `TICKER | €X (+/-X%) | SL/TP | HALTEN/CLOSE/...` (für offene Position)\n"
             "  • `TICKER | Entry €X | SL €X | TP €X | Size €X | Conv X/5 | These ...` (für A+ Setup)\n"
-            "  • `Keine Setups heute.` (wenn kein A+ und keine offenen Positionen)\n"
-            "KEINE Einleitung, KEIN **Header**, KEIN 'Internal Analysis', KEIN Reasoning-Text.\n"
-            "Deine Analyse passiert intern + in Tool-Calls. Text-Output = nur die 3 erlaubten Zeilen-Formen.\n\n"
+            "  • `Keine Setups heute.` (wenn kein A+ und keine offenen Positionen)\n\n"
+            "Morning-Check ist KEIN Markt-Newsletter, KEIN Analyse-Report, KEIN Makro-Briefing.\n"
+            "Genau eine Frage: 'Gibt es heute einen asymmetrischen Swing-Entry — ja oder nein?'\n"
+            "User liest das in 3 Sekunden. Mehr Text = Decision Fatigue + Overthinking + emotional Bias.\n\n"
+            "❌ FALSCH (genau das macht Sonnet aktuell — STOP):\n"
+            "    Keine Setups heute.\n"
+            "    \n"
+            "    FOMC Minutes 20:00 + UK CPI 08:00 = Macro-Event-Tag. CON.DE Gap -3.5% und IFX.DE...\n\n"
+            "✅ RICHTIG:\n"
+            "    Keine Setups heute.\n\n"
+            "Nach der Pflicht-Zeile: EOF. Kein Newline, kein Makro-Kommentar, kein 'aber beachte...', kein Sektor-Take, kein VIX-Rant, kein Watch-Level-Recap.\n"
+            "Wenn du Reasoning hast: rein in `thesis`-Felder der Tool-Calls. Nicht in Text-Output. User sieht NUR den Text — und der muss binär sein.\n\n"
         )
     elif mode == "opening":
         format_header = (
