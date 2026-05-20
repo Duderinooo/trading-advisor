@@ -1382,11 +1382,17 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
 
     if entry_recommendation:
         # Relative-Strength Gate: kein LONG auf Lagger im Aufwärtstrend.
-        # Override für mean_reversion / reversal_oversold / gap_fill (RS-negativ ist These dort).
+        # Override für Setups die RS-negativ als Teil der These haben (mean-rev /
+        # reversal / gap_fill / pre-breakout). `pre_breakout_squeeze` ergänzt
+        # 2026-05-20: das Tag existierte im Prompt-Vokabular aber nicht hier —
+        # Lehrbuch-Lagger-Drehung (CBK rs −4.5pp → Breakout) wurde geblockt
+        # obwohl Sonnet korrekt klassifizierte. User wollte "nie am Top kaufen".
         _t = (entry_recommendation.get("ticker") or "").upper()
         _setup = (entry_recommendation.get("setup_type") or "").lower()
         _rs = (market_data.get(_t) or {}).get("rs_20d_vs_index_pct")
-        _rs_override_setups = {"mean_reversion", "reversal_oversold", "gap_fill"}
+        _rs_override_setups = {
+            "mean_reversion", "reversal_oversold", "gap_fill", "pre_breakout_squeeze",
+        }
         if isinstance(_rs, (int, float)) and _setup not in _rs_override_setups:
             if _rs < config.MIN_RS_20D_VS_INDEX_PCT:
                 logger.warning(
@@ -1424,7 +1430,7 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
         _snap = market_data.get(_t)
         _conf = compute_confluence(_snap, regime) if _snap else {"score": 0, "items": {}, "missing": ["no_data"]}
         _min_conf = config.MIN_CONFLUENCE_SCORE
-        if _setup in ("mean_reversion", "reversal_oversold", "gap_fill"):
+        if _setup in ("mean_reversion", "reversal_oversold", "gap_fill", "pre_breakout_squeeze"):
             _min_conf = max(3, config.MIN_CONFLUENCE_SCORE - 2)
         if _conf["score"] < _min_conf:
             logger.warning(
