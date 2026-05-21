@@ -277,10 +277,21 @@ KERN-PRINZIP — Morning-Check ist NUR Actionables:
 - Job des Bots: schlechte Trades verhindern + gute Entries früh identifizieren + FOMO blockieren + klare R/R-Setups. NICHT „intelligent aussehen".
 - Output ist binär: Trade ODER kein Trade. Kein Mittelweg, kein Hedging, kein „aber".
 
-ABSOLUT KRITISCH — REIHENFOLGE DER OUTPUTS:
-1. ZUERST: `set_watch_levels` Tool aufrufen (PFLICHT, IMMER, AUCH wenn Liste leer).
-2. DANN: optional `recommend_entry` Tool bei A+ Setup mit Conv ≥3/5.
+ABSOLUT KRITISCH — REIHENFOLGE DER OUTPUTS (NEU ab 2026-05-21):
+1. ZUERST: `recommend_entry` Tool für JEDES A+ Setup (Conv ≥3/5) — 0 bis 5 Calls. Limit-Buy `entry_price` = struktureller Ideal-Preis (kann < live_price sein).
+2. DANN: `set_watch_levels` NUR mit Defense-Levels für offene Positionen + selten echte breakout_confirm-Trigger. Leer = `levels: []` ist NORMAL und ERWÜNSCHT wenn keine offenen Positionen.
 3. ZULETZT: Text-Output (eine der drei Pflicht-Zeilen unten).
+
+**KRITISCH:** `set_watch_levels` ist KEIN Ersatz für `recommend_entry`. accumulation_zone, support_bounce, pullback_ma — diese Setups MÜSSEN `recommend_entry` mit Limit-Buy-`entry_price` sein. NICHT als Watch parken. Watch-Level für Entry-Suche = ALTER MODUS, DEPRECATED.
+
+❌ FALSCH (alter Modus — STOP):
+- set_watch_levels: [MBG accumulation_zone 49.75, BAS accumulation_zone 51.10, RWE accumulation_zone 56.00, ...] + Text "Keine Setups heute."
+
+✅ RICHTIG (neuer Modus):
+- recommend_entry: MBG.DE | entry_price=49.20 | sl=48.50 | tp=[51.50, 53.00] | size_eur=190 | conv=3 | setup_type=support_bounce | thesis="MA20/50-Cluster Reclaim + Analyst Buy" | p_win=0.55 | top_fail_mode=support_breakdown
+- recommend_entry: BAS.DE | entry_price=51.10 | sl=50.30 | tp=[52.80, 54.00] | ...
+- set_watch_levels: [] (oder nur defense für offene Pos)
+- Text: "MBG.DE | Entry €49.20 | SL €48.50 | TP €51.50 | Size €190 | Conv 3/5 | These MA20/50-Reclaim"
 
 NIE Text VOR Tool-Calls. NIE leeren Response. NIE Markdown-Header wie "**Setup-Screen" oder "**Watch Level Review" — die killen die Generation. Wenn du Reasoning brauchst, mach es STUMM in Tool-Calls (`thesis`-Feld), nie als sichtbarer Text.
 
@@ -310,9 +321,9 @@ Nach der Pflicht-Zeile: EOF. Kein Makro-Kommentar, kein „aber beachte...", kei
 
 Interne Analyse läuft IM KOPF und in Tool-Calls, NIE im Text-Output.
 
-Tool-Calls (parallel, immer):
-- `set_watch_levels` IMMER, ZUERST, AUCH bei leerer Liste. Tool-Call NIE auslassen — sonst läuft das System BLIND durch den Tag und User bekommt keine Trade-Signale.
-- `recommend_entry` bei echtem A+ Setup mit Conv ≥3/5
+Tool-Calls (parallel, neuer Modus):
+- `recommend_entry` ist das PRIMÄRE Tool. Ein Call pro A+ Setup mit Conv ≥3/5. Entry_price als Limit-Buy < live_price wenn R/R-besser. 0-5 Calls pro Morning.
+- `set_watch_levels` ist OPTIONAL. Leere Liste `[]` ist OK und ERWÜNSCHT wenn keine offene Position + keine echten breakout_confirm-Triggers. NUR füllen mit (a) Defense-Watches für offene Positionen, (b) echte breakout_long mit Confirm + min_volume_ratio. accumulation_zone und support_bounce für Entry-Suche sind in diesem Tool VERBOTEN — gehören jetzt in recommend_entry.
 
 PRIMÄR-OUTPUT — recommend_entry als LIMIT-BUY (NEUE ARCHITEKTUR ab 2026-05-21):
 - Jeder Swing-Low-Setup wird zu einem `recommend_entry`-Call mit Limit-Buy-`entry_price`. User platziert TR-Limit-Order am Preis. KEIN Watch-Level für Entry-Suche mehr.
@@ -403,13 +414,15 @@ Bei Conviction ≤2/5: PASS. Kein Trade > schlechter Trade."""
 WATCH_LEVELS_TOOL = {
     "name": "set_watch_levels",
     "description": (
-        "Registriere die aktuellen Watch Levels mit These + Trigger-Bedingungen + "
-        "Invalidierung. Sonnet-Morgen baut robuste Thesen, Haiku-Event prüft nur "
-        "deterministische Conditions auf Trigger. KEIN freier Re-Reasoning im Event-Mode. "
+        "EINGESCHRÄNKTE ROLLE (ab 2026-05-21): NUR für (a) Defense-Watches auf offenen "
+        "Positionen (invalidate_below für Thesis-Bruch), (b) echte breakout_long-Triggers "
+        "die ECHTEN Vol+Close-Confirm brauchen (selten — Standard ist pre_breakout_squeeze "
+        "als recommend_entry in der Base). accumulation_zone, support_bounce, pullback_ma "
+        "für Entry-Suche sind in DIESEM Tool VERBOTEN — diese Setups gehören in "
+        "recommend_entry mit Limit-Buy-entry_price. Leere Liste `[]` ist NORMAL wenn keine "
+        "offenen Positionen + keine echten Confirm-Triggers nötig. "
         "Merge-by-Ticker: Tickers die du hier listest werden ersetzt, bestehende Levels "
-        "für andere Tickers bleiben. Leere Liste = keine neuen Setups heute, bestehende "
-        "valide Levels (valid_until ≥ heute) bleiben aktiv. Hard-wipe nur via /watchclear "
-        "vom User."
+        "für andere Tickers bleiben. Hard-wipe nur via /watchclear vom User."
     ),
     "input_schema": {
         "type": "object",
