@@ -843,10 +843,13 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "kelly_clamp": rec.get("kelly_clamp"),
             "rec_entry_price": rec_entry,
             "slippage_pct": round(slippage_pct, 3),
+            "entry_fee_eur": config.FIXED_FEE_EUR_PER_SIDE,
         })
 
         portfolio.setdefault("open_trades", []).append(trade)
-        portfolio["cash_eur"] = round(cash - actual_size, 2)
+        # Entry-Fee mitbuchen (2026-05-21). User zahlt €1 an TR pro Order — Bot-Cash
+        # spiegelt das jetzt, sonst überschätzt Cash-Stand systematisch.
+        portfolio["cash_eur"] = round(cash - actual_size - config.FIXED_FEE_EUR_PER_SIDE, 2)
         pending.pop(rec_idx)
         portfolio["pending_recommendations"] = pending
 

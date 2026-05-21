@@ -871,18 +871,16 @@ def _close_partial(trade: dict, shares_to_sell: float, exit_price: float, reason
         partial["brier"] = round((p_win - outcome) ** 2, 4)
         partial["outcome"] = outcome
 
-    # Paper-Trades zahlen €1 Exit-Fee bei jedem Close (auch Partial). Real-Trades
-    # haben keine Fee hier, weil User auf TR exekutiert (Real-Cash wird vom Broker
-    # gepflegt; Bot-Cash spiegelt nominell). Symmetric to entry: paper opened with
-    # entry_fee_eur=1, partial close = exit_fee_eur=1.
-    is_paper = bool(trade.get("paper"))
-    fee = config.FIXED_FEE_EUR_PER_SIDE if is_paper else 0.0
+    # Fees immer mitbuchen (real + paper). User zahlt €1/Seite an TR — Bot-Cash
+    # muss das spiegeln damit PnL ehrlich ist. Bei €1k Kapital + ~10 Trades/Monat
+    # = €20-30 Fees = relevant für Real-Edge-Calc. Ohne diese Buchung zeigt der Bot
+    # systematisch zu hohe PnL.
+    fee = config.FIXED_FEE_EUR_PER_SIDE
     portfolio.setdefault("closed_trades", []).append(partial)
     portfolio["cash_eur"] = round(
         portfolio.get("cash_eur", 0) + (exit_price * shares_to_sell) - fee, 2,
     )
-    if is_paper:
-        partial["exit_fee_eur"] = fee
+    partial["exit_fee_eur"] = fee
 
     remaining = round(float(trade.get("shares", 0) or 0) - shares_to_sell, 4)
     trade["shares"] = max(remaining, 0.0)
@@ -945,15 +943,14 @@ def _close_trade(trade: dict, exit_price: float, reason: str, portfolio: dict):
     except Exception:
         logger.exception("SPY-attribution failed for %s", trade.get("ticker", "?"))
 
-    # Symmetric to _close_partial: Paper zahlt €1 Exit-Fee, Real nicht.
-    is_paper = bool(trade.get("paper"))
-    fee = config.FIXED_FEE_EUR_PER_SIDE if is_paper else 0.0
+    # Fees immer mitbuchen (real + paper). User zahlt €1/Seite an TR — Bot-Cash
+    # muss das spiegeln damit PnL ehrlich ist (2026-05-21).
+    fee = config.FIXED_FEE_EUR_PER_SIDE
     portfolio.setdefault("closed_trades", []).append(closed)
     portfolio["cash_eur"] = round(
         portfolio.get("cash_eur", 0) + (exit_price * shares) - fee, 2,
     )
-    if is_paper:
-        closed["exit_fee_eur"] = fee
+    closed["exit_fee_eur"] = fee
 
 
 def check_stop_loss_take_profit(paper: bool = False) -> list[dict]:
@@ -962,8 +959,8 @@ def check_stop_loss_take_profit(paper: bool = False) -> list[dict]:
     Handles trailing stops and break-even shift after TP1.
 
     paper=True läuft die gleiche Logik gegen training_portfolio.json (eigener Lock,
-    eigenes File). Paper-Trades zahlen €1/Seite Fee in _close_trade/_close_partial,
-    Real-Trades nicht (Real-Cash wird via TR-Execution gepflegt).
+    eigenes File). Beide buchen €1/Seite TR-Fee bei Exit (2026-05-21 — bot-cash
+    spiegelt jetzt User's reale TR-Fees, sonst überschätzt PnL systematisch).
     """
     if paper:
         from core.portfolio import (
@@ -1051,12 +1048,23 @@ def check_stop_loss_take_profit(paper: bool = False) -> list[dict]:
                         _pop_first_take_profit(trade)
                         portfolio_dirty = True
 
-                        if entry and (trade.get("stop_loss") is None or trade["stop_loss"] < entry):
-                            trade["stop_loss"] = entry
+                        # BE-Shift mit Fee-Buffer: bei €1k Kapital + €1 TR-Fee/Seite frisst
+                        # ein nominaler BE-Exit (€0 brutto PnL auf Rest) auf TR-Seite eine
+                        # Sell-Fee → Net-Loss. Buffer = €1 / remaining_shares hebt SL knapp
+                        # genug damit Exit zumindest die Sell-Fee deckt.
+                        shares_remaining = float(trade.get("shares", 0) or 0)
+                        be_buffer_per_share = (
+                            config.FIXED_FEE_EUR_PER_SIDE / shares_remaining
+                            if shares_remaining > 0 else 0.0
+                        )
+                        be_target = round(entry + be_buffer_per_share, 2) if entry else 0
+                        if entry and (trade.get("stop_loss") is None or trade["stop_loss"] < be_target):
+                            trade["stop_loss"] = be_target
                             alerts.append({
                                 "type": "BREAK_EVEN_SHIFT",
                                 "ticker": ticker,
-                                "new_stop": entry,
+                                "new_stop": be_target,
+                                "fee_buffer_eur": round(be_buffer_per_share * shares_remaining, 2),
                             })
                         if not trade.get("trailing_stop_pct"):
                             atr_pct = data.get("atr14_pct")
