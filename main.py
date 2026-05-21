@@ -1087,13 +1087,18 @@ def run_event_check():
                 level_type = ev.get("level_type", "?")
                 trigger = ev.get("trigger_price", 0)
                 thesis = ev.get("thesis", "")
+                source = ev.get("source", "")
                 msg = (
                     f"📍 *Watch-Hit: {ticker}* @ €{price:.2f}\n"
                     f"Setup: {level_type} (Trigger €{trigger:.2f})\n"
                 )
                 if thesis:
                     msg += f"These: {_word_truncate(thesis, 150)}\n"
-                msg += "_Sonnet's Morning-Limit-Buy aktiv? Check /pending_"
+                # Source-spezifischer Footer: Sonnet's Plan vs Auto-Watch.
+                if source == "geo_news_auto":
+                    msg += "_⚠️ Auto-Watch aus Geo-News — KEIN Sonnet-Plan. Prüfe selbst ob Entry sinnvoll (oft Late/Chase-Pattern)._"
+                else:
+                    msg += "_Sonnet's Morning-Limit-Buy aktiv? Check /pending_"
                 send_notification(msg)
             logger.info(
                 "🔔 %d watch-notify(s) sent (Telegram-only): %s",
@@ -1409,12 +1414,18 @@ def run_news_check():
                 continue
             logger.info("📰 GEO NEWS → %s: %s", comms, headline)
 
-            # Auto-add breakout watch-levels for matched commodities so the breakout
-            # gets caught by detect_events even if Claude says PASS this round.
-            try:
-                _auto_watch_geo(event["triggered_commodities"], headline)
-            except Exception:
-                logger.exception("GEO auto-watch failed")
+            # Auto-watch deaktiviert 2026-05-21. _auto_watch_geo erstellte breakout_long
+            # Watches bei +5% über CURRENT price = exakt Late-Entry-Pattern (vertikale
+            # News-Spikes sind HARD-BLOCK per Strategy "NICHT chase auf erste impulsive
+            # Candle"). Geo-News-Trigger läuft trotzdem durch analyze_portfolio (unten) —
+            # wenn Haiku die News als echten Catalyst sieht, kann es recommend_entry mit
+            # passendem Entry-Preis machen. Der Auto-Watch hat das bypassed mit naivem
+            # +5%-Trigger der parabolic-late-Stocks pumped. Beispiel heute 3OIL.MI +6% /
+            # 3BRL.MI +5.8% bei atr% 12 — wäre alles als Watch-Hit getriggert.
+            # try:
+            #     _auto_watch_geo(event["triggered_commodities"], headline)
+            # except Exception:
+            #     logger.exception("GEO auto-watch failed")
 
             ctx = f"GEO NEWS: {headline} | Commodity-Play: {comms}"
             analysis = analyze_portfolio(mode="event", event_context=ctx, force=True)

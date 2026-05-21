@@ -715,6 +715,7 @@ def detect_events() -> list[dict]:
                 "vwap_dev_atr": vwap_dev,
                 "anomaly": anomaly,
                 "priority": "HIGH" if has_open_pos else "MEDIUM",
+                "source": level.get("source", ""),
             })
 
     # Persist expiry + invalidation removals (drop levels whose conditions are gone).
