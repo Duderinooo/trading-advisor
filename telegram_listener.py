@@ -253,22 +253,23 @@ async def watchremove_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 @telegram_handler
 async def watchclear_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Hard-wipe ALL watch-levels. Confirm with arg 'yes'."""
+    """Hard-wipe ALL watch-levels. Single-step (User ist full-trust Operator)."""
     if not _authorized(update):
-        return
-    args = ctx.args or []
-    if not args or args[0].lower() != "yes":
-        await update.message.reply_text(
-            "⚠️ `/watchclear yes` löscht ALLE Watchlevels. Bestätigung nötig.",
-            parse_mode="Markdown",
-        )
         return
     with portfolio_lock:
         portfolio = load_portfolio()
-        n = len(portfolio.get("watch_levels", []))
+        levels = portfolio.get("watch_levels", [])
+        n = len(levels)
+        tickers = ", ".join(sorted({(w.get("ticker") or "?") for w in levels}))
         portfolio["watch_levels"] = []
         save_portfolio(portfolio)
-    await update.message.reply_text(f"🗑️ Alle {n} Watchlevels entfernt.")
+    if n == 0:
+        await update.message.reply_text("Keine Watchlevels vorhanden — nichts zu löschen.")
+        return
+    await update.message.reply_text(
+        f"🗑️ {n} Watchlevels entfernt.\n_{tickers}_",
+        parse_mode="Markdown",
+    )
 
 
 @telegram_handler
@@ -1284,7 +1285,7 @@ async def help_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/watch TICKER TYPE @PREIS [thesis]` — Watchlevel manuell setzen\n"
         "`/watchlist` — alle aktiven Watchlevels anzeigen\n"
         "`/watchremove TICKER` — Watchlevel(s) für Ticker entfernen\n"
-        "`/watchclear yes` — ALLE Watchlevels löschen\n"
+        "`/watchclear` — ALLE Watchlevels löschen\n"
         "`/close TICKER [@preis] [#tag]` — Position schließen (bei Verlust: #tag = Grund)\n"
         "`/dividend TICKER AMOUNT [grund]` — Dividende verbuchen (Cash + Equity-Curve)\n"
         "`/cancel` (reply) — Pending-Empfehlung verwerfen\n"
