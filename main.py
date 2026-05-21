@@ -1072,16 +1072,47 @@ def run_event_check():
         if not events:
             return
 
-        # detect_events now returns WATCH_LEVEL_HIT only (BIG_MOVE removed).
-        should_analyze, reason = should_analyze_events(events)
+        # Refactor 2026-05-21: WATCH_LEVEL_NOTIFY events sind Entry-Search-Watch-Hits auf
+        # Tickern OHNE offene Position. Sonnet's Morning-Limit-Buy-Rec ist bereits das
+        # Action-Signal — Haiku macht KEINE neuen Entry-Recs aus diesen Hits. Telegram-Notify
+        # only, kein Claude-Call. WATCH_LEVEL_HIT (Defense-Hits auf offenen Positionen) +
+        # WATCH_INVALIDATED gehen weiterhin durch analyze_portfolio.
+        notify_events = [e for e in events if e.get("type") == "WATCH_LEVEL_NOTIFY"]
+        analyze_events = [e for e in events if e.get("type") != "WATCH_LEVEL_NOTIFY"]
 
-        logger.info("🔔 %d watch level(s) hit - %s", len(events), reason)
+        if notify_events:
+            for ev in notify_events:
+                ticker = ev.get("ticker", "?")
+                price = ev.get("current_price", 0)
+                level_type = ev.get("level_type", "?")
+                trigger = ev.get("trigger_price", 0)
+                thesis = ev.get("thesis", "")
+                msg = (
+                    f"📍 *Watch-Hit: {ticker}* @ €{price:.2f}\n"
+                    f"Setup: {level_type} (Trigger €{trigger:.2f})\n"
+                )
+                if thesis:
+                    msg += f"These: {_word_truncate(thesis, 150)}\n"
+                msg += "_Sonnet's Morning-Limit-Buy aktiv? Check /pending_"
+                send_notification(msg)
+            logger.info(
+                "🔔 %d watch-notify(s) sent (Telegram-only): %s",
+                len(notify_events),
+                ", ".join(e.get("ticker", "?") for e in notify_events),
+            )
+
+        if not analyze_events:
+            return
+
+        should_analyze, reason = should_analyze_events(analyze_events)
+
+        logger.info("🔔 %d defense/invalidate event(s) - %s", len(analyze_events), reason)
 
         if not should_analyze:
             return
 
         event_descriptions = []
-        for event in events:
+        for event in analyze_events:
             desc = f"{event['ticker']} @ ${event['trigger_price']:.2f} ({event['level_type']})"
             if event.get("note"):
                 desc += f" - {event['note']}"

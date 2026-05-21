@@ -231,7 +231,7 @@ EXIT_GATE_MAX_VWAP_DEV_ATR = -0.5  # Price ≥ -0.5 ATR von VWAP = mild, kein Pa
 
 # Execution-quality gates
 MAX_ENTRY_SLIPPAGE_PERCENT = 2.0  # /confirm @filled_price rejected if |filled-rec|/rec > 2%
-PENDING_REC_TTL_HOURS = 4         # Rec veraltet nach 4h — Preis weg, Kontext veraltet → reject
+PENDING_REC_TTL_HOURS = 12        # Rec valide bis EOD — Sonnet morning rec mit Limit-Buy-Entry muss heute fillen können (08:00 → 20:00 = 12h)
 SL_SLIPPAGE_TAG_PERCENT = 1.0     # Exit ≥1% unter SL → auto-tag slippage (execution-class)
 MIN_SL_DISTANCE_ATR = 0.8         # SL näher als 0.8×ATR → Whipsaw-garantiert, block
 MAX_SL_DISTANCE_ATR = 3.0         # SL weiter als 3×ATR → Risk-Reward kaputt, block

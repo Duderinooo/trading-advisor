@@ -323,6 +323,8 @@ def _get_event_key(event: dict) -> str:
     """Unique key per event (dedup today)."""
     if event["type"] == "WATCH_LEVEL_HIT":
         return f"watch_{event['ticker']}_{event['trigger_price']}"
+    if event["type"] == "WATCH_LEVEL_NOTIFY":
+        return f"watch_notify_{event['ticker']}_{event['trigger_price']}"
     if event["type"] == "WATCH_INVALIDATED":
         return f"watch_invalid_{event['ticker']}_{event.get('invalidate_below')}"
     return str(event)
@@ -495,6 +497,13 @@ def detect_events() -> list[dict]:
     events = []
     portfolio = load_portfolio()
     excluded = set(config.EXCLUDED_TICKERS)
+    # Open-position tickers: required to distinguish defense-watches (Haiku-Call needed)
+    # from entry-search-watches (Telegram-Notify only — Sonnet's morning Limit-Buy plan
+    # is already the action signal). Architektur-Refactor 2026-05-21.
+    open_pos_tickers = {
+        (t.get("ticker") or "").upper()
+        for t in portfolio.get("open_trades", [])
+    }
     # Exit-suppressed: pending Exit-Rec aktiv ODER Cooldown nach Auto-Drop. Diese
     # Tickers triggern KEINE neuen Events (spart Haiku-€ + verhindert Re-Loop).
     suppressed = {t.upper() for t in exit_suppressed_tickers(portfolio)}
@@ -688,8 +697,14 @@ def detect_events() -> list[dict]:
             event_note = level.get("note", "")
             if anomaly:
                 event_note = (event_note + f" ⚠️ VWAP-dev {vwap_dev:+.2f}×ATR (flash-spike warn)").strip()
+            # Refactor 2026-05-21: Watch-Hit auf Ticker OHNE offene Position = Entry-Search-Hit.
+            # Sonnet's Morning-Limit-Buy-Rec ist bereits das Action-Signal — Haiku wird
+            # mid-day KEINE neuen Entry-Recs aus Watch-Hits machen. Fire-as-NOTIFY (Telegram
+            # only, no Claude-Call). Watch-Hit auf Ticker MIT offener Position = Defense-Hit
+            # (Thesis-Degradation, Resistance-Reject), bleibt HIGH-Priority für Haiku-Defender.
+            has_open_pos = ticker.upper() in open_pos_tickers
             events.append({
-                "type": "WATCH_LEVEL_HIT",
+                "type": "WATCH_LEVEL_HIT" if has_open_pos else "WATCH_LEVEL_NOTIFY",
                 "ticker": ticker,
                 "level_type": level_type,
                 "trigger_price": trigger_price,
@@ -699,7 +714,7 @@ def detect_events() -> list[dict]:
                 "invalidate_below": level.get("invalidate_below"),
                 "vwap_dev_atr": vwap_dev,
                 "anomaly": anomaly,
-                "priority": "HIGH",
+                "priority": "HIGH" if has_open_pos else "MEDIUM",
             })
 
     # Persist expiry + invalidation removals (drop levels whose conditions are gone).

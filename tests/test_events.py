@@ -158,6 +158,13 @@ class TestEventKey(unittest.TestCase):
         ev = {"type": "WATCH_INVALIDATED", "ticker": "AAPL", "invalidate_below": 140}
         self.assertEqual(E._get_event_key(ev), "watch_invalid_AAPL_140")
 
+    def test_watch_level_notify_key(self):
+        # NOTIFY-type uses same trigger_price as HIT but distinct dedup namespace
+        # so a watch can't fire as both HIT (when position opens) and NOTIFY
+        # (before) under the same key.
+        ev = {"type": "WATCH_LEVEL_NOTIFY", "ticker": "AAPL", "trigger_price": 150}
+        self.assertEqual(E._get_event_key(ev), "watch_notify_AAPL_150")
+
 
 class TestInNoEntryWindow(unittest.TestCase):
     @staticmethod
