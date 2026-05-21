@@ -676,18 +676,19 @@ def analyze_portfolio(
     format_header = ""
     if mode == "morning":
         format_header = (
-            "🚨 OUTPUT-REGEL (NEU 2026-05-21):\n"
-            "TOOL-FLOW:\n"
-            "1. Für jedes A+ Swing-Setup (Conv ≥3/5): rufe `recommend_entry` mit entry_price als Limit-Buy-Preis (darf/soll < live_price sein). 0-5 Calls.\n"
-            "2. `set_watch_levels` nur mit Defense-Watches für OFFENE Positionen (invalidate_below) oder seltene echte breakout_confirm-Trigger. Bei keine Defense nötig → `levels: []`.\n"
-            "3. Pro recommend_entry-Call eine Pflicht-Zeile im Text (durch \\n getrennt):\n"
-            "  • `TICKER | €X (+/-X%) | SL/TP | HALTEN/CLOSE` (offene Position)\n"
-            "  • `TICKER | Entry €X | SL €X | TP €X | Size €X | Conv X/5 | These ...` (recommend_entry)\n"
-            "  • `Keine Setups heute.` (0 recommend_entry, 0 offene)\n\n"
-            "STREN VERBOTEN:\n"
-            "- set_watch_levels mit accumulation_zone / support_bounce / pullback_ma als Entry-Suche-Watch (gehört in recommend_entry).\n"
-            "- Text-Output mit Markdown-Headern, Reasoning-Prefixes, Makro-Kommentar, Sektor-Take.\n"
-            "- Reasoning vor den Tool-Calls. Alle Analyse intern.\n\n"
+            "🚨 MORNING-OUTPUT-FORMAT (NEU 2026-05-21):\n\n"
+            "TOOL-FLOW (parallel, in dieser Reihenfolge):\n"
+            "1. Für jedes A+ Swing-Setup (Conv ≥3/5, R/R ≥1:2): rufe `recommend_entry` mit entry_price als Limit-Buy-Preis (darf/soll < live_price sein). 0-5 Calls.\n"
+            "2. `set_watch_levels` nur mit Defense-Watches für OFFENE Positionen oder seltene breakout_confirm-Trigger. Bei nichts → `levels: []`.\n\n"
+            "TEXT-OUTPUT STRUKTUR (genau diese 3 Sektionen, EOF danach):\n"
+            "  ZEILE 1: `Markt-Regime: SPY €X [>/<] MA200 = RISK_ON/RISK_OFF [+ RSI-Info]. VIX X.X [calm/elevated]. [kurzer Setup-Hinweis]` (max ~25 Worte)\n"
+            "  ZEILE 2: `N Ticker durchgegangen. M saubere Limit-Buy-Kandidaten:` (oder `Keine sauberen Limit-Buy-Kandidaten heute.` wenn 0)\n"
+            "  ZEILE 3+: pro recommend_entry eine Zeile `TICKER | Entry €X | SL €X | TP €X/€X | Size €X | Conv X/5 | These [max 8 Worte]`\n"
+            "  Bei offener Position zusätzlich: `TICKER | €X (+/-X%) | SL €X TP €X | HALTEN/CLOSE`\n\n"
+            "❌ STRENG VERBOTEN:\n"
+            "- set_watch_levels mit accumulation_zone/support_bounce/pullback_ma als Entry-Suche (gehört in recommend_entry).\n"
+            "- Text mit Markdown-Headern, **Bold-Headers**, Reasoning-Prefixes (\"Schritt 1:\", \"Analyse:\", \"Internal\").\n"
+            "- Nach Zeile 3+: KEIN PASS-Begründung für andere Tickers, KEIN Sektor-Take, KEIN Watch-Level-Recap, KEIN \"aber beachte...\" Hedging.\n\n"
         )
     elif mode == "opening":
         format_header = (
