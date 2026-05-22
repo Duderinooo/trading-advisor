@@ -961,72 +961,11 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
         extra={"event_context": event_context} if event_context else None,
     )
 
-    # 2-Turn-Flow: tool calls without text → send tool_result back for summary.
-    # Skip in event/opening (tool-only modes): wir wollen explizit KEINE Prosa-
-    # Zusammenfassung, sonst frisst der 2. Turn die gesparten Tokens wieder auf.
-    if (
-        tool_use_blocks
-        and response.stop_reason == "tool_use"
-        and not text_parts
-        and mode not in ("event", "opening")
-    ):
-        tool_result_content = []
-        for tb in tool_use_blocks:
-            if tb.name == "set_watch_levels":
-                result_text = f"Watch Levels registriert: {len(new_levels or [])} Level(s)."
-            elif tb.name == "recommend_entry":
-                rec_ticker = (entry_recommendation or {}).get("ticker", "?")
-                result_text = f"Entry-Empfehlung für {rec_ticker} gespeichert."
-            elif tb.name == "recommend_add_to_position":
-                add_ticker = (add_recommendation or {}).get("ticker", "?")
-                result_text = f"Add-Empfehlung für {add_ticker} gespeichert."
-            elif tb.name == "update_position_targets":
-                upd_ticker = (update_targets or {}).get("ticker", "?")
-                result_text = f"SL/TP-Update für {upd_ticker} gespeichert."
-            elif tb.name == "recommend_exit":
-                exit_ticker = (exit_recommendation or {}).get("ticker", "?")
-                result_text = f"Exit-Empfehlung für {exit_ticker} gespeichert."
-            elif tb.name == "submit_pass":
-                result_text = f"PASS akzeptiert: {pass_reason or '(no reason)'}"
-            else:
-                result_text = "OK"
-            tool_result_content.append({
-                "type": "tool_result",
-                "tool_use_id": tb.id,
-                "content": result_text,
-            })
-        tool_result_content[-1]["content"] += " Kurze Zusammenfassung bitte."
-
-        turn2_kwargs = {
-            "model": model,
-            "max_tokens": max_tokens,
-            "system": create_kwargs["system"],
-            "messages": [
-                {"role": "user", "content": analysis_request},
-                {"role": "assistant", "content": response.content},
-                {"role": "user", "content": tool_result_content},
-            ],
-        }
-
-        response2 = client.messages.create(**turn2_kwargs)
-        increment_usage(forced=is_high_priority)
-        _log_usage(response2, turn=2)
-
-        _t2_text_parts: list[str] = []
-        for block in response2.content:
-            if getattr(block, "type", None) == "text":
-                text_parts.append(block.text)
-                _t2_text_parts.append(block.text)
-        log_claude_call(
-            mode=mode,
-            model=model,
-            turn=2,
-            system_prompt=system_prompt,
-            user_message="(turn-2 follow-up: tool_results + 'Kurze Zusammenfassung bitte.')",
-            text_response="\n".join(_t2_text_parts),
-            tool_calls=[],
-            usage=getattr(response2, "usage", None),
-        )
+    # Turn-2-Follow-up entfernt 2026-05-22: LLM=Decision-Engine + Backend=Presentation.
+    # Text-Output wird Backend-seitig verworfen (s. main._render_morning_brief). Turn-2
+    # "Kurze Zusammenfassung bitte" verbrennt ~14k input tokens für Text der niemand
+    # konsumiert. Alle Live-Modi (morning/event/opening) brauchen es nicht. Standard-
+    # Modus ist Dead-Code (kein Call-Site mehr).
 
     # Dedupe consecutive identical lines: Sonnet sometimes emits the same
     # status line in multiple text-blocks (e.g. RWE.DE | … HALTEN twice when
