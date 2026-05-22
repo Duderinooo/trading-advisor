@@ -5,7 +5,6 @@ Monitors markets and triggers analysis when important events happen.
 """
 
 import os
-import re
 import time
 import logging
 import signal
@@ -101,22 +100,6 @@ def _heartbeat_watchdog():
             logger.error("Watchdog tick failed: %s", exc)
 
 
-# Strict grammar: first non-empty line MUST start with an action verb followed by
-# a ticker and a separator. Markdown preamble or "Internal Analysis" blocks fail
-# this match silently. Synonyms (BUY/KAUFEN/SELL/VERKAUFEN/CLOSE) get normalized
-# to canonical actions for the schema validator.
-_ACTION_GRAMMAR = re.compile(
-    r"^(?P<action>ENTRY|EXIT|ADD|REDUCE|CLOSE|BUY|SELL|KAUFEN|VERKAUFEN)"
-    r"\s*[:|]\s*(?P<ticker>[A-Z0-9.\-\^]{1,12})\s*[|@]\s*(?P<rest>.+)",
-    re.IGNORECASE,
-)
-
-_ACTION_NORMALIZE = {
-    "BUY": "ENTRY", "KAUFEN": "ENTRY",
-    "SELL": "EXIT", "VERKAUFEN": "EXIT", "CLOSE": "EXIT",
-}
-
-
 # Drawdown-cross alert thresholds (% from peak).
 _DD_ALERT_THRESHOLDS = (5.0, 10.0, 15.0, 20.0)
 
@@ -208,128 +191,6 @@ def _check_equity_alerts():
                 save_portfolio(pf)
     except Exception:
         logger.exception("Equity alerts check failed")
-
-
-def _enrich_extras_for_add(parsed: dict, base_extras: dict, portfolio: dict | None = None) -> dict:
-    """When Claude emits 'ADD: ...' as TEXT (e.g. tool-call gates blocked or Sonnet-lazy),
-    look up the open trade and surface Bestand/SL so user has actionable context.
-    Without this, ADD text-mode shows just '🎯 ADD | TICKER' with no size hint.
-
-    Also: inject TR-WKN for all actions if the ticker maps in `config.TR_WKN_MAP`.
-    User trades on TR via WKN, not yfinance ticker — alert must surface what to type
-    in the broker app.
-
-    Pass `portfolio` if already loaded (e.g. by _parse_actionable) to avoid a duplicate
-    file read on the hot path."""
-    enriched = dict(base_extras)
-
-    # WKN-injection for any action (ENTRY/EXIT/ADD/REDUCE) — only present when
-    # yfinance-ticker differs from TR-tradable WKN. Surfaced first so user sees it
-    # at a glance.
-    ticker = (parsed or {}).get("ticker", "").upper()
-    wkn = config.TR_WKN_MAP.get(ticker)
-    if wkn:
-        enriched = {"TR-WKN": wkn, **enriched}
-
-    if (parsed or {}).get("action") != "ADD":
-        return enriched
-    if portfolio is None:
-        portfolio = load_portfolio()
-    open_trade = next(
-        (t for t in portfolio.get("open_trades", [])
-         if (t.get("ticker") or "").upper() == ticker),
-        None,
-    )
-    if not open_trade:
-        return enriched
-    enriched["Bestand"] = (
-        f"€{float(open_trade.get('size_eur') or 0):.0f} "
-        f"@ €{float(open_trade.get('entry_price') or 0):.2f}"
-    )
-    sl = open_trade.get("stop_loss")
-    if sl:
-        enriched["SL"] = f"€{float(sl):.2f}"
-    enriched["Hinweis"] = "Size+Preis via /add command bestimmen"
-    return enriched
-
-
-def _parse_actionable(analysis: str, portfolio: dict | None = None) -> dict | None:
-    """Parse Claude's verdict line into a structured dict, or None if non-actionable.
-
-    Returns {"action": ENTRY|EXIT|ADD|REDUCE, "ticker": ..., "reason": ...}
-    Drops:
-    - PASS/HALTEN/HOLD verdicts.
-    - Grammar misses (markdown preamble, multi-line analysis, etc.).
-    - EXIT/ADD/REDUCE on tickers without an open position (Bug 2026-05-02:
-      WATCH_INVALIDATED on NVD.DE → Haiku emitted 'EXIT: NVD.DE' text →
-      Telegram even though no NVDA position existed).
-    - ENTRY/EXIT/ADD that the analyzer.py tool path *just persisted* as a
-      pending_recommendation — text dup-message suppressed (Bug 2026-05-02:
-      SIE.DE rec sent both via recommend_entry tool AND text-parse).
-
-    Caller may pass a pre-loaded `portfolio` to skip a redundant file read.
-    """
-    if not analysis:
-        return None
-    first = analysis.strip().split("\n", 1)[0].strip().lstrip("*•` ")
-    if first.upper().startswith(("PASS", "HALTEN", "HOLD")):
-        return None
-    m = _ACTION_GRAMMAR.match(first)
-    if not m:
-        return None
-    raw = m.group("action").upper()
-    action = _ACTION_NORMALIZE.get(raw, raw)
-    ticker = m.group("ticker").upper()
-
-    pf = portfolio if portfolio is not None else load_portfolio()
-    open_tickers = {(t.get("ticker") or "").upper() for t in pf.get("open_trades", [])}
-
-    if action in ("EXIT", "ADD", "REDUCE") and ticker not in open_tickers:
-        logger.info(
-            "Text-parse %s suppressed: %s has no open position", action, ticker,
-        )
-        return None
-
-    # Pending check serves both dedup AND orphan-detection:
-    # - Recent pending for ticker → structured rec already went out (dup) → suppress.
-    # - For ENTRY without any recent pending → tool path didn't persist (red-team
-    #   killed it, slippage gate, etc.). Text-parse would send a /confirm message
-    #   user can't actually act on (Bug 2026-04-30: 3OIL.MI ENTRY text emitted
-    #   even though red-team blocked the tool, leaving user with no /confirm
-    #   target). Suppress.
-    now = datetime.now()
-    has_recent_pending = False
-    for rec in pf.get("pending_recommendations", []) or []:
-        if (rec.get("ticker") or "").upper() != ticker:
-            continue
-        ts = rec.get("timestamp")
-        if not ts:
-            continue
-        try:
-            rec_dt = datetime.strptime(ts, "%Y-%m-%d %H:%M")
-        except ValueError:
-            continue
-        if (now - rec_dt) <= timedelta(minutes=5):
-            has_recent_pending = True
-            break
-    if has_recent_pending:
-        logger.info(
-            "Text-parse %s suppressed: structured rec for %s already pending",
-            action, ticker,
-        )
-        return None
-    if action == "ENTRY":
-        logger.info(
-            "Text-parse ENTRY suppressed: %s has no pending rec — "
-            "tool path likely blocked by gates (red-team / risk-halt)", ticker,
-        )
-        return None
-
-    return {
-        "action": action,
-        "ticker": ticker,
-        "reason": m.group("rest").strip()[:200],
-    }
 
 
 def _render_morning_brief() -> str:
@@ -1161,22 +1022,9 @@ def run_opening_check(market: str):
             logger.info("%s open check: %s", market.upper(), analysis)
             return
 
-        if "(keine Text-Analyse)" in analysis:
-            logger.info("%s open: tool-only call, Telegram already sent by tool handler",
-                        market.upper())
-        else:
-            pf = load_portfolio()
-            parsed = _parse_actionable(analysis, portfolio=pf)
-            if parsed:
-                extras = _enrich_extras_for_add(parsed, {"Open": label}, portfolio=pf)
-                send_actionable(
-                    parsed["action"], parsed["ticker"],
-                    size=None, reason=parsed["reason"], extras=extras,
-                )
-                logger.info("✅ %s open check sent (action flagged)", market.upper())
-            else:
-                logger.info("%s open: non-actionable verdict, no notification: %s",
-                            market.upper(), analysis[:80])
+        # Tool-call-only runtime (v9): analyzer's tool handlers send Telegrams direct.
+        # No text-parsing here. analysis var is just kept for log+skip detection.
+        logger.info("%s open check done", market.upper())
 
         _transient_retry_reset(f"opening_{market}")
         _mark_opening_check_done(market)
@@ -1270,28 +1118,10 @@ def run_event_check():
 
         analysis = analyze_portfolio(mode="event", event_context=event_context)
 
-        # Tool-call path (recommend_entry/recommend_add) already sent its own rich
-        # Telegram from analyzer.py. Cooldown / API-skip just logs. Otherwise parse
-        # Claude's text verdict into the schema and forward as ONE actionable msg.
         if analysis.startswith("⚠️ Analysis skipped"):
             logger.info("Event analysis skipped: %s", analysis)
-        elif "(keine Text-Analyse)" in analysis:
-            logger.info("Event: tool-only call, Telegram already sent by tool handler")
         else:
-            pf = load_portfolio()
-            parsed = _parse_actionable(analysis, portfolio=pf)
-            if parsed:
-                extras = _enrich_extras_for_add(
-                    parsed, {"Watch": _word_truncate(event_context, 150)},
-                    portfolio=pf,
-                )
-                send_actionable(
-                    parsed["action"], parsed["ticker"],
-                    size=None, reason=parsed["reason"], extras=extras,
-                )
-                logger.info("✅ Event verdict sent: %s", analysis.split('\n')[0][:80])
-            else:
-                logger.info("Event non-actionable, suppressed: %s", analysis.split('\n')[0][:80])
+            logger.info("Event check done — tool handlers sent any Telegrams directly")
 
     except Exception:
         logger.exception("Event check failed")
@@ -1460,23 +1290,8 @@ _Watch closely_"""
 
             if analysis.startswith("⚠️ Analysis skipped"):
                 logger.info("Price alert analysis skipped: %s", analysis)
-            elif "(keine Text-Analyse)" in analysis:
-                logger.info("Price alert: tool-only call, Telegram already sent by tool handler")
             else:
-                pf = load_portfolio()
-                parsed = _parse_actionable(analysis, portfolio=pf)
-                if parsed:
-                    extras = _enrich_extras_for_add(
-                        parsed, {"Move": _word_truncate(event_context, 150)},
-                        portfolio=pf,
-                    )
-                    send_actionable(
-                        parsed["action"], parsed["ticker"],
-                        size=None, reason=parsed["reason"], extras=extras,
-                    )
-                    logger.info("✅ Price alert verdict sent: %s", analysis.split('\n')[0][:80])
-                else:
-                    logger.info("Price alert non-actionable, suppressed: %s", analysis.split('\n')[0][:80])
+                logger.info("Price alert check done — tool handlers sent any Telegrams")
     except Exception:
         logger.exception("Price check failed")
 
@@ -1571,24 +1386,10 @@ def run_news_check():
             #     logger.exception("GEO auto-watch failed")
 
             ctx = f"GEO NEWS: {headline} | Commodity-Play: {comms}"
-            analysis = analyze_portfolio(mode="event", event_context=ctx, force=True)
+            analyze_portfolio(mode="event", event_context=ctx, force=True)
             _geo_seen[comm_key] = _now_iso
             _dirty = True
-            pf = load_portfolio()
-            parsed = _parse_actionable(analysis, portfolio=pf)
-            if parsed:
-                extras = _enrich_extras_for_add(
-                    parsed,
-                    {"GEO": _word_truncate(headline, 150), "Setup": comms},
-                    portfolio=pf,
-                )
-                send_actionable(
-                    parsed["action"], parsed["ticker"],
-                    size=None, reason=parsed["reason"], extras=extras,
-                )
-            else:
-                logger.info("GEO news non-actionable, suppressed: %s",
-                            (analysis or "").split('\n')[0][:80])
+            logger.info("GEO news event done — tool handlers sent any Telegrams")
 
         if _dirty:
             with portfolio_lock:
@@ -1626,21 +1427,8 @@ def run_news_check():
             tickers = list({e["source_ticker"] for e in stocks})
             logger.info("📰 STOCK NEWS (%d): %s", len(stocks), headlines[:120])
             ctx = f"NEWS: {headlines}"
-            analysis = analyze_portfolio(mode="event", event_context=ctx)
-            pf = load_portfolio()
-            parsed = _parse_actionable(analysis, portfolio=pf)
-            if parsed:
-                extras = _enrich_extras_for_add(
-                    parsed, {"News": _word_truncate(headlines, 150)},
-                    portfolio=pf,
-                )
-                send_actionable(
-                    parsed["action"], parsed["ticker"],
-                    size=None, reason=parsed["reason"], extras=extras,
-                )
-            else:
-                logger.info("Stock news non-actionable, suppressed: %s",
-                            (analysis or "").split('\n')[0][:80])
+            analyze_portfolio(mode="event", event_context=ctx)
+            logger.info("Stock news event done — tool handlers sent any Telegrams")
 
         _news_check_consec_failures = 0
         _news_check_alert_sent = False
