@@ -332,6 +332,110 @@ def _parse_actionable(analysis: str, portfolio: dict | None = None) -> dict | No
     }
 
 
+def _render_morning_brief() -> str:
+    """Deterministic morning Telegram aus portfolio state + live market.
+
+    Architektur (2026-05-22): LLM = Decision-Engine (tool-calls only).
+    Backend = Presentation. Kein Forwarding von Sonnet's freiem Text.
+    """
+    from core.market_data import get_market_data
+
+    pf = load_portfolio()
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # Regime line aus SPY + VIX.
+    try:
+        indices = get_market_data(list(config.MARKET_INDICATORS))
+    except Exception:
+        indices = {}
+    spy = indices.get("SPY5.DE") or indices.get("SPY") or {}
+    vix = indices.get("^VIX") or {}
+    spy_p, spy_ma200, spy_rsi = spy.get("price"), spy.get("ma200"), spy.get("rsi14")
+    vix_p = vix.get("price")
+
+    if isinstance(spy_p, (int, float)) and isinstance(spy_ma200, (int, float)):
+        regime = "RISK_ON" if spy_p > spy_ma200 else "RISK_OFF"
+        cmp = ">" if spy_p > spy_ma200 else "<"
+        regime_line = f"📊 *Markt:* SPY €{spy_p:.2f} {cmp} MA200 = {regime}"
+        if isinstance(spy_rsi, (int, float)):
+            tag = " überkauft" if spy_rsi > 70 else (" oversold" if spy_rsi < 30 else "")
+            regime_line += f" (RSI {spy_rsi:.0f}{tag})"
+        if isinstance(vix_p, (int, float)):
+            vtag = "calm" if vix_p < 20 else ("elevated" if vix_p < 30 else "spike")
+            regime_line += f" · VIX {vix_p:.1f} {vtag}"
+    else:
+        regime_line = "📊 *Markt:* Daten n/a"
+
+    # Heute neue entry-recs aus pending_recommendations.
+    pending = pf.get("pending_recommendations", []) or []
+    entry_recs = [
+        r for r in pending
+        if r.get("kind", "entry") in ("entry", None)
+        and (r.get("timestamp", "") or "").startswith(today)
+    ]
+    open_trades = pf.get("open_trades", []) or []
+    watch_levels = pf.get("watch_levels", []) or []
+
+    n_analyzed = len(set(config.WATCHLIST))
+    if entry_recs:
+        summary = f"🔍 {n_analyzed} Ticker analysiert. {len(entry_recs)} Limit-Buy-Kandidat(en):"
+    else:
+        summary = f"🔍 {n_analyzed} Ticker analysiert. Keine sauberen Limit-Buy-Kandidaten heute."
+
+    # Per-entry lines.
+    entry_lines = []
+    for r in entry_recs:
+        t = r.get("ticker", "?")
+        ep = float(r.get("entry_price") or 0)
+        sl = float(r.get("stop_loss") or 0)
+        tp = r.get("take_profit") or []
+        size = float(r.get("size_eur") or 0)
+        conv = r.get("conviction") or 0
+        signal = r.get("primary_signal") or r.get("thesis", "")
+        tp_list = tp if isinstance(tp, list) else [tp]
+        tp_str = "/".join(f"€{float(x):.2f}" for x in tp_list if x)
+        line = f"💎 *{t}* | Entry €{ep:.2f} | SL €{sl:.2f} | TP {tp_str} | Size €{size:.0f} | Conv {conv}/5"
+        if signal:
+            line += f"\n  _{signal[:100]}_"
+        entry_lines.append(line)
+
+    # Open-position lines mit Live-Preis.
+    open_lines = []
+    if open_trades:
+        try:
+            live = get_market_data([t.get("ticker") for t in open_trades if t.get("ticker")])
+        except Exception:
+            live = {}
+        for t in open_trades:
+            tk = t.get("ticker", "?")
+            ep = float(t.get("entry_price") or 0)
+            sl = float(t.get("stop_loss") or 0)
+            tp = t.get("take_profit") or []
+            cur = float(live.get(tk, {}).get("price", ep) or ep)
+            chg_pct = ((cur - ep) / ep * 100) if ep > 0 else 0
+            tp_list = tp if isinstance(tp, list) else [tp]
+            tp_str = "/".join(f"€{float(x):.2f}" for x in tp_list if x)
+            open_lines.append(
+                f"📌 *{tk}* | €{cur:.2f} ({chg_pct:+.1f}%) | SL €{sl:.2f} TP {tp_str} | HALTEN"
+            )
+
+    parts = [regime_line, summary]
+    if entry_lines:
+        parts.append("")  # blank line
+        parts.extend(entry_lines)
+    if open_lines:
+        parts.append("")
+        parts.append("*Offene Positionen:*")
+        parts.extend(open_lines)
+    if watch_levels:
+        defense_only = [w for w in watch_levels if w.get("invalidate_below")]
+        if defense_only:
+            parts.append("")
+            parts.append(f"🛡️ {len(defense_only)} Defense-Watch(es) aktiv")
+
+    return "\n".join(parts)
+
+
 def _morning_prep_done_today() -> bool:
     """Check if morning prep already ran today (persisted in portfolio.json)."""
     portfolio = load_portfolio()
@@ -915,94 +1019,37 @@ def run_morning_prep(force: bool = False):
         analysis = analyze_portfolio(
             mode="morning", force=force, bypass_cooldown=force
         )
-        # Output-Sanitizer (2026-05-22): Sonnet schrieb v7-Morning eine Brain-Dump-
-        # Essay statt 3-Section-Format. Strippe alles vor der ersten validen Zeile
-        # (Markt-Regime / TICKER | Entry / Keine sauberen / TICKER | €).
-        if analysis and not analysis.startswith("⚠️ Analysis skipped"):
-            import re
-            lines = analysis.splitlines()
-            valid_start_idx = None
-            valid_patterns = (
-                "Markt-Regime:",
-                "Keine sauberen Limit-Buy-Kandidaten",
-                "Keine Setups heute",
-            )
-            entry_line_re = re.compile(r"^[A-Z0-9]+\.?[A-Z]{0,3}\s+\|\s+(Entry|€)")
-            for i, line in enumerate(lines):
-                stripped_line = line.strip()
-                if any(stripped_line.startswith(p) for p in valid_patterns):
-                    valid_start_idx = i
-                    break
-                if entry_line_re.match(stripped_line):
-                    valid_start_idx = i
-                    break
-            if valid_start_idx is not None and valid_start_idx > 0:
-                prefix_strip_len = sum(len(l) + 1 for l in lines[:valid_start_idx])
-                logger.warning(
-                    "Morning output sanitized: stripped %d chars / %d lines of pre-amble",
-                    prefix_strip_len, valid_start_idx,
-                )
-                analysis = "\n".join(lines[valid_start_idx:])
-            elif valid_start_idx is None and len(analysis) > 200:
-                # No valid line found — Sonnet drifted hard. Replace with status.
-                logger.error(
-                    "Morning output drift: no valid Pflicht-Zeile found in %d-char response",
-                    len(analysis),
-                )
-                analysis = "⚠️ Sonnet-Drift: Output ohne gültige Pflicht-Zeile. Bot-Tool-Calls liefen ggf. trotzdem. Check /pending."
-
-        stripped = (analysis or "").strip().lower()
         if analysis and analysis.startswith("⚠️ Analysis skipped"):
             # Cooldown/cap blocked the call → don't mark done, don't notify (retry later).
             logger.info("Morning prep deferred: %s", analysis)
             return
-        if "(keine text-analyse)" in stripped or not stripped:
-            # Sonnet emitted only tool-calls (set_watch_levels / recommend_entry) without
-            # text. Build a deterministic status heartbeat so user has explicit feedback
-            # whether bot ran + 0-watchlevel-day is intentional vs system-broken.
-            pf = load_portfolio()
-            wcount = len(pf.get("watch_levels", []))
-            ocount = len(pf.get("open_trades", []))
-            pcount = len(pf.get("pending_recommendations", []))
-            # Distinguish "Sonnet legitimately silent" from "Sonnet failed".
-            # Bug 2026-05-07: stop_sequences killed Sonnet at out=3 tokens, no
-            # tool_use, no text — _check sent "Morning OK" while bot was blind.
-            tr = pf.get("last_morning_trace") or {}
-            tool_called = bool(tr.get("tool_called"))
-            sonnet_failed = (
-                not tool_called
-                and (tr.get("output_tokens") or 0) < 20
-                and not tr.get("sonnet_text")
+
+        # Sonnet-Text-Output wird VERWORFEN (2026-05-22). LLM = Decision-Engine via
+        # Tool-Calls. Backend rendert Telegram deterministic aus portfolio-state.
+        # Tool-call results landen in pending_recommendations / open_trades / watch_levels
+        # via existing handlers; hier nur noch presentation.
+        pf = load_portfolio()
+        tr = pf.get("last_morning_trace") or {}
+        tool_called = bool(tr.get("tool_called"))
+        sonnet_failed = (
+            not tool_called
+            and (tr.get("output_tokens") or 0) < 20
+        )
+        if sonnet_failed:
+            send_alert(
+                "🚨 MORNING FAIL — Sonnet schwieg",
+                f"Sonnet emittierte {tr.get('output_tokens')} tokens, "
+                f"stop={tr.get('stop_reason')}, kein tool_use. "
+                f"Bot ist heute BLIND. Manuell: /morning erneut.",
             )
-            if sonnet_failed:
-                send_alert(
-                    "🚨 MORNING FAIL — Sonnet schwieg",
-                    f"Sonnet emittierte {tr.get('output_tokens')} tokens, "
-                    f"stop={tr.get('stop_reason')}, kein tool_use, kein text. "
-                    f"Bot ist heute BLIND (keine Watchlevels, keine Setup-Detection). "
-                    f"Manuell prüfen + ggf. /morning erneut.",
-                )
-                logger.error(
-                    "Morning brief: Sonnet returned empty (out_tok=%s, stop=%s) — "
-                    "alert sent, NOT marking morning prep done",
-                    tr.get("output_tokens"), tr.get("stop_reason"),
-                )
-                return  # Don't mark done so next loop tick retries.
-            if wcount > 0:
-                reason = f"{wcount} Watchlevel(s) für heute aktiv"
-            elif ocount > 0:
-                reason = "Keine neuen A+ Setups, laufende Positionen halten"
-            else:
-                reason = "Keine A+ Setups, kein Watchlevel, kein offener Trade"
-            send_notification(
-                f"🌅 *Morning OK* | {datetime.now().strftime('%H:%M')}\n"
-                f"Watchlevels: {wcount} | Positionen: {ocount} | Pending: {pcount}\n"
-                f"Status: {reason}"
+            logger.error(
+                "Morning brief: Sonnet returned empty (out_tok=%s, stop=%s)",
+                tr.get("output_tokens"), tr.get("stop_reason"),
             )
-            logger.info("Morning brief: tool-only call, status heartbeat sent")
-        else:
-            send_daily_summary(analysis)
-            logger.info("✅ Morning prep sent")
+            return  # Don't mark done so next loop tick retries.
+
+        send_daily_summary(_render_morning_brief())
+        logger.info("✅ Morning prep sent (deterministic render)")
         _transient_retry_reset("morning")
         _mark_morning_prep_done()
     except Exception as e:

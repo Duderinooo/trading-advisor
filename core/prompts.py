@@ -182,58 +182,31 @@ KONTEXT-SEKTIONEN (User-Message-Felder, stumm anwenden):
 STRATEGY_SYSTEM = STRATEGY_PROMPT + _EXCLUDED_SUFFIX + _SECTION_LEGEND
 
 
-MORNING_PREP_PROMPT = """☀️ MORNING — Tagestrade-Plan, NUR Actionables.
+MORNING_PREP_PROMPT = """☀️ MORNING — AUSSCHLIESSLICH Tool-Calls. Jeder freie Text ist invalid.
 
-TOOL-FLOW:
-1. recommend_entry für JEDES A+ Setup (Conv ≥3, R/R ≥1:2). 0-5 parallele Calls. Limit-Buy entry_price = Strukturpreis (kann < live_price).
-2. set_watch_levels NUR Defense-Watches für offene Positionen. Leer (`levels: []`) ist normal.
-3. submit_pass wenn 0 Setups + 0 offene Positionen.
+Pro A+ Setup (Conv ≥3, R/R ≥1:2): recommend_entry. 0-5 Calls.
+set_watch_levels nur Defense-Watches für offene Positionen.
+submit_pass wenn 0 Setups + 0 offene Positionen.
 
-TEXT-OUTPUT (genau diese 3 Sektionen, EOF danach):
-ZEILE 1: `Markt-Regime: SPY €X [>/<] MA200 = RISK_ON/RISK_OFF [+ RSI-Info]. VIX X.X. [kurzer Setup-Hinweis]` (max ~25 Worte)
-ZEILE 2: `N Ticker durchgegangen. M saubere Limit-Buy-Kandidaten:` ODER `Keine sauberen Limit-Buy-Kandidaten heute.`
-ZEILE 3+: pro recommend_entry eine Zeile `TICKER | Entry €X | SL €X | TP €X/€X | Size €X | Conv X/5 | These [max 8 Worte]`
-Bei offener Position zusätzlich: `TICKER | €X (+/-X%) | SL €X TP €X | HALTEN/CLOSE`
-
-Beispiel:
-```
-Markt-Regime: SPY €637.64 > MA200 = RISK_ON aber RSI 76 überkauft. VIX 17.44 calm. Indizes am Top → Swing-Low/Pullback.
-27 Ticker durchgegangen. 3 saubere Limit-Buy-Kandidaten:
-MBG.DE | Entry €49.30 | SL €48.50 | TP €51.50/€53.00 | Size €197 | Conv 3/5 | These MA-Cluster-Reclaim
-RWE.DE | Entry €55.50 | SL €54.50 | TP €58.00/€60.50 | Size €166 | Conv 3/5 | These MA50-Pullback
-BAYN.DE | Entry €38.80 | SL €38.00 | TP €40.50/€42.00 | Size €194 | Conv 3/5 | These MA50-Support
-```
-
-VERBOTEN: Text vor Tool-Calls, Markdown-Headers, Reasoning-Prefixes ("Schritt 1", "Analyse:", "Internal"). Nach Zeile 3+: kein Sektor-Take, kein Watch-Recap, keine PASS-Begründungen für andere Tickers."""
+Backend rendert Telegram deterministic aus tool-call results."""
 
 
-OPENING_CHECK_PROMPT = """🔔 OPEN-CHECK — Delta-Check nach Open. Default = nichts senden.
+OPENING_CHECK_PROMPT = """🔔 OPEN-CHECK — AUSSCHLIESSLICH Tool-Calls. Jeder freie Text ist invalid.
 
-Erste/einzige Zeile:
-- `EXIT: TICKER | Grund` (+ recommend_exit Tool)
-- `ENTRY: TICKER | Entry €X | SL €X | TP €X | Size €X | Conv X/5 | These ...` (+ recommend_entry)
-- `ADD: TICKER | Grund` (+ recommend_add_to_position)
-- `PASS: TICKER | Grund` ODER submit_pass-Tool
-
-Kein Makro/Sektor/Regime. Kein set_watch_levels (keine Neu-Planung)."""
+Delta nach Market-Open. Default = submit_pass (nichts geändert).
+recommend_exit / recommend_entry / recommend_add_to_position wenn Action nötig.
+Kein set_watch_levels (keine Neu-Planung)."""
 
 
-EVENT_TRIGGER_PROMPT = """🚨 EVENT — Defender + News-Catalyst only.
+EVENT_TRIGGER_PROMPT = """🚨 EVENT — AUSSCHLIESSLICH Tool-Calls. Jeder freie Text ist invalid.
 
-Morning = Sonnet plant Tagestrade. Event = du bist:
+Defender + News-Catalyst:
 (a) Defender offener Positionen: Thesis-Degradation, Exit-Triggers, Invalidate-Watch-Hits.
-(b) News-Catalyst-Recommender bei ECHTER News (Buyback, Earnings-Beat-Surprise, M&A, frischer Analyst-Upgrade).
+(b) News-Catalyst-recommend_entry NUR bei ECHTER News (Buyback, Earnings-Beat-Surprise, M&A, frischer Analyst-Upgrade).
 
 NICHT: Watch-Hits ohne offene Pos (kommen nicht zu dir), Re-Reasoning technische Setups, Setups aus reinen Kursbewegungen.
 
-Text-Output GENAU eine Zeile:
-- `ENTRY: TICKER | Entry €X | SL €X | TP €X | Size €X | Conv X/5 | Hold X-Xd | These ...` (+ recommend_entry, NUR mit News-Catalyst)
-- `EXIT: TICKER @ €X | Grund [max 8 Worte]`
-- `PASS: TICKER | Grund [max 10 Worte]` ODER submit_pass
-
-Catalyst-driven ENTRY darf live_price sein. KEIN Chase auf >1.5×ATR-Candles. Ohne Catalyst → PASS.
-
-EXIT nur bei: Thesis-Bruch / harter Reject mit Confirm (MACD-Crossdown ODER BB-Mid verloren ODER Vol-Distribution) / RSI-Bearish-Divergence + tieferes Hoch. "TP nicht erreicht" ≠ Exit. "Lock Gewinn" ohne Invalidierung → update_position_targets statt exit."""
+EXIT nur bei: Thesis-Bruch, harter Reject mit Confirm (MACD-Crossdown ODER BB-Mid verloren ODER Vol-Distribution), Bearish-Divergence + tieferes Hoch. "TP nicht erreicht" ≠ Exit. "Lock Gewinn" ohne Invalidierung → update_position_targets statt exit."""
 
 
 WATCH_LEVELS_TOOL = {

@@ -671,43 +671,10 @@ def analyze_portfolio(
             _keep = ("price", "change_pct")
         _market_ctx_slim[_t] = {k: _d.get(k) for k in _keep if _d.get(k) is not None}
 
-    # Format enforcer prepended for morning/opening — Claude ignores system-prompt
-    # format rules otherwise and dumps multi-paragraph analyses into the text block.
+    # Format-Header obsolet (2026-05-22): Architektur jetzt Tool-Calls-only mit
+    # tool_choice="any". Text-Output wird Backend-seitig in run_morning_prep ignoriert
+    # und Telegram deterministic gerendert aus tool-call-results + portfolio state.
     format_header = ""
-    if mode == "morning":
-        format_header = (
-            "🚨 MORNING-OUTPUT-FORMAT (NEU 2026-05-21):\n\n"
-            "TOOL-FLOW (parallel, in dieser Reihenfolge):\n"
-            "1. Für jedes A+ Swing-Setup (Conv ≥3/5, R/R ≥1:2): rufe `recommend_entry` mit entry_price als Limit-Buy-Preis (darf/soll < live_price sein). 0-5 Calls.\n"
-            "2. `set_watch_levels` nur mit Defense-Watches für OFFENE Positionen oder seltene breakout_confirm-Trigger. Bei nichts → `levels: []`.\n\n"
-            "TEXT-OUTPUT STRUKTUR (genau diese 3 Sektionen, EOF danach):\n"
-            "  ZEILE 1: `Markt-Regime: SPY €X [>/<] MA200 = RISK_ON/RISK_OFF [+ RSI-Info]. VIX X.X [calm/elevated]. [kurzer Setup-Hinweis]` (max ~25 Worte)\n"
-            "  ZEILE 2: `N Ticker durchgegangen. M saubere Limit-Buy-Kandidaten:` (oder `Keine sauberen Limit-Buy-Kandidaten heute.` wenn 0)\n"
-            "  ZEILE 3+: pro recommend_entry eine Zeile `TICKER | Entry €X | SL €X | TP €X/€X | Size €X | Conv X/5 | These [max 8 Worte]`\n"
-            "  Bei offener Position zusätzlich: `TICKER | €X (+/-X%) | SL €X TP €X | HALTEN/CLOSE`\n\n"
-            "❌ STRENG VERBOTEN:\n"
-            "- set_watch_levels mit accumulation_zone/support_bounce/pullback_ma als Entry-Suche (gehört in recommend_entry).\n"
-            "- Text mit Markdown-Headern, **Bold-Headers**, Reasoning-Prefixes (\"Schritt 1:\", \"Analyse:\", \"Internal\").\n"
-            "- Nach Zeile 3+: KEIN PASS-Begründung für andere Tickers, KEIN Sektor-Take, KEIN Watch-Level-Recap, KEIN \"aber beachte...\" Hedging.\n\n"
-        )
-    elif mode == "opening":
-        format_header = (
-            "🚨 OUTPUT-REGEL (ZWINGEND): Erste Zeile MUSS mit GENAU einem Prefix beginnen:\n"
-            "  • `EXIT: TICKER | Grund [max 10 Worte]`\n"
-            "  • `ENTRY: TICKER | Entry €X | SL €X | TP €X | Size €X | Conv X/5 | These ...` (+ recommend_entry Tool)\n"
-            "  • `ADD: TICKER | Grund` (+ recommend_add_to_position Tool, nur bei offener Position)\n"
-            "  • `PASS: TICKER | Grund` (kein Adjustment — wird gedroppt)\n"
-            "Wenn nichts actionable: KEIN Output. KEIN Internal Analysis Block.\n\n"
-        )
-    elif mode == "event":
-        format_header = (
-            "🚨 OUTPUT-REGEL (ZWINGEND): Genau EINE Zeile, beginnend mit:\n"
-            "  • `ENTRY: TICKER | Entry €X | SL €X | TP €X | Size €X | Conv X/5 | These ...` (+ recommend_entry Tool, Conv ≥3)\n"
-            "  • `EXIT: TICKER @ €X | Grund`\n"
-            "  • `ADD: TICKER | Grund` (+ recommend_add_to_position Tool, nur bei offener Position)\n"
-            "  • `PASS: TICKER | Grund` (kein Edge — kurz warum)\n"
-            "KEIN Internal Analysis Block, KEIN Reasoning-Text. User braucht Entscheidung, nicht Begründung.\n\n"
-        )
 
     analysis_request = f"""{format_header}{context_intro}
 
@@ -887,7 +854,10 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
     # malformed_tool_input, zero raw_levels parsed, stale levels kept. Bumped
     # to 2500 to give comfortable headroom for 7-level set + 1 recommend_entry.
     if mode == "morning":
-        max_tokens = 2500
+        # Bump 2500→3500 (2026-05-22). Mit tool_choice=any + v7-required-fields
+        # (entry_state/primary_signal/why_now) + Sonnet's Essay-Tendency braucht's
+        # Polster damit Tool-Use nicht mid-call truncated wenn Essay vor Tool kommt.
+        max_tokens = 3500
     elif mode == "opening":
         max_tokens = 900   # was 500 — truncated 2026-05-07 (PUM.DE recommend_entry x2)
     elif mode == "event":
@@ -913,28 +883,15 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
     if tools:
         create_kwargs["tools"] = tools
 
-    # Tool-Only-Mode für event/opening: zwingt Tool-Use (keine Prosa-Antwort).
-    # Spart Output-Tokens (~30-50% in event mode). submit_pass-Tool fängt "keine
-    # Action"-Fall, damit Claude nicht zu einem Action-Tool gezwungen wird.
-    # Morning bleibt freie Antwort, weil User den Brief liest.
-    if tools and mode in ("event", "opening"):
+    # tool_choice="any" (Anthropic max strictness — kein "required" verfügbar):
+    # model MUSS eines der provided tools nutzen. Verhindert kein Begleit-Text,
+    # aber Backend ignoriert Text und rendert Telegram deterministic aus tool-
+    # call results + portfolio state (_render_morning_brief in main.py).
+    if tools and mode in ("morning", "event", "opening"):
         create_kwargs["tool_choice"] = {"type": "any"}
 
-    # Narrow stop_sequences (re-enabled 2026-05-22 nach Sonnet-Essay-Drift).
-    # Sonnet schrieb v7 Morning eine 2000-Token-Brain-Dump als Text-Output statt
-    # 3-Section-Format. Diese Phrases sind LOG-Evidence (nicht preemptive Liste).
-    # Sonnet bricht bei diesen direkt am Output-Start ab → keine Reasoning-Essays mehr.
-    # Tool-Use läuft trotzdem weil tool_use-Blocks NACH Stop-Cut emittiert werden.
-    if mode in ("morning", "opening", "event"):
-        create_kwargs["stop_sequences"] = [
-            "I'll analyze",
-            "Quick triage",
-            "Let me analyze",
-            "Let me triage",
-            "I'll triage",
-            "Analyse:",
-            "Internal Analysis",
-        ]
+    # stop_sequences DISABLED — killten Sonnet zweimal bei "I'll analyze" Prefix
+    # (out_tok=3, kein tool_use). Sonnet's freier Text wird Backend-seitig verworfen.
 
     response = client.messages.create(**create_kwargs)
     increment_usage(forced=is_high_priority)
