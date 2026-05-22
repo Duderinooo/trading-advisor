@@ -886,6 +886,12 @@ def _close_partial(trade: dict, shares_to_sell: float, exit_price: float, reason
     remaining = round(float(trade.get("shares", 0) or 0) - shares_to_sell, 4)
     trade["shares"] = max(remaining, 0.0)
     trade["size_eur"] = round(trade["shares"] * entry, 2) if entry else 0.0
+    # Lifecycle: partial_seq ≥1 → status partial_exit. Partial-PnL aggregiert.
+    trade["status"] = "partial_exit"
+    trade["partial_close_count"] = int(trade.get("partial_close_count") or 0) + 1
+    trade["total_partial_pnl_eur"] = round(
+        float(trade.get("total_partial_pnl_eur") or 0.0) + pnl_eur, 2,
+    )
     return partial
 
 
@@ -915,6 +921,16 @@ def _close_trade(trade: dict, exit_price: float, reason: str, portfolio: dict):
         else None
     )
 
+    # Holding-Days realized.
+    holding_days = None
+    entry_date_str = trade.get("entry_date")
+    if entry_date_str:
+        try:
+            entry_dt = datetime.strptime(entry_date_str, "%Y-%m-%d %H:%M")
+            holding_days = round((datetime.now() - entry_dt).total_seconds() / 86400, 2)
+        except ValueError:
+            pass
+
     closed = dict(trade)
     closed.update({
         "exit_price": exit_price,
@@ -924,6 +940,7 @@ def _close_trade(trade: dict, exit_price: float, reason: str, portfolio: dict):
         "pnl_eur": round(pnl_eur, 2),
         "pnl_pct": round(pnl_pct, 2),
         "realized_r": realized_r,
+        "holding_days_realized": holding_days,
         "status": "closed",
     })
     # Auto-tag: SL hit filled ≥ SL_SLIPPAGE_TAG_PERCENT below nominal SL → execution error

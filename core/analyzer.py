@@ -1670,6 +1670,7 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
             "model": model,
             "prompt_version": PROMPT_VERSION,
             "strategy_version": STRATEGY_VERSION,
+            "decision_version": entry_recommendation.get("decision_version") or PROMPT_VERSION,
         }
         _ticker = rec.get("ticker", "?")
         _entry = rec.get("entry_price", 0)

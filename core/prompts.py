@@ -68,9 +68,9 @@ KEINE SHORTS bei TR. Bearish = Long-Inverse-ETF oder Cash.
 ENTRY-STATE (ABSOLUTE Klassifikation — bindend, NIE durch Catalyst/Momentum/News überschreiben):
 - EARLY: base_quality_score 4-6 + Repair-Signale sichtbar. → Limit-Buy unter live_price.
 - VALID: base_quality_score ≥6 + R/R klar + SL strukturell. → Limit-Buy @ live_price oder leicht drunter.
-- LATE: change_pct > 1.5×atr14_pct ODER perf last 1-2d ≥5% ohne Konsolidierung ODER erste Candle nach News-Headline ODER Gap >5% ohne Konsolidierung. → PASS.
-- EXTENDED: pct_below_52w_high > -2% ODER RSI>75 ODER 3+ Up-Days ODER V-Recovery ohne Base ODER +8-15% Relief-Bounce ohne Konsolidierung. → PASS bis Pullback.
-LATE/EXTENDED ist ABSOLUT — kein News-Catalyst, keine Earnings-Beat, kein Buyback-Announce ändert das. Falscher Zeitpunkt = PASS."""
+- LATE: change_pct > 1.2×atr14_pct ODER perf last 1-2d ≥5% ohne Konsolidierung ODER erste Candle nach News-Headline ODER Gap >5% ohne Konsolidierung. → PASS, ES SEI DENN ein struktureller Pullback-Entry ist ≥1×ATR unter live_price erreichbar (MA-Tap/Support/Range-Low) — dann Limit-Buy dort, NICHT @ live_price.
+- EXTENDED: pct_below_52w_high > -2% ODER RSI>75 ODER 3+ Up-Days ODER V-Recovery ohne Base ODER +8-15% Relief-Bounce ohne Konsolidierung. → PASS bis Pullback, KEINE Exception.
+LATE/EXTENDED ist ABSOLUT — kein News-Catalyst, keine Earnings-Beat, kein Buyback-Announce ändert EXTENDED. LATE nur via tieferem Limit-Buy umgehbar."""
 
 
 # ============================================================================
@@ -427,20 +427,24 @@ RECOMMEND_ENTRY_TOOL = {
             "p_win": {"type": "number", "minimum": 0.0, "maximum": 1.0},
             "hold_days_min": {"type": "integer"},
             "hold_days_max": {"type": "integer"},
-            "thesis": {"type": "string", "description": "1-Satz max 100 Zeichen."},
+            "thesis": {"type": "string", "description": "1-Satz max 100 Zeichen. MUSS Snapshot-Felder referenzieren (z.B. 'MA50-Reclaim + failed_breakdown_reclaim + atr_contraction'). KEINE Prosa-Vibes ('sieht stark aus' = invalid)."},
             "trailing_stop_pct": {"type": "number"},
             "entry_state": {
                 "type": "string",
                 "enum": ["EARLY", "VALID"],
-                "description": "Stumme ENTRY_STATE-Klassifikation. LATE/EXTENDED dürfen kein recommend_entry werden.",
+                "description": "ENTRY_STATE-Klassifikation. LATE/EXTENDED dürfen kein recommend_entry werden.",
             },
             "primary_signal": {
                 "type": "string",
-                "description": "Dominantes Setup-Signal (Snapshot-Field-Ref). Beispiele: 'failed_breakdown_reclaim', 'ma50_tap_+_atr_contraction', 'higher_lows_5d=3'. Max 80 Zeichen.",
+                "description": "Dominantes Setup-Signal als Snapshot-Field-Refs (NICHT Prosa). Beispiele: 'failed_breakdown_reclaim + atr_contraction', 'ma50_tap + higher_lows_5d=3', 'rsi14<30 + selling_exhaustion'. Max 80 Zeichen.",
             },
             "why_now": {
                 "type": "string",
-                "description": "Warum DIESEN Moment statt vor 2 Tagen / morgen? Trigger-spezifisch. Max 100 Zeichen.",
+                "description": "Warum DIESEN Moment statt vor 2 Tagen / morgen? Trigger-spezifisch + messbar. Beispiel: 'price tagged MA50 €56.98 erste Mal seit 14 Tagen'. Max 100 Zeichen.",
+            },
+            "decision_version": {
+                "type": "string",
+                "description": "Strategie-Version-Tag für outcome-pro-version Tracking (z.B. 'v6.0'). Default = aktuelle prompt_version.",
             },
             "setup_type": {
                 "type": "string",
@@ -471,7 +475,8 @@ RECOMMEND_ENTRY_TOOL = {
             },
         },
         "required": ["ticker", "entry_price", "stop_loss", "take_profit", "size_eur",
-                     "conviction", "p_win", "thesis", "setup_type", "top_fail_mode"],
+                     "conviction", "p_win", "thesis", "setup_type", "top_fail_mode",
+                     "entry_state", "primary_signal", "why_now"],
         "additionalProperties": False,
     },
 }

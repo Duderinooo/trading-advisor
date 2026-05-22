@@ -238,6 +238,14 @@ def active_entry_gate_cooldowns(portfolio: dict) -> dict[str, dict]:
 
 STRATEGY_VERSION = "v6"  # Bump bei strukturellen Strategie-Änderungen für PnL-Attribution.
 PROMPT_VERSION = "v6"    # Bump bei Prompt-Refactors. Erlaubt outcome-Vergleich per Version.
+SNAPSHOT_SCHEMA_VERSION = "2026-05-22"  # Bump wenn market_data/entry_snapshot-Felder ändern.
+
+# Trade-Lifecycle (für `status` field):
+# - pending: in pending_recommendations, noch nicht /confirmed
+# - open: in open_trades, kein TP gehittet
+# - partial_exit: in open_trades, TP1 partial-fill aktiv (partial_seq ≥1)
+# - closed: in closed_trades (SL/TP-Full/manual)
+# - canceled: pending-rec verworfen (TTL/explicit-cancel)
 
 
 def build_trade_dict(rec: dict, filled_price: float, shares: float,
@@ -314,10 +322,15 @@ def build_trade_dict(rec: dict, filled_price: float, shares: float,
         "initial_risk_per_share": initial_risk_per_share,
         "realized_r": None,
         "max_r_open": 0.0,
-        # Provenance — welcher Claude + welche Prompt-Version hat den Rec gebaut.
+        # Provenance — welcher Claude + welche Prompt/Decision-Version hat den Rec gebaut.
         "model": rec.get("model"),
         "prompt_version": rec.get("prompt_version") or PROMPT_VERSION,
         "strategy_version": rec.get("strategy_version") or STRATEGY_VERSION,
+        "decision_version": rec.get("decision_version") or PROMPT_VERSION,
+        "snapshot_schema_version": SNAPSHOT_SCHEMA_VERSION,
+        # Partial-TP-Tracking (ratched bei TP-Fills in events.py).
+        "partial_close_count": 0,
+        "total_partial_pnl_eur": 0.0,
         # Lifecycle
         "entry_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "status": "open",
