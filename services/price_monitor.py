@@ -25,6 +25,33 @@ _SLTP_DEDUP_BUCKETS = {
 }
 
 
+def ratchet_open_trade_extremes(open_trades: list, live_prices: dict) -> float:
+    """Ratchet MAE/MFE/max_r_open on open trades. Mutates trades in-place.
+    Returns unrealized EUR over the same set so caller can fold into equity-curve."""
+    unrealized_eur = 0.0
+    for ot in open_trades:
+        tk = (ot.get("ticker") or "").upper()
+        live = live_prices.get(tk)
+        if not isinstance(live, (int, float)) or live <= 0:
+            continue
+        entry = float(ot.get("entry_price") or 0)
+        shares = float(ot.get("shares") or 0)
+        if entry <= 0:
+            continue
+        if live < ot.get("mae", entry):
+            ot["mae"] = round(live, 4)
+        if live > ot.get("mfe", entry):
+            ot["mfe"] = round(live, 4)
+        irs = ot.get("initial_risk_per_share")
+        if isinstance(irs, (int, float)) and irs > 0:
+            r_now = (live - entry) / irs
+            if r_now > (ot.get("max_r_open", 0.0) or 0.0):
+                ot["max_r_open"] = round(r_now, 3)
+        if shares > 0:
+            unrealized_eur += (live - entry) * shares
+    return unrealized_eur
+
+
 def _maybe_send_sltp(alert: dict, message: str) -> None:
     """SL/TP alert with per-trade dedup."""
     bucket = _SLTP_DEDUP_BUCKETS.get(alert.get("type"), 0)

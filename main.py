@@ -33,7 +33,7 @@ from services.event_monitor import run_event_check
 from services.morning_brief import run_morning_prep
 from services.news_monitor import run_news_check
 from services.opening_check import run_opening_check
-from services.price_monitor import run_price_check
+from services.price_monitor import run_price_check, ratchet_open_trade_extremes
 from services.risk_guards import check_equity_alerts, check_exit_reminders
 from services.summary import run_eod_summary, run_weekend_summary
 
@@ -83,36 +83,69 @@ logger = logging.getLogger("trading_advisor")
 HEARTBEAT_WRITE_INTERVAL_SEC = 60  # ≤1×/min — web dashboard stale-warn fires at 120s.
 
 
+def _collect_live_quotes(pf: dict) -> tuple[dict[str, float], dict[str, dict]]:
+    """Scrape ls-tc for all open + watched tickers. Skips yfinance entirely."""
+    live_prices: dict[str, float] = {}
+    live_quotes: dict[str, dict] = {}
+    tickers = list({
+        *(t["ticker"] for t in pf.get("open_trades", []) or [] if t.get("ticker")),
+        *(w["ticker"] for w in pf.get("watch_levels", []) or [] if w.get("ticker")),
+    })
+    for tk in tickers:
+        q = live_quote_for_ticker(tk)
+        if not q or not q.get("price"):
+            continue
+        live_prices[tk] = float(q["price"])
+        live_quotes[tk] = {
+            "price": q.get("price"),
+            "bid": q.get("bid"),
+            "ask": q.get("ask"),
+            "ts": q.get("ts"),
+            "change_pct": q.get("change_pct"),
+            "market_status": q.get("market_status"),
+            "source": q.get("source"),
+        }
+    return live_prices, live_quotes
+
+
+def _append_equity_point(pf: dict, unrealized_eur: float, now: datetime) -> None:
+    """Append intraday equity snapshot. Prune to 14d rolling. No-op when no live data."""
+    starting = float(
+        pf.get("total_capital_eur", config.BUDGET_EUR) or config.BUDGET_EUR
+    )
+    realized = sum(
+        float(t.get("pnl_eur") or 0)
+        for t in pf.get("closed_trades", []) or []
+    )
+    movements = sum(
+        float(m.get("amount") or 0)
+        for m in pf.get("cash_movements", []) or []
+    )
+    equity_now = round(starting + realized + movements + unrealized_eur, 2)
+    hist = pf.get("equity_history", []) or []
+    ts = now.strftime("%Y-%m-%d %H:%M")
+    if not hist or hist[-1].get("ts") != ts:
+        hist.append({
+            "ts": ts,
+            "equity": equity_now,
+            "unrealized": round(unrealized_eur, 2),
+            "market_hours": is_market_hours(),
+        })
+    cutoff = (now - timedelta(days=14)).strftime("%Y-%m-%d %H:%M")
+    pf["equity_history"] = [p for p in hist if (p.get("ts") or "") >= cutoff]
+
+
 def _persist_heartbeat(state: AppState, now: datetime) -> None:
-    """Write live quotes + equity snapshot to portfolio.json. Throttled."""
+    """Telemetry snapshot for web dashboard. Throttled to ≤1×/min.
+    Delegates MAE/MFE ratcheting to services.price_monitor."""
     if (time.monotonic() - state.last_heartbeat_write) < HEARTBEAT_WRITE_INTERVAL_SEC:
         return
     try:
-        live_prices: dict[str, float] = {}
-        live_quotes: dict[str, dict] = {}
         try:
-            pf_snap = load_portfolio()
-            tickers = list({
-                *(t["ticker"] for t in pf_snap.get("open_trades", []) or [] if t.get("ticker")),
-                *(w["ticker"] for w in pf_snap.get("watch_levels", []) or [] if w.get("ticker")),
-            })
-            # Heartbeat fast-path: skip yfinance, scrape ls-tc direct.
-            for tk in tickers:
-                q = live_quote_for_ticker(tk)
-                if not q or not q.get("price"):
-                    continue
-                live_prices[tk] = float(q["price"])
-                live_quotes[tk] = {
-                    "price": q.get("price"),
-                    "bid": q.get("bid"),
-                    "ask": q.get("ask"),
-                    "ts": q.get("ts"),
-                    "change_pct": q.get("change_pct"),
-                    "market_status": q.get("market_status"),
-                    "source": q.get("source"),
-                }
+            live_prices, live_quotes = _collect_live_quotes(load_portfolio())
         except Exception:
             logger.exception("Live-price snapshot failed (heartbeat)")
+            live_prices, live_quotes = {}, {}
 
         with portfolio_lock:
             pf = load_portfolio()
@@ -124,60 +157,61 @@ def _persist_heartbeat(state: AppState, now: datetime) -> None:
                 "prices": live_prices,
                 "live_quotes": live_quotes,
             }
-
-            # Ratchet MAE/MFE + max_r_open on open trades.
-            unrealized_eur = 0.0
-            for ot in pf.get("open_trades", []) or []:
-                tk = (ot.get("ticker") or "").upper()
-                live = live_prices.get(tk)
-                if not isinstance(live, (int, float)) or live <= 0:
-                    continue
-                entry = float(ot.get("entry_price") or 0)
-                shares = float(ot.get("shares") or 0)
-                if entry <= 0:
-                    continue
-                if live < ot.get("mae", entry):
-                    ot["mae"] = round(live, 4)
-                if live > ot.get("mfe", entry):
-                    ot["mfe"] = round(live, 4)
-                irs = ot.get("initial_risk_per_share")
-                if isinstance(irs, (int, float)) and irs > 0:
-                    r_now = (live - entry) / irs
-                    if r_now > (ot.get("max_r_open", 0.0) or 0.0):
-                        ot["max_r_open"] = round(r_now, 3)
-                if shares > 0:
-                    unrealized_eur += (live - entry) * shares
-
-            # Append intraday equity-curve point. Pruned to 14d rolling.
+            unrealized_eur = ratchet_open_trade_extremes(
+                pf.get("open_trades", []) or [], live_prices,
+            )
             if live_prices:
-                starting = float(
-                    pf.get("total_capital_eur", config.BUDGET_EUR) or config.BUDGET_EUR
-                )
-                realized = sum(
-                    float(t.get("pnl_eur") or 0)
-                    for t in pf.get("closed_trades", []) or []
-                )
-                movements = sum(
-                    float(m.get("amount") or 0)
-                    for m in pf.get("cash_movements", []) or []
-                )
-                equity_now = round(starting + realized + movements + unrealized_eur, 2)
-                hist = pf.get("equity_history", []) or []
-                ts = now.strftime("%Y-%m-%d %H:%M")
-                if not hist or hist[-1].get("ts") != ts:
-                    hist.append({
-                        "ts": ts,
-                        "equity": equity_now,
-                        "unrealized": round(unrealized_eur, 2),
-                        "market_hours": is_market_hours(),
-                    })
-                cutoff = (now - timedelta(days=14)).strftime("%Y-%m-%d %H:%M")
-                pf["equity_history"] = [p for p in hist if (p.get("ts") or "") >= cutoff]
-
+                _append_equity_point(pf, unrealized_eur, now)
             save_portfolio(pf)
         state.last_heartbeat_write = time.monotonic()
     except Exception:
         logger.exception("Heartbeat persist failed")
+
+
+# ---------------------------------------------------------------------------
+# Loop dispatch
+# ---------------------------------------------------------------------------
+
+def _run_daily_windows() -> None:
+    """Fire once-per-day services within their time windows. Each marks itself done."""
+    if is_morning_prep_time():
+        run_morning_prep()
+    if is_xetra_open_check_time():
+        run_opening_check("xetra")
+    if is_us_open_check_time():
+        run_opening_check("us")
+    if is_eod_summary_time():
+        run_eod_summary()
+    if is_weekend_summary_time():
+        run_weekend_summary()
+
+
+def _run_poll_cycle(state: AppState) -> None:
+    """Every-15-min poll: auto-kill, price/event/news monitors, exit reminders, DD alerts.
+    Weekend window only runs news-check (markets closed)."""
+    if is_market_hours():
+        try:
+            shock = maybe_auto_kill()
+            if shock:
+                send_alert(
+                    "🛑 AUTO-KILL aktiviert",
+                    f"{shock['reason']}\n\nKill-Switch flipped automatisch. "
+                    f"SL/TP-Monitoring läuft weiter. "
+                    f"Manuell aufheben via `/resume`.",
+                )
+        except Exception:
+            logger.exception("auto-kill check failed")
+
+        run_price_check()
+        run_event_check()
+        run_news_check(state)
+        try:
+            check_exit_reminders()
+        except Exception:
+            logger.exception("Exit-reminder check failed")
+        check_equity_alerts()
+    elif is_weekend_news_window():
+        run_news_check(state)
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +256,6 @@ def main() -> None:
         daemon=True, name="heartbeat-watchdog",
     ).start()
 
-    # Catch-up morning prep on boot.
     if is_morning_prep_time() or (is_market_hours() and not morning_prep_done_today()):
         run_morning_prep()
 
@@ -236,45 +269,10 @@ def main() -> None:
         now = datetime.now()
 
         _persist_heartbeat(state, now)
+        _run_daily_windows()
 
-        # Daily / once-per-day windows (each marks itself done).
-        if is_morning_prep_time():
-            run_morning_prep()
-        if is_xetra_open_check_time():
-            run_opening_check("xetra")
-        if is_us_open_check_time():
-            run_opening_check("us")
-        if is_eod_summary_time():
-            run_eod_summary()
-        if is_weekend_summary_time():
-            run_weekend_summary()
-
-        # Every-15-min poll cycle.
         if (now - last_check).total_seconds() >= check_interval:
-            if is_market_hours():
-                try:
-                    shock = maybe_auto_kill()
-                    if shock:
-                        send_alert(
-                            "🛑 AUTO-KILL aktiviert",
-                            f"{shock['reason']}\n\nKill-Switch flipped automatisch. "
-                            f"SL/TP-Monitoring läuft weiter. "
-                            f"Manuell aufheben via `/resume`.",
-                        )
-                except Exception:
-                    logger.exception("auto-kill check failed")
-
-                run_price_check()
-                run_event_check()
-                run_news_check(state)
-                try:
-                    check_exit_reminders()
-                except Exception:
-                    logger.exception("Exit-reminder check failed")
-                check_equity_alerts()
-            elif is_weekend_news_window():
-                run_news_check(state)
-
+            _run_poll_cycle(state)
             last_check = now
 
         time.sleep(10)
