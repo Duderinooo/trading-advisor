@@ -1647,15 +1647,29 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
              "conviction": entry_recommendation.get("conviction"),
              "p_win": entry_recommendation.get("p_win")},
         )
-        # Stamp regime + VIX so downstream alpha-attribution + regime-conditional hit-rate
-        # has the entry context, even if regime shifts mid-trade.
+        # Stamp regime + VIX + provenance so downstream alpha-attribution + regime-
+        # conditional hit-rate hat den Kontext, auch wenn Regime mid-trade kippt.
+        # Plus SPY-vs-MA200 explizit + model + prompt_version für outcome-pro-version.
         _vix_at_entry = (market_ctx.get("^VIX") or {}).get("price")
+        _spy = market_ctx.get("SPY5.DE") or {}
+        _spy_price = _spy.get("price")
+        _spy_ma200 = _spy.get("ma200")
+        _spy_above_ma200 = (
+            bool(_spy_price > _spy_ma200)
+            if isinstance(_spy_price, (int, float)) and isinstance(_spy_ma200, (int, float))
+            else None
+        )
+        from core.portfolio import PROMPT_VERSION, STRATEGY_VERSION
         rec = {
             **entry_recommendation,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "status": "pending",
             "regime_at_entry": regime,
             "vix_at_entry": _vix_at_entry if isinstance(_vix_at_entry, (int, float)) else None,
+            "spy_above_ma200": _spy_above_ma200,
+            "model": model,
+            "prompt_version": PROMPT_VERSION,
+            "strategy_version": STRATEGY_VERSION,
         }
         _ticker = rec.get("ticker", "?")
         _entry = rec.get("entry_price", 0)

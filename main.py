@@ -1705,6 +1705,14 @@ def main():
                             _ot["mae"] = round(_live, 4)
                         if _live > _mfe:
                             _ot["mfe"] = round(_live, 4)
+                        # max_r_open: best R-Multiple während Position offen war (für
+                        # outcome-Analyse: hatten wir vor SL einen Gewinn-Peak?).
+                        _irs = _ot.get("initial_risk_per_share")
+                        if isinstance(_irs, (int, float)) and _irs > 0:
+                            _r_now = (_live - _entry) / _irs
+                            _max_r = _ot.get("max_r_open", 0.0) or 0.0
+                            if _r_now > _max_r:
+                                _ot["max_r_open"] = round(_r_now, 3)
                         if _shares > 0:
                             _unrealized_eur += (_live - _entry) * _shares
 

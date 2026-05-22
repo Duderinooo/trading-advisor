@@ -897,13 +897,33 @@ def _close_trade(trade: dict, exit_price: float, reason: str, portfolio: dict):
     pnl_eur = (exit_price - entry) * shares if entry and shares else 0
     pnl_pct = ((exit_price - entry) / entry * 100) if entry else 0
 
+    # exit_type: mapped from internal exit-reason for cleaner reporting.
+    exit_type_map = {
+        "STOP_LOSS": "sl_hit",
+        "TAKE_PROFIT": "tp_hit",
+        "TAKE_PROFIT_PARTIAL": "tp_partial",
+        "MANUAL_CLOSE": "manual",
+        "THESIS_BREAK": "thesis_break",
+    }
+    exit_type = exit_type_map.get(reason, "other")
+
+    # R-Multiple realized: (exit−entry) / initial_risk_per_share. LONG-only.
+    irs = trade.get("initial_risk_per_share")
+    realized_r = (
+        round((exit_price - entry) / irs, 3)
+        if isinstance(irs, (int, float)) and irs > 0
+        else None
+    )
+
     closed = dict(trade)
     closed.update({
         "exit_price": exit_price,
         "exit_reason": reason,
+        "exit_type": exit_type,
         "exit_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "pnl_eur": round(pnl_eur, 2),
         "pnl_pct": round(pnl_pct, 2),
+        "realized_r": realized_r,
         "status": "closed",
     })
     # Auto-tag: SL hit filled ≥ SL_SLIPPAGE_TAG_PERCENT below nominal SL → execution error

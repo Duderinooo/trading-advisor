@@ -38,6 +38,12 @@ PRIORITY ORDER (Konflikt-Resolution — höhere Stufe gewinnt):
 DEINE PRIMÄRROLLE: Struktur bewerten + Asymmetrische Setups erkennen + Thesis formulieren.
 Engine-Constraints (Position-Caps, No-Entry-Windows, Excluded-Tickers, Cooldowns, Sector-Limit, SL-ATR-Bounds) werden Server-seitig erzwungen. NICHT re-validieren — fokussiere auf Setup-Qualität.
 
+DISZIPLIN-REGELN (PFLICHT):
+- Entscheidungen NUR auf Snapshot-Felder basieren. Snapshot ist Ground-Truth.
+- Fehlende oder null-Felder NIEMALS halluzinieren → bei Daten-Lücke = PASS.
+- Konsistenz-Check pflicht: schwache RS (rs_20d_vs_index_pct <0) + niedrige Quality (base_quality_score <4) + bearisher Analyst (upside <0) → niemals "guter Trade". Drei rote Signale = PASS, kein Wenn-Aber.
+- Fokus auf WENIGE A+ Trades. 0-2/Tag normal, 5/Tag nur in echten Korrektur-Phasen. Lieber 1 sauberer Limit-Buy als 3 mittelmäßige.
+
 WAS WIR SUCHEN (deterministische Snapshot-Felder, NICHT Vibes):
 - base_quality_score ≥4 (Struktur-Reife, primär für Swing-Lows)
 - base_quality_items.selling_exhaustion == True
@@ -423,6 +429,19 @@ RECOMMEND_ENTRY_TOOL = {
             "hold_days_max": {"type": "integer"},
             "thesis": {"type": "string", "description": "1-Satz max 100 Zeichen."},
             "trailing_stop_pct": {"type": "number"},
+            "entry_state": {
+                "type": "string",
+                "enum": ["EARLY", "VALID"],
+                "description": "Stumme ENTRY_STATE-Klassifikation. LATE/EXTENDED dürfen kein recommend_entry werden.",
+            },
+            "primary_signal": {
+                "type": "string",
+                "description": "Dominantes Setup-Signal (Snapshot-Field-Ref). Beispiele: 'failed_breakdown_reclaim', 'ma50_tap_+_atr_contraction', 'higher_lows_5d=3'. Max 80 Zeichen.",
+            },
+            "why_now": {
+                "type": "string",
+                "description": "Warum DIESEN Moment statt vor 2 Tagen / morgen? Trigger-spezifisch. Max 100 Zeichen.",
+            },
             "setup_type": {
                 "type": "string",
                 "enum": [

@@ -1,6 +1,10 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { filterEquityByTimeframe, type Timeframe } from "@/lib/compute";
+import type { EquityPoint } from "@/lib/types";
+import { format, parseISO } from "date-fns";
+import { de } from "date-fns/locale";
+import { useMemo, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -12,10 +16,6 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { format, parseISO } from "date-fns";
-import { de } from "date-fns/locale";
-import type { EquityPoint } from "@/lib/types";
-import { filterEquityByTimeframe, type Timeframe } from "@/lib/compute";
 
 const TFS: Timeframe[] = ["1D", "1W", "1M", "1Y", "ALL"];
 
@@ -152,11 +152,8 @@ function CustomTooltip({ active, payload, startEq, lineColor }: TooltipProps) {
 }
 
 export default function EquityChart({ data }: { data: EquityPoint[] }) {
-  const [tf, setTf] = useState<Timeframe>("ALL");
-  const filtered = useMemo(
-    () => filterEquityByTimeframe(data, tf),
-    [data, tf],
-  );
+  const [tf, setTf] = useState<Timeframe>("1D");
+  const filtered = useMemo(() => filterEquityByTimeframe(data, tf), [data, tf]);
 
   const startEq = filtered[0]?.equity ?? 0;
   const endEq = filtered[filtered.length - 1]?.equity ?? 0;
@@ -187,8 +184,7 @@ export default function EquityChart({ data }: { data: EquityPoint[] }) {
     stats.maxPt !== null &&
     stats.minPt !== stats.maxPt;
 
-  const yPadFor = (min: number, max: number) =>
-    Math.max((max - min) * 0.05, 1);
+  const yPadFor = (min: number, max: number) => Math.max((max - min) * 0.05, 1);
 
   return (
     <div>

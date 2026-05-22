@@ -236,6 +236,10 @@ def active_entry_gate_cooldowns(portfolio: dict) -> dict[str, dict]:
     return out
 
 
+STRATEGY_VERSION = "v6"  # Bump bei strukturellen Strategie-Änderungen für PnL-Attribution.
+PROMPT_VERSION = "v6"    # Bump bei Prompt-Refactors. Erlaubt outcome-Vergleich per Version.
+
+
 def build_trade_dict(rec: dict, filled_price: float, shares: float,
                      entry_snapshot: dict | None = None,
                      paper: bool = False) -> dict:
@@ -245,13 +249,31 @@ def build_trade_dict(rec: dict, filled_price: float, shares: float,
     Schema haben. shares = float weil TR-Bruchstücke (rounded 4 decimals).
     """
     size_eur = round(filled_price * shares, 2)
-    # Snapshot-derived attribution fields — captured at entry for later outcome
-    # analysis (validates whether high base_quality_score / confluence_score
-    # trades actually perform). Stored top-level for cheap bucketing in
-    # compute_hit_stats without nested entry_snapshot traversal.
     snap = entry_snapshot or {}
     base_quality_at_entry = snap.get("base_quality_score")
     confluence_at_entry = snap.get("confluence_score")
+
+    # R-Multiple tracking: initial_risk_per_share = entry−SL (LONG-only).
+    # realized_r wird beim Close berechnet, max_r_open vom SL/TP-Loop ratched.
+    sl = rec.get("stop_loss")
+    initial_risk_per_share = (
+        round(filled_price - float(sl), 4)
+        if isinstance(sl, (int, float)) and sl > 0 and filled_price > float(sl)
+        else None
+    )
+
+    # Market-Session aus aktueller Zeit (XETRA 09-17:30 / US 15:30-22:00 CET).
+    now = datetime.now()
+    hm = now.hour * 60 + now.minute
+    if 9*60 <= hm < 15*60 + 30:
+        session = "xetra"
+    elif 15*60 + 30 <= hm < 22*60:
+        session = "us_overlap"
+    elif 22*60 <= hm or hm < 9*60:
+        session = "after_hours"
+    else:
+        session = "unknown"
+
     return {
         "ticker": rec.get("ticker"),
         "entry_price": filled_price,
@@ -267,15 +289,40 @@ def build_trade_dict(rec: dict, filled_price: float, shares: float,
         "hold_days_min": rec.get("hold_days_min"),
         "hold_days_max": rec.get("hold_days_max"),
         "trailing_stop_pct": rec.get("trailing_stop_pct"),
-        "regime_at_entry": rec.get("regime_at_entry"),
-        "vix_at_entry": rec.get("vix_at_entry"),
+        # Decision-Context (LLM-Output, was hat Sonnet als Trigger gesehen).
+        "entry_state": rec.get("entry_state"),
+        "primary_signal": rec.get("primary_signal"),
+        "why_now": rec.get("why_now"),
+        # Regime-Context (Engine-derivable, sollte nie null sein).
+        "regime_at_entry": rec.get("regime_at_entry") or snap.get("regime") or "UNKNOWN",
+        "vix_at_entry": rec.get("vix_at_entry") if rec.get("vix_at_entry") is not None else snap.get("vix_price"),
+        "spy_above_ma200": rec.get("spy_above_ma200"),
+        # Quality-Scores at entry (already extracted top-level for cheap bucketing).
         "base_quality_at_entry": base_quality_at_entry,
         "confluence_at_entry": confluence_at_entry,
+        # Execution-Context (Slippage gets filled by /confirm handler).
+        "market_session_at_entry": session,
+        "spread_pct_at_entry": snap.get("spread_pct"),
+        "gap_at_open_pct_at_entry": (
+            round((snap.get("day_open") - snap.get("prev_close")) / snap.get("prev_close") * 100, 3)
+            if isinstance(snap.get("day_open"), (int, float))
+            and isinstance(snap.get("prev_close"), (int, float))
+            and snap.get("prev_close") > 0
+            else None
+        ),
+        # R-Multiple Tracking (realized_r + max_r_open werden vom Bot fortgeschrieben).
+        "initial_risk_per_share": initial_risk_per_share,
+        "realized_r": None,
+        "max_r_open": 0.0,
+        # Provenance — welcher Claude + welche Prompt-Version hat den Rec gebaut.
+        "model": rec.get("model"),
+        "prompt_version": rec.get("prompt_version") or PROMPT_VERSION,
+        "strategy_version": rec.get("strategy_version") or STRATEGY_VERSION,
+        # Lifecycle
         "entry_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "status": "open",
         "entry_snapshot": entry_snapshot,
         # MAE/MFE seeded at entry; main.py heartbeat ratchets each tick.
-        # 0.0 default would freeze MAE forever (price never < 0); seed at entry instead.
         "mae": round(filled_price, 4),
         "mfe": round(filled_price, 4),
         "paper": paper,
