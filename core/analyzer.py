@@ -569,6 +569,14 @@ def analyze_portfolio(
         for t in tradeable if t in market_data and not market_data[t].get("error")
     }
 
+    # Precompute categorical state per ticker (v9 architecture: Python classifies,
+    # LLM only references state.entry_state etc. instead of re-deriving from raw
+    # indicators). Reduces LLM drift + saves tokens.
+    from core.state_classifier import classify_state
+    for _t, _d in market_data.items():
+        if isinstance(_d, dict) and not _d.get("error"):
+            _d["state"] = classify_state(_d, regime)
+
     # --- Select prompt + tools by mode ---
     tools = None
     if mode == "morning":

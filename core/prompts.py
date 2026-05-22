@@ -17,15 +17,16 @@ import config
 # SHARED RULE CONSTANTS — single source of truth, composed via f-string
 # ============================================================================
 
-ENTRY_STATE_RULES = """entry_state (4 mutually exclusive states):
-EARLY := base_quality_score in [4,6] & repair_signals_active & entry_price<live_price
-VALID := base_quality_score>=6 & rr>=2 & structural_sl
-LATE := change_pct>1.2*atr14_pct | perf_1_2d>=0.05 | news_first_candle | gap>0.05
-EXTENDED := pct_below_52w_high>-0.02 | rsi>75 | up_days_streak>=3 | v_recovery_no_base | relief_bounce_8_15_no_consolidation
+ENTRY_STATE_RULES = """entry_state := market_data[ticker].state.entry_state (precomputed by engine).
+quality_tier := market_data[ticker].state.quality_tier (A|B|C|D).
+extension_risk := market_data[ticker].state.extension_risk (bool).
+late_pullback_override := market_data[ticker].state.late_pullback_override (bool).
 
-late_pullback_override := entry_price<=live_price-1*atr14
-LATE only tradeable if late_pullback_override holds.
-EXTENDED never tradeable until pullback resets state."""
+action by state:
+EARLY → limit_buy entry_price<live_price (structural entry: MA-Tap/Support/Range-Low)
+VALID → limit_buy entry_price ≈ live_price or slightly lower
+LATE → PASS unless late_pullback_override (then limit_buy>=1*atr14 below live)
+EXTENDED → PASS until pullback resets state. No catalyst override."""
 
 
 LONG_FEATURES = [
@@ -41,12 +42,8 @@ LONG_FEATURES = [
 ]
 
 
-RED_FLAGS = [
-    "rs_20d_vs_index_pct<0",
-    "base_quality_score<4",
-    "analyst_upside_pct<0 | rec_key in {underperform,sell}",
-]
-# 3+ red_flags → PASS.
+RED_FLAGS_DOC = """red_flags := market_data[ticker].state.red_flags (precomputed list).
+3+ red_flags → PASS."""
 
 
 CONVICTION_MAP = """conviction (deterministic from quality + rr):
@@ -131,9 +128,7 @@ state_keys: setup_family, entry_state, quality_tier
 long_features (active search, structure not momentum):
 {chr(10).join("- " + f for f in LONG_FEATURES)}
 
-red_flags:
-{chr(10).join("- " + r for r in RED_FLAGS)}
-3+ red_flags → PASS.
+{RED_FLAGS_DOC}
 
 news := catalyst flipping base→swing. never signal for already_run_candle.
 no_shorts. bearish = inverse_etf_long | cash."""
