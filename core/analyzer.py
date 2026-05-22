@@ -920,21 +920,15 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
     if tools and mode in ("event", "opening"):
         create_kwargs["tool_choice"] = {"type": "any"}
 
-    # Hard-stop on known Claude intro-phrases that violate the tight-output format.
-    # Bug 2026-05-07: morning hit stop_sequence at out=3 tokens — likely "**Setup-Screen"
-    # or "**Watch Level Review" matched at the very start, killing the run before
-    # set_watch_levels tool_use fired. Stop_sequences halt tool_use too, not just text.
-    # Keeping only narrow prefix-style patterns; broad "**Header" patterns dropped.
-    if mode in ("morning", "opening", "event"):
-        create_kwargs["stop_sequences"] = [
-            "Internal Analysis",
-            "**Internal",
-            "I'll analyze",
-            "Analysiere die Daten",
-            "Let me analyze",
-            "Schritt 1:",
-            "Step 1:",
-        ]
+    # stop_sequences disabled 2026-05-22. War als Schutz gegen Reasoning-Prefixes
+    # gedacht ("Schritt 1:", "I'll analyze", "**Internal" etc.) aber killed Sonnet
+    # zweimal silent bei out=3 tokens (2026-05-21 + 2026-05-22) als das neue
+    # 3-Section-Format (Markt-Regime / Summary-Count / ENTRY-Zeilen) eingeführt
+    # wurde. Sonnet versuchte einen kurzen Planning-Prefix der eine der sequences
+    # hit → out=3, kein tool_use, kein text = bot blind. Prompt sagt eh "NIE
+    # Reasoning-Prefixes" — wenn Sonnet doch driftet, sollen wir's im Log SEHEN
+    # statt silent kill. Re-enable bei wiederkehrendem Drift mit gezielter Phrase
+    # nach echter Log-Evidenz, NICHT als preemptive Liste.
 
     response = client.messages.create(**create_kwargs)
     increment_usage(forced=is_high_priority)
