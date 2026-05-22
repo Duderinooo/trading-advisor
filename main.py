@@ -373,6 +373,36 @@ def _render_morning_brief() -> str:
         if r.get("kind", "entry") in ("entry", None)
         and (r.get("timestamp", "") or "").startswith(today)
     ]
+
+    # Deterministische Sortierung: Conv desc → R/R desc → Quality desc.
+    def _rr_of(r: dict) -> float:
+        ep = float(r.get("entry_price") or 0)
+        sl = float(r.get("stop_loss") or 0)
+        tp = r.get("take_profit") or []
+        if not isinstance(tp, list):
+            tp = [tp]
+        if ep <= 0 or sl <= 0 or ep <= sl or not tp:
+            return 0.0
+        risk = ep - sl
+        # Verwende TP1 (häufigste Reach) für Sort, nicht TP2 (optimistisch).
+        try:
+            reward = float(tp[0]) - ep
+        except (TypeError, ValueError):
+            return 0.0
+        return reward / risk if risk > 0 else 0.0
+
+    def _quality_of(r: dict) -> float:
+        return float(r.get("base_quality_at_entry") or r.get("confluence_at_entry") or 0)
+
+    entry_recs.sort(
+        key=lambda r: (
+            int(r.get("conviction") or 0),
+            _rr_of(r),
+            _quality_of(r),
+        ),
+        reverse=True,
+    )
+
     open_trades = pf.get("open_trades", []) or []
     watch_levels = pf.get("watch_levels", []) or []
 
@@ -432,6 +462,39 @@ def _render_morning_brief() -> str:
         if defense_only:
             parts.append("")
             parts.append(f"🛡️ {len(defense_only)} Defense-Watch(es) aktiv")
+
+    # Risk-Block (Status-Telemetrie, keine Analyse).
+    try:
+        from core.portfolio import compute_portfolio_heat, compute_sector_exposure
+        from core.market_data import get_earnings_warnings
+        heat = compute_portfolio_heat(pf)
+        capital = float(pf.get("total_capital_eur", config.BUDGET_EUR) or config.BUDGET_EUR)
+        cash = float(pf.get("cash_eur", 0) or 0)
+        cash_pct = (cash / capital * 100) if capital > 0 else 0
+        sectors_map = compute_sector_exposure(pf)
+        sectors_str = ", ".join(
+            f"{s}×{len(ts)}" for s, ts in sorted(sectors_map.items(), key=lambda x: -len(x[1]))
+        ) if sectors_map else "—"
+        risk_lines = [
+            "",
+            "📉 *Risk:* "
+            f"Heat {heat['heat_pct']:.1f}% · Cash {cash_pct:.0f}% · Sektoren: {sectors_str}",
+        ]
+        # Next-Earnings-Risk: nur für offene Positionen, 14d horizon.
+        open_tickers = [t.get("ticker") for t in open_trades if t.get("ticker")]
+        if open_tickers:
+            try:
+                er = get_earnings_warnings(open_tickers, days_ahead=14)
+                if er:
+                    nearest = er[0]
+                    risk_lines[-1] += (
+                        f" · ⚠️ Earnings {nearest['ticker']} T-{nearest['days_until']}"
+                    )
+            except Exception:
+                pass
+        parts.extend(risk_lines)
+    except Exception:
+        logger.exception("morning_brief risk-block failed")
 
     return "\n".join(parts)
 
