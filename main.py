@@ -915,9 +915,42 @@ def run_morning_prep(force: bool = False):
         analysis = analyze_portfolio(
             mode="morning", force=force, bypass_cooldown=force
         )
-        # Always forward Sonnet's morning verdict — daily alive-ping confirms bot ran.
-        # "Keine Setups heute." is one line, fine as heartbeat. Skip only on the
-        # tool-only-no-text edge case (nothing to forward).
+        # Output-Sanitizer (2026-05-22): Sonnet schrieb v7-Morning eine Brain-Dump-
+        # Essay statt 3-Section-Format. Strippe alles vor der ersten validen Zeile
+        # (Markt-Regime / TICKER | Entry / Keine sauberen / TICKER | €).
+        if analysis and not analysis.startswith("⚠️ Analysis skipped"):
+            import re
+            lines = analysis.splitlines()
+            valid_start_idx = None
+            valid_patterns = (
+                "Markt-Regime:",
+                "Keine sauberen Limit-Buy-Kandidaten",
+                "Keine Setups heute",
+            )
+            entry_line_re = re.compile(r"^[A-Z0-9]+\.?[A-Z]{0,3}\s+\|\s+(Entry|€)")
+            for i, line in enumerate(lines):
+                stripped_line = line.strip()
+                if any(stripped_line.startswith(p) for p in valid_patterns):
+                    valid_start_idx = i
+                    break
+                if entry_line_re.match(stripped_line):
+                    valid_start_idx = i
+                    break
+            if valid_start_idx is not None and valid_start_idx > 0:
+                prefix_strip_len = sum(len(l) + 1 for l in lines[:valid_start_idx])
+                logger.warning(
+                    "Morning output sanitized: stripped %d chars / %d lines of pre-amble",
+                    prefix_strip_len, valid_start_idx,
+                )
+                analysis = "\n".join(lines[valid_start_idx:])
+            elif valid_start_idx is None and len(analysis) > 200:
+                # No valid line found — Sonnet drifted hard. Replace with status.
+                logger.error(
+                    "Morning output drift: no valid Pflicht-Zeile found in %d-char response",
+                    len(analysis),
+                )
+                analysis = "⚠️ Sonnet-Drift: Output ohne gültige Pflicht-Zeile. Bot-Tool-Calls liefen ggf. trotzdem. Check /pending."
+
         stripped = (analysis or "").strip().lower()
         if analysis and analysis.startswith("⚠️ Analysis skipped"):
             # Cooldown/cap blocked the call → don't mark done, don't notify (retry later).

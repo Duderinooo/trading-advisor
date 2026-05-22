@@ -920,15 +920,21 @@ Cash: €{portfolio.get('cash_eur', config.BUDGET_EUR):.2f}
     if tools and mode in ("event", "opening"):
         create_kwargs["tool_choice"] = {"type": "any"}
 
-    # stop_sequences disabled 2026-05-22. War als Schutz gegen Reasoning-Prefixes
-    # gedacht ("Schritt 1:", "I'll analyze", "**Internal" etc.) aber killed Sonnet
-    # zweimal silent bei out=3 tokens (2026-05-21 + 2026-05-22) als das neue
-    # 3-Section-Format (Markt-Regime / Summary-Count / ENTRY-Zeilen) eingeführt
-    # wurde. Sonnet versuchte einen kurzen Planning-Prefix der eine der sequences
-    # hit → out=3, kein tool_use, kein text = bot blind. Prompt sagt eh "NIE
-    # Reasoning-Prefixes" — wenn Sonnet doch driftet, sollen wir's im Log SEHEN
-    # statt silent kill. Re-enable bei wiederkehrendem Drift mit gezielter Phrase
-    # nach echter Log-Evidenz, NICHT als preemptive Liste.
+    # Narrow stop_sequences (re-enabled 2026-05-22 nach Sonnet-Essay-Drift).
+    # Sonnet schrieb v7 Morning eine 2000-Token-Brain-Dump als Text-Output statt
+    # 3-Section-Format. Diese Phrases sind LOG-Evidence (nicht preemptive Liste).
+    # Sonnet bricht bei diesen direkt am Output-Start ab → keine Reasoning-Essays mehr.
+    # Tool-Use läuft trotzdem weil tool_use-Blocks NACH Stop-Cut emittiert werden.
+    if mode in ("morning", "opening", "event"):
+        create_kwargs["stop_sequences"] = [
+            "I'll analyze",
+            "Quick triage",
+            "Let me analyze",
+            "Let me triage",
+            "I'll triage",
+            "Analyse:",
+            "Internal Analysis",
+        ]
 
     response = client.messages.create(**create_kwargs)
     increment_usage(forced=is_high_priority)
