@@ -9,7 +9,33 @@ import unittest
 from datetime import datetime
 
 import config
-import core.events as E
+
+# Test-side alias for internal helpers across the events/ subpackage.
+# Public symbols still live on `core.events`; tests reach into private helpers
+# via the matching submodule.
+from core.events import news as _news
+from core.events import sltp as _sltp
+from core.events import dedup as _dedup
+from core.events import watchlevels as _watchlevels
+from core.events import should_analyze_events
+
+
+class _EShim:
+    """Compat shim: `E._helper` keeps working without touching test bodies."""
+    _kw_to_pattern_part = staticmethod(_news._kw_to_pattern_part)
+    _build_keyword_pattern = staticmethod(_news._build_keyword_pattern)
+    _ticker_in_title = staticmethod(_news._ticker_in_title)
+    _classify_headline = staticmethod(_news._classify_headline)
+    _next_take_profit = staticmethod(_sltp._next_take_profit)
+    _pop_first_take_profit = staticmethod(_sltp._pop_first_take_profit)
+    _apply_trailing_stop = staticmethod(_sltp._apply_trailing_stop)
+    _get_event_key = staticmethod(_dedup.get_event_key)
+    _in_no_entry_window = staticmethod(_dedup.in_no_entry_window)
+    prefilter_entry_events = staticmethod(_watchlevels.prefilter_entry_events)
+    should_analyze_events = staticmethod(should_analyze_events)
+
+
+E = _EShim()
 
 
 class TestKeywordPattern(unittest.TestCase):
