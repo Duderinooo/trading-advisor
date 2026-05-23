@@ -13,7 +13,9 @@ from notifier import send_notification as _notify
 from memory import log_trade, MEMPALACE_AVAILABLE
 
 from core.gate_log import log_gate
-from core.llm.handlers.gates import GateContext, build_gate_context, run_entry_gates
+from core.llm.handlers.gates import (
+    DecisionResult, GateContext, build_gate_context, run_entry_gates,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -39,10 +41,31 @@ def handle_entry_recommendation(
         entry, mode=mode, market_data=market_data, market_ctx=market_ctx,
         regime=regime, cash=cash, model=model,
     )
-    passed = run_entry_gates(entry, gctx)
-    if passed is None:
+    result = run_entry_gates(entry, gctx)
+    _persist_decision(result)
+    if not result.passed:
         return None
-    return _assemble_entry_rec_and_alert(passed, gctx)
+    return _assemble_entry_rec_and_alert(result.final_rec, gctx)
+
+
+def _persist_decision(result: DecisionResult) -> None:
+    """Append the DecisionResult audit-tree to analytics/decisions.jsonl. Used
+    by the /audit Telegram command + dashboard tuning audits.
+    Fail-soft: persistence errors never block the trading flow."""
+    try:
+        import json
+        import os
+        from pathlib import Path
+        analytics_dir = (
+            Path(os.path.dirname(os.path.abspath(__file__)))
+            / ".." / ".." / ".." / ".." / "analytics"
+        ).resolve()
+        analytics_dir.mkdir(parents=True, exist_ok=True)
+        out_path = analytics_dir / "decisions.jsonl"
+        with out_path.open("a") as f:
+            f.write(json.dumps(result.to_tree()) + "\n")
+    except Exception:
+        logger.exception("Decision persist failed for %s", result.ticker)
 
 
 def _assemble_entry_rec_and_alert(entry: dict, gctx: GateContext) -> dict:

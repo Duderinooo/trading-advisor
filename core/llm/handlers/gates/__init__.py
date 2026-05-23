@@ -6,7 +6,11 @@ mutated entry, first block returns None.
 """
 
 from core.llm.handlers.gates.context import (
-    GateContext, build_gate_context, run_entry_gates,
+    DecisionResult, GateContext, GateDecision,
+    build_gate_context, run_entry_gates,
 )
 
-__all__ = ["GateContext", "build_gate_context", "run_entry_gates"]
+__all__ = [
+    "DecisionResult", "GateContext", "GateDecision",
+    "build_gate_context", "run_entry_gates",
+]

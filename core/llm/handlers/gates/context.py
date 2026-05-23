@@ -5,12 +5,15 @@ True = pass, False = block (gate logs reason itself). Modifier gates always
 return True but mutate entry in-place (SL-clamp, Kelly-clamp, VIX-dampener,
 DD-soft-scale, auto-split-TP).
 
-run_entry_gates chains them in fixed order. Blocking gate returns None.
-Full pass returns the (possibly mutated) entry dict.
+run_entry_gates returns a structured DecisionResult capturing the full chain
+(every gate visited, elapsed_ms per gate, blocked_by). The caller checks
+result.passed and reads result.final_rec on pass.
 """
 
 import logging
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
+from datetime import datetime
 
 from core.portfolio import compute_hit_stats, load_portfolio
 
@@ -31,6 +34,42 @@ class GateContext:
     stats: dict | None    # compute_hit_stats result — None if <3 closed trades
     ticker: str           # entry['ticker'].upper()
     snap_md: dict         # market_data[ticker] or {}
+
+
+@dataclass(frozen=True)
+class GateDecision:
+    """One entry in the gate-chain trace."""
+    gate: str        # gate function name, e.g. "gate_edge"
+    passed: bool
+    elapsed_ms: float
+
+
+@dataclass
+class DecisionResult:
+    """Structured outcome of one entry-gate pipeline run.
+
+    `decisions` records every gate visited (short-circuits on first block).
+    `final_rec` is the mutated entry dict on full pass, None on block.
+    `to_tree()` emits a human-readable audit path for /audit Telegram cmd."""
+    ticker: str
+    passed: bool
+    blocked_by: str | None      # name of first blocking gate, None on full pass
+    decisions: list[GateDecision] = field(default_factory=list)
+    final_rec: dict | None = None
+    timestamp: str = ""
+
+    def to_tree(self) -> dict:
+        """Compact audit-tree for dashboards / Telegram /audit."""
+        return {
+            "ticker": self.ticker,
+            "decision": "PASS" if self.passed else "BLOCKED",
+            "blocked_by": self.blocked_by,
+            "timestamp": self.timestamp,
+            "path": [
+                f"{d.gate} -> {'PASS' if d.passed else 'FAIL'} ({d.elapsed_ms:.1f}ms)"
+                for d in self.decisions
+            ],
+        }
 
 
 def build_gate_context(
@@ -57,12 +96,12 @@ def build_gate_context(
     )
 
 
-def run_entry_gates(entry: dict, ctx: GateContext) -> dict | None:
+def run_entry_gates(entry: dict, ctx: GateContext) -> DecisionResult:
     """Chain all entry-gate functions in canonical order.
 
-    Returns the (possibly mutated) entry dict on full pass, None on first block.
-    Order matters: validation first (catch malformed recs), then market-wide
-    blocks, per-ticker quality, portfolio-cluster, sizing modifiers, final
+    Returns a DecisionResult — caller checks `.passed`, reads `.final_rec` on
+    pass. Order matters: validation first (catch malformed recs), then market-
+    wide blocks, per-ticker quality, portfolio-cluster, sizing modifiers, final
     tradeability (whole-share + fee).
     """
     # Imports here (not module top) to avoid a circular import via
@@ -118,11 +157,28 @@ def run_entry_gates(entry: dict, ctx: GateContext) -> dict | None:
         gate_fee,
     )
 
+    decisions: list[GateDecision] = []
+    blocked_by: str | None = None
     for gate in chain:
-        if not gate(entry, ctx):
+        t0 = time.perf_counter()
+        passed = gate(entry, ctx)
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        decisions.append(GateDecision(
+            gate=gate.__name__, passed=passed, elapsed_ms=round(elapsed_ms, 2),
+        ))
+        if not passed:
+            blocked_by = gate.__name__
             _record_outcome_if_measurable(entry, ctx, gate.__name__)
-            return None
-    return entry
+            break
+
+    return DecisionResult(
+        ticker=ctx.ticker,
+        passed=blocked_by is None,
+        blocked_by=blocked_by,
+        decisions=decisions,
+        final_rec=entry if blocked_by is None else None,
+        timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
 
 
 def _record_outcome_if_measurable(entry: dict, ctx: GateContext, gate_name: str) -> None:
