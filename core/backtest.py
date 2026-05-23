@@ -183,11 +183,82 @@ def _format(report: dict) -> str:
     return "\n".join(lines)
 
 
+def _coerce(value: str):
+    """int → float → str fallback (same as tools.tuning_audit)."""
+    try:
+        if "." not in value and "e" not in value.lower():
+            return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    return value
+
+
+def _replay_with_overrides(overrides: dict) -> dict:
+    """Apply config overrides, run replay_all, restore. Same try/finally pattern
+    as core.replay.compare.replay_with_overrides."""
+    saved: dict = {}
+    try:
+        for name, value in overrides.items():
+            if not hasattr(config, name):
+                raise AttributeError(
+                    f"config.{name} not found — refusing to apply override"
+                )
+            saved[name] = getattr(config, name)
+            setattr(config, name, value)
+        return replay_all()
+    finally:
+        for name, original in saved.items():
+            setattr(config, name, original)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--gate", help="filter to one gate", default=None)
     ap.add_argument("--write", action="store_true", help="write report JSON for web")
+    ap.add_argument(
+        "--override", action="append", default=[],
+        help="KEY=VALUE config override (repeat for multiple). Runs baseline + "
+             "variant + diff. E.g. --override MIN_EXPECTED_EDGE=0.10",
+    )
     args = ap.parse_args()
+
+    if args.override:
+        overrides = {}
+        for kv in args.override:
+            if "=" not in kv:
+                ap.error(f"Bad override (missing '='): {kv}")
+            k, v = kv.split("=", 1)
+            overrides[k.strip()] = _coerce(v.strip())
+
+        baseline = replay_all()
+        variant = _replay_with_overrides(overrides)
+        if args.gate:
+            baseline["gates"] = {k: v for k, v in baseline["gates"].items() if k == args.gate}
+            variant["gates"] = {k: v for k, v in variant["gates"].items() if k == args.gate}
+
+        print(f"=== Baseline (current config) ===")
+        print(_format(baseline))
+        print(f"\n=== Variant: {overrides} ===")
+        print(_format(variant))
+        print(f"\n=== Delta (variant − baseline) ===")
+        all_gates = set(baseline["gates"]) | set(variant["gates"])
+        for g in sorted(all_gates):
+            b = baseline["gates"].get(g, {})
+            v = variant["gates"].get(g, {})
+            d_block = v.get("would_block", 0) - b.get("would_block", 0)
+            d_wins = v.get("would_block_winners", 0) - b.get("would_block_winners", 0)
+            d_loss = v.get("would_block_losers", 0) - b.get("would_block_losers", 0)
+            if not (d_block or d_wins or d_loss):
+                continue
+            print(f"  {g:<20} ΔBlock={d_block:+d}  ΔBlockW={d_wins:+d}  ΔBlockL={d_loss:+d}")
+        if args.write:
+            write_report({"baseline": baseline, "variant": variant, "overrides": overrides})
+            print("\nReport written to backtest_report.json")
+        return
 
     rep = replay_all()
     if args.gate:
