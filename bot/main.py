@@ -135,11 +135,41 @@ def _append_equity_point(pf: dict, unrealized_eur: float, now: datetime) -> None
     pf["equity_history"] = [p for p in hist if (p.get("ts") or "") >= cutoff]
 
 
+def _should_collect_heartbeat() -> bool:
+    """Suppress heartbeat work outside active bot windows.
+
+    Markets closed (weekends, holidays, after XETRA + US close, before
+    morning prep) = no live quotes to collect, no trades being managed,
+    nothing meaningful to write. Earlier behaviour wrote a stale
+    snapshot 1×/min through the night and on weekends, burning disk
+    I/O + bloating equity_history with hundreds of duplicate points per
+    day. Dashboard now legitimately shows "stale" outside trading hours,
+    which is accurate — the bot really is idle.
+
+    Active windows kept on:
+    - XETRA / US trading hours (is_market_hours)
+    - Morning prep (08:00 CET) — bot is doing the daily Sonnet call
+    - EOD summary (22:10-22:25 CET) — bot is computing the daily digest
+    - Weekend summary (Sat/Sun 10:00-10:15 CET)
+    - Weekend news scan (Sun 18:00-22:00 CET)
+    """
+    if is_market_hours():
+        return True
+    return (
+        is_morning_prep_time()
+        or is_eod_summary_time()
+        or is_weekend_summary_time()
+        or is_weekend_news_window()
+    )
+
+
 def _persist_heartbeat(state: AppState, now: datetime) -> None:
     """Telemetry snapshot for web dashboard. Throttled to ≤1×/min.
-    Heartbeat dict goes to state/runtime.json (high-write, own lock).
+    Heartbeat dict goes to state/bot.db (runtime kv_state, own lock).
     Trade MAE/MFE + equity-history stay in portfolio.json (positional state)."""
     if (time.monotonic() - state.last_heartbeat_write) < HEARTBEAT_WRITE_INTERVAL_SEC:
+        return
+    if not _should_collect_heartbeat():
         return
     try:
         from core.portfolio.runtime_store import update_runtime
