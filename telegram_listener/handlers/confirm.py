@@ -485,9 +485,10 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if len(portfolio["open_trades"]) >= 2:
             try:
                 from core.metrics import compute_correlation_snapshot
+                from core.portfolio.runtime_store import update_runtime
                 snap = compute_correlation_snapshot(portfolio)
                 if snap is not None:
-                    portfolio["correlation_matrix"] = snap
+                    update_runtime({"correlation_matrix": snap})
             except Exception:
                 logger.exception("Correlation snapshot refresh failed at /confirm")
 

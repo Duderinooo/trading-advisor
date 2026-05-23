@@ -58,25 +58,27 @@ def record_entry_gate_cooldown(ticker: str, gate: str, reason: str) -> None:
     t = (ticker or "").upper()
     if not t or t == "?":
         return
-    with portfolio_lock:
-        pf = load_portfolio()
-        cds = pf.setdefault("entry_gate_cooldowns", {})
-        cds[t] = {
-            "gate": gate,
-            "reason": reason,
-            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        save_portfolio(pf)
+    # State now lives in state/runtime.json (not portfolio.json).
+    from core.portfolio.runtime_store import load_runtime, save_runtime
+    runtime = load_runtime()
+    cds = runtime.setdefault("entry_gate_cooldowns", {})
+    cds[t] = {
+        "gate": gate,
+        "reason": reason,
+        "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    save_runtime(runtime)
 
 
-def active_entry_gate_cooldowns(portfolio: dict) -> dict[str, dict]:
+def active_entry_gate_cooldowns(portfolio: dict | None = None) -> dict[str, dict]:
     """Return {ticker: cooldown} for cooldowns younger than ENTRY_GATE_COOLDOWN_MIN.
 
-    Expired entries are skipped here and pruned lazily on the next
-    record_entry_gate_cooldown save.
+    `portfolio` arg kept for backwards-compat but ignored — state reads from
+    state/runtime.json. Expired entries pruned lazily on next save.
     """
     out: dict[str, dict] = {}
-    cds = portfolio.get("entry_gate_cooldowns") or {}
+    from core.portfolio.runtime_store import load_runtime
+    cds = load_runtime().get("entry_gate_cooldowns") or {}
     if not cds:
         return out
     now = datetime.now()

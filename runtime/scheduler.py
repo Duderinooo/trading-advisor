@@ -149,25 +149,28 @@ def is_transient_error(exc: BaseException) -> bool:
 
 
 def transient_retry_inc(key: str) -> int:
-    """Bump today's counter for `key`. Auto-reset on date roll-over."""
-    pf = load_portfolio()
-    bucket = pf.setdefault("transient_retries", {})
+    """Bump today's counter for `key`. Auto-reset on date roll-over.
+    Persisted in state/runtime.json (own lock)."""
+    from core.portfolio.runtime_store import load_runtime, save_runtime
+    runtime = load_runtime()
+    bucket = runtime.setdefault("transient_retries", {})
     today = str(date.today())
     entry = bucket.get(key) or {}
     if entry.get("date") != today:
         entry = {"date": today, "count": 0}
     entry["count"] += 1
     bucket[key] = entry
-    save_portfolio(pf)
+    save_runtime(runtime)
     return entry["count"]
 
 
 def transient_retry_reset(key: str) -> None:
-    pf = load_portfolio()
-    bucket = pf.get("transient_retries") or {}
+    from core.portfolio.runtime_store import load_runtime, save_runtime
+    runtime = load_runtime()
+    bucket = runtime.get("transient_retries") or {}
     if key in bucket:
         bucket.pop(key)
-        save_portfolio(pf)
+        save_runtime(runtime)
 
 
 # ============================================================================

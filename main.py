@@ -137,26 +137,34 @@ def _append_equity_point(pf: dict, unrealized_eur: float, now: datetime) -> None
 
 def _persist_heartbeat(state: AppState, now: datetime) -> None:
     """Telemetry snapshot for web dashboard. Throttled to ≤1×/min.
-    Delegates MAE/MFE ratcheting to services.price_monitor."""
+    Heartbeat dict goes to state/runtime.json (high-write, own lock).
+    Trade MAE/MFE + equity-history stay in portfolio.json (positional state)."""
     if (time.monotonic() - state.last_heartbeat_write) < HEARTBEAT_WRITE_INTERVAL_SEC:
         return
     try:
+        from core.portfolio.runtime_store import update_runtime
         try:
             live_prices, live_quotes = _collect_live_quotes(load_portfolio())
         except Exception:
             logger.exception("Live-price snapshot failed (heartbeat)")
             live_prices, live_quotes = {}, {}
 
-        with portfolio_lock:
-            pf = load_portfolio()
-            pf["heartbeat"] = {
+        # Heartbeat → runtime.json (separate lock, no contention with trades)
+        update_runtime({
+            "heartbeat": {
                 "last_tick": now.strftime("%Y-%m-%d %H:%M:%S"),
                 "market_hours": is_market_hours(),
                 "api_calls_today": get_daily_usage(),
                 "api_cap": config.MAX_ANALYSES_PER_DAY,
                 "prices": live_prices,
                 "live_quotes": live_quotes,
-            }
+            },
+        })
+
+        # Trade-state mutations (MAE/MFE/max_r_open + equity_history) stay
+        # under portfolio_lock — those are positional invariants.
+        with portfolio_lock:
+            pf = load_portfolio()
             unrealized_eur = ratchet_open_trade_extremes(
                 pf.get("open_trades", []) or [], live_prices,
             )

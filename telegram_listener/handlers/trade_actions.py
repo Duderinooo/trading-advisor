@@ -234,11 +234,14 @@ async def close_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # for 2 days after both were closed because /close path didn't refresh.
         try:
             from core.metrics import compute_correlation_snapshot
+            from core.portfolio.runtime_store import load_runtime, save_runtime
             snap = compute_correlation_snapshot(portfolio)
+            rt = load_runtime()
             if snap is None:
-                portfolio.pop("correlation_matrix", None)
+                rt.pop("correlation_matrix", None)
             else:
-                portfolio["correlation_matrix"] = snap
+                rt["correlation_matrix"] = snap
+            save_runtime(rt)
         except Exception:
             logger.exception("Correlation snapshot refresh failed at /close")
         save_portfolio(portfolio)

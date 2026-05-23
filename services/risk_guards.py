@@ -44,8 +44,10 @@ def check_equity_alerts() -> None:
             for m in pf.get("cash_movements", []) or []:
                 realized += float(m.get("amount") or 0)
 
-            quotes = (pf.get("heartbeat") or {}).get("live_quotes") or {}
-            prices = (pf.get("heartbeat") or {}).get("prices") or {}
+            from core.portfolio.runtime_store import load_runtime
+            hb = (load_runtime().get("heartbeat") or {})
+            quotes = hb.get("live_quotes") or {}
+            prices = hb.get("prices") or {}
             open_trades = pf.get("open_trades", []) or []
 
             # Fall back to yfinance for tickers without LS-TC heartbeat.

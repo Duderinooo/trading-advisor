@@ -38,10 +38,16 @@ def persist_results(
         except Exception:
             logger.exception("trace persist failed (non-fatal)")
 
+    # Correlation matrix → runtime.json (separate lock).
+    if corr_matrix is not None:
+        try:
+            from core.portfolio.runtime_store import update_runtime
+            update_runtime({"correlation_matrix": corr_matrix})
+        except Exception:
+            logger.exception("correlation_matrix persist failed (non-fatal)")
+
     with portfolio_lock:
         fresh = load_portfolio()
-        if corr_matrix is not None:
-            fresh["correlation_matrix"] = corr_matrix
         if new_levels is not None:
             _persist_watch_levels(
                 fresh, new_levels, ctx.excluded, ctx.market_data, ctx.mode, trace,
