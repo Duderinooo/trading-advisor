@@ -1275,6 +1275,84 @@ async def morning_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 @telegram_handler
+async def audit_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """`/audit TICKER` — show last N DecisionResult trees for that ticker.
+    Reads analytics/decisions.jsonl (written by recs/entry.py _persist_decision)."""
+    if not _authorized(update):
+        return
+    args = ctx.args or []
+    if not args:
+        await update.message.reply_text(
+            "Usage: `/audit TICKER` — letzte 5 Gate-Pipeline-Decisions",
+            parse_mode="Markdown",
+        )
+        return
+    ticker = args[0].upper()
+    limit = 5
+    if len(args) >= 2:
+        try:
+            limit = max(1, min(20, int(args[1])))
+        except ValueError:
+            pass
+
+    import json as _json
+    import os as _os
+    from pathlib import Path as _Path
+    decisions_path = (
+        _Path(_os.path.dirname(_os.path.abspath(__file__))) / "analytics" / "decisions.jsonl"
+    )
+    if not decisions_path.exists():
+        await update.message.reply_text(
+            f"Keine Decisions-History gefunden (`{decisions_path.name}` fehlt).",
+            parse_mode="Markdown",
+        )
+        return
+
+    matches: list[dict] = []
+    try:
+        with decisions_path.open() as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    tree = _json.loads(line)
+                except _json.JSONDecodeError:
+                    continue
+                if (tree.get("ticker") or "").upper() == ticker:
+                    matches.append(tree)
+    except Exception as e:
+        await update.message.reply_text(f"Read-Fehler: `{e}`", parse_mode="Markdown")
+        return
+
+    if not matches:
+        await update.message.reply_text(
+            f"Keine Decisions für `{ticker}` gefunden.", parse_mode="Markdown",
+        )
+        return
+
+    # Show last `limit` matches, newest first
+    matches = matches[-limit:][::-1]
+    blocks: list[str] = [f"🔍 *Audit `{ticker}`* — letzte {len(matches)} Decision(s):\n"]
+    for tree in matches:
+        ts = tree.get("timestamp", "?")
+        decision = tree.get("decision", "?")
+        emoji = "✅" if decision == "PASS" else "🛑"
+        head = f"\n{emoji} *{ts}* — {decision}"
+        if tree.get("blocked_by"):
+            head += f" by `{tree['blocked_by']}`"
+        blocks.append(head)
+        for step in tree.get("path", []):
+            blocks.append(f"  • {step}")
+
+    msg = "\n".join(blocks)
+    # Telegram message-length cap 4096; truncate gracefully.
+    if len(msg) > 3800:
+        msg = msg[:3800] + "\n…(truncated)"
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+
+@telegram_handler
 async def help_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not _authorized(update):
         return
@@ -1294,6 +1372,7 @@ async def help_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/cancel` (reply) — Pending-Empfehlung verwerfen\n"
         "`/positions` — Portfolio anzeigen\n"
         "`/morning` — Morning Prep manuell neu laufen lassen\n"
+        "`/audit TICKER [n]` — letzte N Gate-Pipeline-Decisions (default 5)\n"
         "`/panic [grund]` — Kill-Switch AN (blockt neue Entries + Event-Analysen)\n"
         "`/resume` — Kill-Switch AUS\n"
         "`/killstatus` — Kill-Switch Status",
@@ -1339,6 +1418,7 @@ async def _async_run():
     app.add_handler(CommandHandler("resume", resume_handler))
     app.add_handler(CommandHandler("killstatus", killstatus_handler))
     app.add_handler(CommandHandler("morning", morning_handler))
+    app.add_handler(CommandHandler("audit", audit_handler))
     app.add_handler(CommandHandler("help", help_handler))
     app.add_handler(CommandHandler("start", help_handler))
 
