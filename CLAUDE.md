@@ -8,9 +8,13 @@ Bot for a single user who executes **every** recommendation 1:1 on Trade Republi
 - `telegram_listener.py` — background thread, user commands (`/confirm`, `/close`, `/panic`, …)
 - `core/` — pure logic (market data, portfolio I/O, Claude orchestration, event detection)
 - `memory.py` — MemPalace wrapper for trade/analysis history (optional; gracefully degrades)
-- `portfolio.json` — single source of truth for open/closed trades, cash, watch levels, kill-switch
+- `portfolio.json` — root state: open_trades, watch_levels, cash_eur, total_capital_eur, cash_movements, equity_history, kill-switch, last_* markers
+- `state/bot.db` — SQLite store for everything else (Phase E7, 2026-05-23): closed_trades, pending_recommendations, dedup state (seen_news, triggered_events, triggered_price_alerts, geo_news_fired), runtime kv (heartbeat, entry_gate_cooldowns, correlation_matrix, transient_retries), per-mode traces (kv_state namespace='trace')
 
-All writers acquire `core.portfolio.portfolio_lock` (`RLock`). Both the main loop and the Telegram thread mutate state — never skip the lock.
+Storage rules:
+- Read via the store APIs in `core.portfolio.*_store` and `core.llm.telemetry.trace_store`. Never bypass with raw sqlite3 queries from app code.
+- `load_portfolio()` transparently splices closed_trades + pending_recommendations from SQLite so the rest of the codebase still sees one dict.
+- All writers acquire `core.portfolio.portfolio_lock` (`RLock`) for portfolio.json. SQLite stores have their own per-store RLock; SQLite's own file locking covers cross-process. Both the main loop and the Telegram thread mutate state — never skip the lock.
 
 ## Critical invariants
 
@@ -182,8 +186,9 @@ Do **not** call Opus from this bot — per-call cost doesn't justify it at €1k
 ## Files not to touch without reason
 
 - `portfolio.json` — mutate only via `save_portfolio` under the lock
+- `state/bot.db` — never write to SQLite directly; go through the store APIs (`closed_trades_store`, `pending_store`, `dedup_store`, `runtime_store`, `trace_store`). Schema lives in `core/db.py`; tables auto-created on first connect via `init_schema()`.
 - `entities.json`, `.palace/` — MemPalace internals
-- `run.sh`, `venv/` — deployment-specific
+- `run.sh`, `venv/` — deployment-specific. `run.sh` uses `${0:A:h}` to resolve its own location, so it's portable across clones.
 
 ## Test surface
 

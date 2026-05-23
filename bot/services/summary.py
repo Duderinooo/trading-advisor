@@ -70,6 +70,7 @@ def run_eod_summary() -> None:
         )
         send_notification(msg)
         _persist_eod_analytics_snapshots(portfolio)
+        _run_db_backup()
         mark_eod_summary_done()
         logger.info("✅ EOD summary sent")
     except Exception:
@@ -105,6 +106,20 @@ def _persist_eod_analytics_snapshots(portfolio: dict) -> None:
         _append_calibration_snapshot(portfolio)
     except Exception:
         logger.exception("EOD calibration snapshot failed")
+
+
+def _run_db_backup() -> None:
+    """Snapshot state/bot.db once per day at EOD. Fail-soft."""
+    try:
+        from tools.backup_db import prune, snapshot
+        out = snapshot()
+        removed = prune()
+        logger.info(
+            "EOD db backup: wrote %s (%.1f KB), pruned %d old",
+            out.name, out.stat().st_size / 1024, removed,
+        )
+    except Exception:
+        logger.exception("EOD db backup failed")
 
 
 def _append_expectancy_snapshot(portfolio: dict) -> None:
