@@ -37,7 +37,7 @@ def _isin_for_ticker(ticker: str, stock=None) -> str | None:
         return _isin_cache[ticker]
     # Hardcoded first: yfinance returns '-' for every .DE symbol.
     try:
-        from core.livefeed import TICKER_ISIN_MAP
+        from core.data.livefeed import TICKER_ISIN_MAP
         if ticker in TICKER_ISIN_MAP:
             isin = TICKER_ISIN_MAP[ticker]
             _isin_cache[ticker] = isin
@@ -354,7 +354,7 @@ def _fetch_ticker(ticker: str) -> dict:
     # than yfinance (15min delay) and matches what TR shows the user. Fail-soft:
     # any error keeps yfinance baseline. ISIN comes from yfinance info.
     try:
-        from core.livefeed import get_live_quote
+        from core.data.livefeed import get_live_quote
         isin = info.get("isin") or _isin_for_ticker(ticker, stock)
         if isin:
             lq = get_live_quote(isin)
@@ -613,7 +613,7 @@ def fetch_news(tickers: list[str], limit_per_ticker: int = 3) -> dict[str, list[
     only path left Sonnet blind to German DAX news in its morning prompt
     (Bug 2026-05-02 audit). Newest-first dedup by lowercased title.
     """
-    from core.news_rss import fetch_rss_news
+    from core.data.news_rss import fetch_rss_news
 
     # Resolve company name once per ticker (RSS query disambiguator).
     name_lookup: dict[str, str | None] = {}

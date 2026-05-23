@@ -38,7 +38,7 @@ from core.portfolio import (
     dd_scaling_factor,
     exit_suppressed_tickers,
 )
-from core.market_data import (
+from core.data.market_data import (
     get_market_data,
     invalidate_market_cache,
     get_earnings_warnings,
@@ -55,8 +55,8 @@ from core.events import (
     check_stop_loss_take_profit,
     check_price_alerts,
 )
-from core.analyzer import analyze_portfolio
-from core.api_usage import (
+from core.llm.analyzer import analyze_portfolio
+from core.llm.telemetry.api_usage import (
     can_make_api_call,
     get_daily_usage,
     get_minutes_since_last_analysis,

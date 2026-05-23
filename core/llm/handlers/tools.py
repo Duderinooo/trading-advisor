@@ -19,10 +19,10 @@ import config
 from notifier import send_notification as _notify, send_actionable
 from memory import log_trade, MEMPALACE_AVAILABLE
 
-from core.api_usage import increment_usage
-from core.call_log import log_claude_call
+from core.llm.telemetry.api_usage import increment_usage
+from core.llm.telemetry.call_log import log_claude_call
 from core.gate_log import log_gate
-from core.prompts import RED_TEAM_SYSTEM, RED_TEAM_TOOL
+from core.llm.prompt.prompts import RED_TEAM_SYSTEM, RED_TEAM_TOOL
 from core.portfolio import (
     portfolio_lock, load_portfolio, suggest_position_size,
     compute_hit_stats, compute_sector_exposure,
@@ -30,7 +30,7 @@ from core.portfolio import (
     compute_correlations, dd_scaling_factor,
     record_entry_gate_cooldown,
 )
-from core.market_data import get_earnings_warnings, get_returns
+from core.data.market_data import get_earnings_warnings, get_returns
 
 
 logger = logging.getLogger(__name__)

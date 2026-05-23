@@ -7,7 +7,7 @@ import logging
 from datetime import datetime
 
 import config
-from core.market_data import get_returns
+from core.data.market_data import get_returns
 
 
 logger = logging.getLogger(__name__)

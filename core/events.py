@@ -18,9 +18,9 @@ from core.portfolio import (
     exit_suppressed_tickers, active_entry_gate_cooldowns,
     risk_halt_status, compute_sector_exposure, compute_confluence,
 )
-from core.market_data import get_market_data, market_regime
-from core.news_rss import fetch_rss_news
-from core.api_usage import get_minutes_since_last_analysis
+from core.data.market_data import get_market_data, market_regime
+from core.data.news_rss import fetch_rss_news
+from core.llm.telemetry.api_usage import get_minutes_since_last_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -973,7 +973,7 @@ def _close_trade(trade: dict, exit_price: float, reason: str, portfolio: dict):
 
     # Alpha vs Beta attribution (same period as trade hold-window).
     try:
-        from core.market_data import get_period_return
+        from core.data.market_data import get_period_return
         spy_ret = get_period_return("SPY5.DE", trade.get("entry_date", ""), closed["exit_date"])
         if spy_ret is not None:
             closed["spy_return_pct"] = spy_ret

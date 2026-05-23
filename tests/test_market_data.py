@@ -7,7 +7,7 @@ deterministic Xetra-session-fraction projection helper is covered.
 import unittest
 from datetime import datetime
 
-import core.market_data as M
+import core.data.market_data as M
 
 
 class TestSessionFraction(unittest.TestCase):

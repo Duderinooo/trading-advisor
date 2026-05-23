@@ -6,7 +6,7 @@ only the deterministic parsers are covered here.
 
 import unittest
 
-import core.livefeed as L
+import core.data.livefeed as L
 
 
 class TestParseDeNumber(unittest.TestCase):

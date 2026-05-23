@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 
 import config
-from core.market_data import get_market_data
+from core.data.market_data import get_market_data
 from core.portfolio import (
     portfolio_lock, load_portfolio, save_portfolio, kill_switch_active,
 )

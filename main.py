@@ -18,7 +18,7 @@ from core import (
     load_portfolio, save_portfolio, portfolio_lock,
     maybe_auto_kill, get_daily_usage,
 )
-from core.livefeed import live_quote_for_ticker
+from core.data.livefeed import live_quote_for_ticker
 from notifier import send_alert
 from telegram_listener import start_listener_thread
 
