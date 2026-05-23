@@ -20,7 +20,7 @@ import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-import yfinance as yf
+from core.data.historical import get_daily_bars_range
 
 
 logger = logging.getLogger(__name__)
@@ -111,11 +111,18 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
     tmp.replace(path)
 
 
-def _resolve_against_daily_bar(record: dict, today: date) -> dict | None:
-    """Resolve a pending record using the daily OHLC bar of the next trading day.
+_RESOLUTION_WINDOW_DAYS = 5  # Look up to N trading days for TP/SL touch.
 
-    Returns the enriched record (with would_win/peak_pct/trough_pct/etc) or
-    None if no bar is available yet (too soon to resolve)."""
+
+def _resolve_against_daily_bars(record: dict, today: date) -> dict | None:
+    """Resolve a pending record using the historical bar cache.
+
+    Walks daily bars in [block_date + 1, today] (capped at _RESOLUTION_WINDOW_DAYS)
+    and picks the first bar where either SL is touched (low ≤ SL) or TP1 is
+    touched (high ≥ TP1). Same-day ambiguity (both touched on one bar) returns
+    would_win=None.
+
+    Returns None if no bars are available yet."""
     rec_date_str = record.get("date") or ""
     try:
         rec_date = datetime.strptime(rec_date_str, "%Y-%m-%d").date()
@@ -123,50 +130,72 @@ def _resolve_against_daily_bar(record: dict, today: date) -> dict | None:
         return None
     if today <= rec_date:
         return None  # same-day, can't resolve yet
+
     ticker = record["ticker"]
-    try:
-        # Fetch a 5d window starting day-after-block (covers weekend gap to Monday).
-        start = rec_date + timedelta(days=1)
-        end = min(today + timedelta(days=1), start + timedelta(days=7))
-        hist = yf.Ticker(ticker).history(start=start.isoformat(), end=end.isoformat())
-    except Exception:
-        logger.warning("yfinance fetch failed for %s outcome", ticker)
+    start = rec_date + timedelta(days=1)
+    end = min(today, start + timedelta(days=_RESOLUTION_WINDOW_DAYS))
+    bars = get_daily_bars_range(ticker, start, end)
+    if not bars:
         return None
-    if hist is None or hist.empty:
-        return None
-    # Take the FIRST available trading-day bar in the window.
-    row = hist.iloc[0]
-    high = float(row["High"])
-    low = float(row["Low"])
+
     entry = float(record["entry_price"])
     sl = float(record["stop_loss"])
     tp1 = float(record["take_profit"][0])
 
-    hit_sl = low <= sl
-    hit_tp1 = high >= tp1
+    # Walk bars in order. First touch resolves the trade.
+    resolved_bar = None
+    hit_sl = False
+    hit_tp1 = False
+    peak_high = float("-inf")
+    trough_low = float("inf")
+    for bar in bars:
+        high = bar["high"]
+        low = bar["low"]
+        peak_high = max(peak_high, high)
+        trough_low = min(trough_low, low)
+        bar_hit_sl = low <= sl
+        bar_hit_tp1 = high >= tp1
+        if bar_hit_sl or bar_hit_tp1:
+            hit_sl = bar_hit_sl
+            hit_tp1 = bar_hit_tp1
+            resolved_bar = bar
+            break
+
+    if resolved_bar is None:
+        # Neither hit within window — no resolution
+        if peak_high == float("-inf"):
+            return None
+        return {
+            **record,
+            "resolved_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "resolved_bar_date": bars[-1]["date"],
+            "bars_walked": len(bars),
+            "would_hit_sl": False,
+            "would_hit_tp1": False,
+            "would_win": None,
+            "peak_pct": round((peak_high - entry) / entry * 100, 2) if entry > 0 else 0.0,
+            "trough_pct": round((trough_low - entry) / entry * 100, 2) if entry > 0 else 0.0,
+        }
+
     if hit_sl and hit_tp1:
         would_win = None  # ambiguous: daily bar can't order intraday touches
     elif hit_tp1:
         would_win = True
-    elif hit_sl:
-        would_win = False
     else:
-        would_win = None  # neither hit within 1d (no resolution)
-
-    peak_pct = (high - entry) / entry * 100 if entry > 0 else 0.0
-    trough_pct = (low - entry) / entry * 100 if entry > 0 else 0.0
+        would_win = False
 
     return {
         **record,
         "resolved_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "resolved_bar_date": str(hist.index[0].date()),
-        "next_day_high": high,
-        "next_day_low": low,
+        "resolved_bar_date": resolved_bar["date"],
+        "bars_walked": bars.index(resolved_bar) + 1,
+        "next_day_high": resolved_bar["high"],
+        "next_day_low": resolved_bar["low"],
         "would_hit_sl": hit_sl,
         "would_hit_tp1": hit_tp1,
         "would_win": would_win,
-        "peak_pct": round(peak_pct, 2),
-        "trough_pct": round(trough_pct, 2),
+        "peak_pct": round((peak_high - entry) / entry * 100, 2) if entry > 0 else 0.0,
+        "trough_pct": round((trough_low - entry) / entry * 100, 2) if entry > 0 else 0.0,
     }
 
 
@@ -184,7 +213,7 @@ def compute_pending_outcomes(today: date | None = None) -> dict:
     newly_resolved = 0
     false_negs = 0  # blocked-but-would-have-won
     for rec in pending:
-        enriched = _resolve_against_daily_bar(rec, today)
+        enriched = _resolve_against_daily_bars(rec, today)
         if enriched is None:
             still_pending.append(rec)
             continue

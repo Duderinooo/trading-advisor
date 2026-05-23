@@ -39,6 +39,9 @@ backtest_report.json
 # Analytics (gate-outcome counterfactuals + daily snapshots, runtime-generated)
 analytics/
 
+# Historical bar cache (regenerated from yfinance on demand)
+data_cache/
+
 # IDE
 .vscode/
 .idea/
