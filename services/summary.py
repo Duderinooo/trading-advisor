@@ -101,6 +101,11 @@ def _persist_eod_analytics_snapshots(portfolio: dict) -> None:
     except Exception:
         logger.exception("EOD expectancy snapshot failed")
 
+    try:
+        _append_calibration_snapshot(portfolio)
+    except Exception:
+        logger.exception("EOD calibration snapshot failed")
+
 
 def _append_expectancy_snapshot(portfolio: dict) -> None:
     """Append today's setup-expectancy + calibration metrics to
@@ -131,6 +136,38 @@ def _append_expectancy_snapshot(portfolio: dict) -> None:
     ).resolve()
     analytics_dir.mkdir(parents=True, exist_ok=True)
     out_path = analytics_dir / "setup_expectancy_history.jsonl"
+    with out_path.open("a") as f:
+        f.write(json.dumps(snapshot) + "\n")
+
+
+def _append_calibration_snapshot(portfolio: dict) -> None:
+    """Append today's rolling-N Brier-score calibration to
+    analytics/calibration_history.jsonl. Lighter than expectancy snapshot —
+    only the calibration block. Used for drift detection over time."""
+    import json
+    import os
+    from pathlib import Path
+    from core.portfolio import compute_hit_stats
+
+    stats = compute_hit_stats(
+        portfolio.get("closed_trades", []), portfolio.get("cash_movements", []),
+    )
+    cal = (stats or {}).get("calibration") or {}
+    if not cal:
+        return
+    snapshot = {
+        "date": str(date.today()),
+        "n_scored": cal.get("n_scored"),
+        "avg_brier": cal.get("avg_brier"),
+        "avg_p_predicted": cal.get("avg_p_predicted"),
+        "actual_win_rate": cal.get("actual_win_rate"),
+        "haircut": cal.get("haircut"),
+    }
+    analytics_dir = (
+        Path(os.path.dirname(os.path.abspath(__file__))) / ".." / "analytics"
+    ).resolve()
+    analytics_dir.mkdir(parents=True, exist_ok=True)
+    out_path = analytics_dir / "calibration_history.jsonl"
     with out_path.open("a") as f:
         f.write(json.dumps(snapshot) + "\n")
 

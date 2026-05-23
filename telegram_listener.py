@@ -1275,6 +1275,80 @@ async def morning_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 @telegram_handler
+async def stats_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """`/stats` — surface compute_hit_stats + gate FNR + calibration trend.
+
+    No args needed. Shows: total trades, win rate, avg R, per-setup expectancy,
+    Brier calibration, top blocking gates with false-negative rate."""
+    if not _authorized(update):
+        return
+    with portfolio_lock:
+        portfolio = load_portfolio()
+    from core.portfolio import compute_hit_stats
+    stats = compute_hit_stats(
+        portfolio.get("closed_trades", []), portfolio.get("cash_movements", []),
+    )
+    if not stats:
+        await update.message.reply_text(
+            "📊 *Stats* — kein closed-trades-Sample bisher.",
+            parse_mode="Markdown",
+        )
+        return
+
+    lines = ["📊 *Stats*\n"]
+    lines.append(
+        f"_Total:_ {stats.get('total', 0)} trades | "
+        f"Win-rate: {stats.get('win_rate', 0) * 100:.1f}% | "
+        f"Avg R: {stats.get('avg_r', 0):+.2f}"
+    )
+
+    by_setup = stats.get("by_setup_type") or {}
+    if by_setup:
+        # Sort by total desc, take top 6.
+        top = sorted(
+            by_setup.items(), key=lambda kv: -(kv[1].get("total") or 0),
+        )[:6]
+        lines.append("\n*Per setup_type:*")
+        for setup, d in top:
+            n = d.get("total", 0)
+            wr = d.get("rate", 0)
+            ap = d.get("avg_pnl_pct", 0)
+            lines.append(
+                f"  • `{setup}` — n={n} wr={wr:.0f}% avg P&L={ap:+.1f}%"
+            )
+
+    cal = stats.get("calibration") or {}
+    if cal:
+        hc = cal.get("haircut") or 0
+        lines.append(
+            f"\n*Calibration:* Brier {cal.get('avg_brier', 0):.3f} | "
+            f"p̂={cal.get('avg_p_predicted', 0):.2f} vs actual="
+            f"{cal.get('actual_win_rate', 0):.2f} | "
+            f"haircut={hc:+.2f}"
+        )
+
+    # Gate false-negative rates (read from outcomes if any)
+    try:
+        from core.llm.telemetry.outcomes import gate_false_negative_rates
+        fnr = gate_false_negative_rates()
+        if fnr:
+            lines.append("\n*Gate FNR (blocked-but-would-have-won):*")
+            top_gates = sorted(
+                fnr.items(),
+                key=lambda kv: -kv[1].get("total", 0),
+            )[:5]
+            for gate, d in top_gates:
+                lines.append(
+                    f"  • `{gate}` — n={d['total']} would_win={d['would_win']} "
+                    f"FNR={d['false_negative_rate']:.2%}"
+                )
+    except Exception as e:
+        logger.warning("FNR aggregation failed in /stats: %s", e)
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+@telegram_handler
 async def audit_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """`/audit TICKER` — show last N DecisionResult trees for that ticker.
     Reads analytics/decisions.jsonl (written by recs/entry.py _persist_decision)."""
@@ -1373,6 +1447,7 @@ async def help_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "`/positions` — Portfolio anzeigen\n"
         "`/morning` — Morning Prep manuell neu laufen lassen\n"
         "`/audit TICKER [n]` — letzte N Gate-Pipeline-Decisions (default 5)\n"
+        "`/stats` — Win-rate, per-setup expectancy, Brier-calibration, Gate-FNR\n"
         "`/panic [grund]` — Kill-Switch AN (blockt neue Entries + Event-Analysen)\n"
         "`/resume` — Kill-Switch AUS\n"
         "`/killstatus` — Kill-Switch Status",
@@ -1419,6 +1494,7 @@ async def _async_run():
     app.add_handler(CommandHandler("killstatus", killstatus_handler))
     app.add_handler(CommandHandler("morning", morning_handler))
     app.add_handler(CommandHandler("audit", audit_handler))
+    app.add_handler(CommandHandler("stats", stats_handler))
     app.add_handler(CommandHandler("help", help_handler))
     app.add_handler(CommandHandler("start", help_handler))
 
