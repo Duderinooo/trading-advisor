@@ -14,6 +14,7 @@ from core.portfolio import (
     portfolio_lock, load_portfolio, save_portfolio,
     exit_suppressed_tickers,
 )
+from core.portfolio.dedup_store import load_dedup, save_dedup
 
 
 logger = logging.getLogger(__name__)
@@ -25,8 +26,9 @@ def check_price_alerts() -> list[dict]:
         portfolio = load_portfolio()
         today = str(date.today())
 
+        dedup = load_dedup()
         triggered = [
-            t for t in portfolio.get("triggered_price_alerts", [])
+            t for t in dedup.get("triggered_price_alerts", [])
             if t.get("date") == today
         ]
         triggered_keys = {t["key"] for t in triggered}
@@ -85,7 +87,7 @@ def check_price_alerts() -> list[dict]:
             triggered_keys.add(key)
 
         if alerts:
-            portfolio["triggered_price_alerts"] = triggered
-            save_portfolio(portfolio)
+            dedup["triggered_price_alerts"] = triggered
+            save_dedup(dedup)
 
         return alerts

@@ -1,9 +1,9 @@
 """Event dedup + no-entry-window helpers.
 
 Watch-level events are deduped via a TTL-based key (ticker + trigger_price + type)
-persisted in portfolio.triggered_events. TTL-based instead of per-day so a watch
-whose first hit got dropped by a downstream gate gets a polite re-try after the
-cooldown elapses.
+persisted in state/dedup.json under "triggered_events". TTL-based instead of
+per-day so a watch whose first hit got dropped by a downstream gate gets a
+polite re-try after the cooldown elapses.
 """
 
 import logging
@@ -11,7 +11,7 @@ from datetime import date, datetime
 
 import config
 from core.events.types import EventType
-from core.portfolio import portfolio_lock, load_portfolio, save_portfolio
+from core.portfolio.dedup_store import load_dedup, save_dedup
 
 
 logger = logging.getLogger(__name__)
@@ -29,10 +29,14 @@ def get_event_key(event: dict) -> str:
     return str(event)
 
 
-def is_event_already_triggered(event_key: str, portfolio: dict) -> bool:
-    """TTL-based dedup. Bug 2026-05-07: per-day dedup made watch blind for the
-    full day after one bad analyzer pass."""
-    triggered = portfolio.get("triggered_events", [])
+def is_event_already_triggered(event_key: str, portfolio: dict | None = None) -> bool:
+    """TTL-based dedup. Reads from state/dedup.json.
+
+    `portfolio` arg kept for backwards-compat with old call-sites but ignored.
+    Bug 2026-05-07: per-day dedup made watch blind for the full day after one
+    bad analyzer pass — TTL approach fixes that.
+    """
+    triggered = load_dedup().get("triggered_events", [])
     now = datetime.now()
     ttl_min = config.EVENT_DEDUP_TTL_MIN
     for t in triggered:
@@ -54,25 +58,24 @@ def is_event_already_triggered(event_key: str, portfolio: dict) -> bool:
 
 
 def mark_events_triggered(events: list[dict]) -> None:
-    """Persist `ts` (full timestamp) for TTL-based dedup. Pruned to today's date
-    so triggered_events doesn't grow unbounded across days."""
-    with portfolio_lock:
-        fresh = load_portfolio()
-        today = str(date.today())
-        triggered = [t for t in fresh.get("triggered_events", []) if t.get("date") == today]
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-        for event in events:
-            key = get_event_key(event)
-            # Replace stale entry for this key (older than TTL) instead of keeping it.
-            triggered = [t for t in triggered if t.get("key") != key]
-            triggered.append({
-                "key": key,
-                "date": today,
-                "ts": now_str,
-                "time": now_str.split(" ")[1],
-            })
-        fresh["triggered_events"] = triggered
-        save_portfolio(fresh)
+    """Persist `ts` (full timestamp) for TTL-based dedup. Pruned to today's
+    date so triggered_events doesn't grow unbounded across days."""
+    dedup = load_dedup()
+    today = str(date.today())
+    triggered = [t for t in dedup.get("triggered_events", []) if t.get("date") == today]
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    for event in events:
+        key = get_event_key(event)
+        # Replace stale entry for this key (older than TTL) instead of keeping it.
+        triggered = [t for t in triggered if t.get("key") != key]
+        triggered.append({
+            "key": key,
+            "date": today,
+            "ts": now_str,
+            "time": now_str.split(" ")[1],
+        })
+    dedup["triggered_events"] = triggered
+    save_dedup(dedup)
 
 
 def in_no_entry_window(now: datetime) -> bool:

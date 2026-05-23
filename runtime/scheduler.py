@@ -208,57 +208,65 @@ def heartbeat_watchdog(heartbeat_ref: list[float]) -> None:
 # ============================================================================
 
 def startup_cleanup() -> None:
-    """Prune stale per-day fields. One-shot at boot."""
+    """Prune stale per-day dedup fields + equity_history. One-shot at boot."""
     from core.portfolio import portfolio_lock
+    from core.portfolio.dedup_store import load_dedup, save_dedup
+    today = str(date.today())
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+
+    # ---- Dedup state (state/dedup.json) ----
+    try:
+        dedup = load_dedup()
+        dedup_dirty = False
+
+        sn = dedup.get("seen_news") or {}
+        if sn:
+            sn_pruned = {k: v for k, v in sn.items() if k in (today, yesterday)}
+            if len(sn_pruned) != len(sn):
+                dedup["seen_news"] = sn_pruned
+                dedup_dirty = True
+                logger.info("Cleanup seen_news: %d → %d days", len(sn), len(sn_pruned))
+
+        te = dedup.get("triggered_events") or []
+        te_today = [t for t in te if t.get("date") == today]
+        if len(te_today) != len(te):
+            dedup["triggered_events"] = te_today
+            dedup_dirty = True
+            logger.info("Cleanup triggered_events: %d → %d", len(te), len(te_today))
+
+        tpa = dedup.get("triggered_price_alerts") or []
+        tpa_today = [t for t in tpa if t.get("date") == today]
+        if len(tpa_today) != len(tpa):
+            dedup["triggered_price_alerts"] = tpa_today
+            dedup_dirty = True
+            logger.info("Cleanup triggered_price_alerts: %d → %d", len(tpa), len(tpa_today))
+
+        gnf = dedup.get("geo_news_fired") or {}
+        if gnf:
+            cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
+            gnf_pruned = {k: v for k, v in gnf.items() if v > cutoff}
+            if len(gnf_pruned) != len(gnf):
+                dedup["geo_news_fired"] = gnf_pruned
+                dedup_dirty = True
+                logger.info("Cleanup geo_news_fired: %d → %d", len(gnf), len(gnf_pruned))
+
+        if dedup_dirty:
+            save_dedup(dedup)
+            logger.info("Dedup cleanup persisted")
+    except Exception:
+        logger.exception("Dedup cleanup failed (non-fatal)")
+
+    # ---- Portfolio fields still in portfolio.json (equity_history) ----
     try:
         with portfolio_lock:
             pf = load_portfolio()
-            today = str(date.today())
-            yesterday = (date.today() - timedelta(days=1)).isoformat()
-            dirty = False
-
-            sn = pf.get("seen_news") or {}
-            if sn:
-                sn_pruned = {k: v for k, v in sn.items() if k in (today, yesterday)}
-                if len(sn_pruned) != len(sn):
-                    pf["seen_news"] = sn_pruned
-                    dirty = True
-                    logger.info("Cleanup seen_news: %d → %d days", len(sn), len(sn_pruned))
-
-            te = pf.get("triggered_events") or []
-            te_today = [t for t in te if t.get("date") == today]
-            if len(te_today) != len(te):
-                pf["triggered_events"] = te_today
-                dirty = True
-                logger.info("Cleanup triggered_events: %d → %d", len(te), len(te_today))
-
-            tpa = pf.get("triggered_price_alerts") or []
-            tpa_today = [t for t in tpa if t.get("date") == today]
-            if len(tpa_today) != len(tpa):
-                pf["triggered_price_alerts"] = tpa_today
-                dirty = True
-                logger.info("Cleanup triggered_price_alerts: %d → %d", len(tpa), len(tpa_today))
-
-            gnf = pf.get("geo_news_fired") or {}
-            if gnf:
-                cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
-                gnf_pruned = {k: v for k, v in gnf.items() if v > cutoff}
-                if len(gnf_pruned) != len(gnf):
-                    pf["geo_news_fired"] = gnf_pruned
-                    dirty = True
-                    logger.info("Cleanup geo_news_fired: %d → %d", len(gnf), len(gnf_pruned))
-
             eh = pf.get("equity_history") or []
             if eh:
                 cutoff_eh = (datetime.now() - timedelta(days=14)).strftime("%Y-%m-%d %H:%M")
                 eh_pruned = [p for p in eh if (p.get("ts") or "") >= cutoff_eh]
                 if len(eh_pruned) != len(eh):
                     pf["equity_history"] = eh_pruned
-                    dirty = True
+                    save_portfolio(pf)
                     logger.info("Cleanup equity_history: %d → %d", len(eh), len(eh_pruned))
-
-            if dirty:
-                save_portfolio(pf)
-                logger.info("Startup cleanup persisted")
     except Exception:
-        logger.exception("Startup cleanup failed (non-fatal)")
+        logger.exception("Portfolio cleanup failed (non-fatal)")

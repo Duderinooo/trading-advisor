@@ -37,9 +37,10 @@ def run_news_check(state: AppState) -> None:
         geo = [e for e in news_events if e["type"] == "NEWS_GEO"]
         stocks = [e for e in news_events if e["type"] == "NEWS_STOCK"]
 
-        # Geo dedup: 6h window per commodity-set.
-        _geo_pf = load_portfolio()
-        _geo_seen = _geo_pf.get("geo_news_fired", {}) or {}
+        # Geo dedup: 6h window per commodity-set (state/dedup.json).
+        from core.portfolio.dedup_store import load_dedup, save_dedup
+        _dedup = load_dedup()
+        _geo_seen = _dedup.get("geo_news_fired", {}) or {}
         _now_iso = datetime.now().isoformat()
         _cutoff = (datetime.now() - timedelta(hours=6)).isoformat()
         _dirty = False
@@ -63,14 +64,12 @@ def run_news_check(state: AppState) -> None:
             logger.info("GEO news event done — tool handlers sent any Telegrams")
 
         if _dirty:
-            with portfolio_lock:
-                _pf = load_portfolio()
-                _existing = _pf.get("geo_news_fired", {}) or {}
-                _existing.update(_geo_seen)
-                _prune_cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
-                _existing = {k: v for k, v in _existing.items() if v > _prune_cutoff}
-                _pf["geo_news_fired"] = _existing
-                save_portfolio(_pf)
+            _existing = _dedup.get("geo_news_fired", {}) or {}
+            _existing.update(_geo_seen)
+            _prune_cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
+            _existing = {k: v for k, v in _existing.items() if v > _prune_cutoff}
+            _dedup["geo_news_fired"] = _existing
+            save_dedup(_dedup)
 
         # Stock news: filter to open/watch tickers (skip Claude call on irrelevant).
         if stocks and config.NEWS_REQUIRE_OPEN_OR_WATCH:

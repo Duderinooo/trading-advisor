@@ -42,6 +42,9 @@ analytics/
 # Historical bar cache (regenerated from yfinance on demand)
 data_cache/
 
+# Decomposed portfolio state (dedup, traces, runtime — runtime-generated)
+state/
+
 # IDE
 .vscode/
 .idea/

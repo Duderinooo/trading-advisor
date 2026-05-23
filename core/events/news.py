@@ -20,6 +20,7 @@ from core.portfolio import (
     portfolio_lock, load_portfolio, save_portfolio,
     exit_suppressed_tickers,
 )
+from core.portfolio.dedup_store import load_dedup, save_dedup
 
 
 logger = logging.getLogger(__name__)
@@ -216,7 +217,8 @@ def check_news_events() -> list[dict]:
     with portfolio_lock:
         portfolio = load_portfolio()
         today = str(date.today())
-        seen_today = set(portfolio.get("seen_news", {}).get(today, []))
+        dedup = load_dedup()
+        seen_today = set(dedup.get("seen_news", {}).get(today, []))
 
         # Exit-suppressed: skip news scan for tickers with pending Exit / cooldown.
         # Saves Haiku calls on headlines user would ignore anyway.
@@ -297,11 +299,11 @@ def check_news_events() -> list[dict]:
             # Keep yesterday alongside today so midnight rollover doesn't
             # re-fire 24h-old RSS articles.
             yesterday = str(date.today() - timedelta(days=1))
-            existing = portfolio.get("seen_news", {}) or {}
-            portfolio["seen_news"] = {
+            existing = dedup.get("seen_news") or {}
+            dedup["seen_news"] = {
                 today: list(seen_today),
                 yesterday: list(existing.get(yesterday, [])),
             }
-            save_portfolio(portfolio)
+            save_dedup(dedup)
 
         return events
