@@ -104,6 +104,34 @@ class TestParseDiff(unittest.TestCase):
         self.assertEqual(parse_diff(diff), [])
 
 
+class TestStagedFlag(unittest.TestCase):
+    """get_config_diff(staged=True) must use `git diff --cached`."""
+
+    def test_staged_invokes_cached_flag(self):
+        from unittest.mock import patch, MagicMock
+        from tools.tuning_audit import get_config_diff
+
+        mock_proc = MagicMock(stdout="", returncode=0)
+        with patch("subprocess.run", return_value=mock_proc) as mock_run:
+            get_config_diff(staged=True)
+            args, _ = mock_run.call_args
+            cmd = args[0]
+            self.assertIn("--cached", cmd)
+            self.assertNotIn("HEAD", cmd)
+
+    def test_non_staged_passes_rev(self):
+        from unittest.mock import patch, MagicMock
+        from tools.tuning_audit import get_config_diff
+
+        mock_proc = MagicMock(stdout="", returncode=0)
+        with patch("subprocess.run", return_value=mock_proc) as mock_run:
+            get_config_diff(rev="HEAD~3", staged=False)
+            args, _ = mock_run.call_args
+            cmd = args[0]
+            self.assertIn("HEAD~3", cmd)
+            self.assertNotIn("--cached", cmd)
+
+
 class TestReplayableFilter(unittest.TestCase):
     def _change(self, old, new):
         from tools.tuning_audit import ConstantChange

@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Pre-commit hook — advisory tuning audit on staged config/ changes.
+#
+# When you stage a change to config/ (e.g. MIN_EXPECTED_EDGE: 0.04 → 0.06),
+# this hook runs tools.tuning_audit against the last 30 trading days and
+# prints the P&L delta. Informational only — never blocks the commit.
+#
+# Install (one-time): git config core.hooksPath .githooks
+
+set -e
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# Detect staged config/ changes
+if ! git diff --cached --name-only 2>/dev/null | grep -q "^config/"; then
+    exit 0  # No config changes — skip
+fi
+
+# Find a Python interpreter (prefer the venv's)
+PY=""
+for cand in "./venv/bin/python" "./.venv/bin/python"; do
+    if [ -x "$cand" ]; then
+        PY="$cand"
+        break
+    fi
+done
+if [ -z "$PY" ] && command -v python3 >/dev/null 2>&1; then
+    PY="python3"
+fi
+if [ -z "$PY" ]; then
+    echo "⚠️  pre-commit: no python interpreter found, skipping tuning audit"
+    exit 0
+fi
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  🔍 Tuning audit on staged config/ changes"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+"$PY" -m tools.tuning_audit --staged --days 30 || {
+    echo "⚠️  pre-commit: tuning_audit failed (non-blocking, commit continues)"
+}
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+# Always succeed — this is an advisory hook
+exit 0

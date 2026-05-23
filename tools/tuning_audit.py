@@ -109,13 +109,20 @@ def parse_diff(diff_text: str) -> list[ConstantChange]:
     return changes
 
 
-def get_config_diff(rev: str = "HEAD") -> str:
-    """Run git diff against `rev` for config/ tree. Returns stdout string."""
+def get_config_diff(rev: str = "HEAD", *, staged: bool = False) -> str:
+    """Run git diff for config/ tree. Returns stdout string.
+
+    staged=True → `git diff --cached` (staged vs HEAD; used by pre-commit hook).
+    staged=False → `git diff REV --` (working tree vs REV; default for manual use).
+    """
+    cmd = ["git", "diff"]
+    if staged:
+        cmd.append("--cached")
+    else:
+        cmd.append(rev)
+    cmd.extend(["--", "config/"])
     try:
-        result = subprocess.run(
-            ["git", "diff", rev, "--", "config/"],
-            capture_output=True, text=True, check=True,
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         return result.stdout
     except subprocess.CalledProcessError as e:
         logger.error("git diff failed: %s", e.stderr)
@@ -162,6 +169,11 @@ def main() -> int:
         help="Git rev to diff against (default: HEAD = working tree vs last commit)",
     )
     parser.add_argument(
+        "--staged", action="store_true",
+        help="Diff staged changes (git diff --cached). Overrides --rev. "
+             "Used by .githooks/pre-commit.",
+    )
+    parser.add_argument(
         "--days", type=int, default=30,
         help="Trading-day window for replay-compare (default 30)",
     )
@@ -172,14 +184,15 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     args = parser.parse_args()
 
-    diff_text = get_config_diff(args.rev)
+    diff_text = get_config_diff(args.rev, staged=args.staged)
+    rev_label = "staged" if args.staged else args.rev
     if not diff_text.strip():
-        print(f"No config/ changes detected vs {args.rev}.")
+        print(f"No config/ changes detected vs {rev_label}.")
         return 0
 
     changes = parse_diff(diff_text)
     if not changes:
-        print(f"No constant changes detected vs {args.rev}.")
+        print(f"No constant changes detected vs {rev_label}.")
         print("(Multi-line dicts / list mutations not parsed.)")
         return 0
 
