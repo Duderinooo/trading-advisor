@@ -4,13 +4,29 @@ Claude-powered swing-trading advisor. Monitors XETRA/US markets, sends entry/exi
 
 **Full-trust model:** Bot = sole filter. Every rec designed for direct execution. Strikte Risk-Gates (daily-loss cap, drawdown halt, edge gate, hard position cap 8%) verhindern Ruin.
 
+## Repo layout (2026-05-23)
+
+```
+trading-advisor/
+├── bot/        — Python trading bot (this is what `run.sh` launches)
+├── web/        — Next.js dashboard
+├── research/   — incident postmortems + tuning rationale
+├── docs/       — shared docs
+├── .githooks/  — repo-wide git hooks (pre-commit tuning audit)
+├── venv/       — Python virtualenv (gitignored)
+├── README.md / CLAUDE.md / run.sh
+```
+
+Top-level holds only what's shared. Bot-only code + runtime state lives in
+`bot/`. Web-only code lives in `web/`. Bot entry point: `bot/main.py`.
+
 ## Bedienung — Quick Reference
 
 Kompletter Command-Katalog → [docs/API.md](docs/API.md)
 
 ```bash
-./run.sh                         # Bot starten (mit caffeinate, bleibt wach)
-./venv/bin/python main.py        # Manueller Start ohne Wake-Lock
+./run.sh                              # Bot starten (mit caffeinate, bleibt wach)
+cd bot && ../venv/bin/python main.py  # Manueller Start ohne Wake-Lock
 ```
 
 Telegram (nach Start):
@@ -60,22 +76,22 @@ TELEGRAM_CHAT_ID=987654321
 
 ### 3. Portfolio
 
-`portfolio.json` — initial shape:
+`bot/portfolio.json` — initial shape:
 
 ```json
 {
   "open_trades": [],
-  "closed_trades": [],
   "cash_eur": 1000.0,
   "total_capital_eur": 1000.0
 }
 ```
 
-Bot verwaltet den Rest (pending_recommendations, watch_levels, equity-peak, ...) selbst.
+Satellite state (pending_recommendations, dedup, traces, heartbeat,
+cooldowns, closed_trades) lives in `bot/state/` — bot creates on first run.
 
 ### 4. Watchlist / Risk-Config
 
-`config.py`:
+`bot/config/`:
 - `BUDGET_EUR` — Startkapital
 - `WATCHLIST` — XETRA-Tickers (EUR-Preise für TR)
 - `EXCLUDED_TICKERS` — Sparpläne / nicht traden

@@ -11,16 +11,16 @@ set -e
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
-# Detect staged config/ changes
-if ! git diff --cached --name-only 2>/dev/null | grep -q "^config/"; then
+# Detect staged bot/config/ changes (bot/ split 2026-05-23)
+if ! git diff --cached --name-only 2>/dev/null | grep -q "^bot/config/"; then
     exit 0  # No config changes — skip
 fi
 
-# Find a Python interpreter (prefer the venv's)
+# Find a Python interpreter (prefer the venv's at repo-root)
 PY=""
 for cand in "./venv/bin/python" "./.venv/bin/python"; do
     if [ -x "$cand" ]; then
-        PY="$cand"
+        PY="$(pwd)/$cand"
         break
     fi
 done
@@ -34,9 +34,11 @@ fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  🔍 Tuning audit on staged config/ changes"
+echo "  🔍 Tuning audit on staged bot/config/ changes"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+# tuning_audit runs in bot/ context (its own git-diff scope uses bot/config/).
+cd "$REPO_ROOT/bot"
 "$PY" -m tools.tuning_audit --staged --days 30 || {
     echo "⚠️  pre-commit: tuning_audit failed (non-blocking, commit continues)"
 }
