@@ -133,6 +133,88 @@ def _run_db_backup() -> None:
     except Exception:
         logger.exception("EOD jsonl rotation failed")
 
+    try:
+        refresh_earnings_calendar()
+    except Exception:
+        logger.exception("EOD earnings calendar refresh failed")
+
+    try:
+        refresh_analytics()
+    except Exception:
+        logger.exception("EOD analytics refresh failed")
+
+
+def refresh_analytics() -> None:
+    """Recompute the dashboard-facing analytics snapshots and persist
+    them to kv_state(namespace='analytics'). Reads + writes happen here
+    so the dashboard sees a stable Python-computed view instead of a
+    half-ported TS reimplementation. Called from EOD + morning prep +
+    every confirm/close handler so widgets are always fresh."""
+    from core.portfolio import load_portfolio
+    from core.portfolio.hit_stats import (
+        compute_hit_rate_trend, compute_hit_stats, compute_shadow_what_if,
+    )
+    from core.portfolio.risk import compute_drawdown_trajectory
+    from core.db import connect, init_schema
+    from datetime import datetime as _dt
+    import json as _json
+
+    portfolio = load_portfolio()
+    closed = portfolio.get("closed_trades") or []
+
+    stats = compute_hit_stats(closed)
+    payloads = {
+        "drawdown_trajectory": compute_drawdown_trajectory(portfolio),
+        "hit_rate_trend": compute_hit_rate_trend(closed),
+        "time_of_day": (stats or {}).get("by_hour") or {},
+        "shadow_what_if": compute_shadow_what_if(closed, config.SHADOW_OVERRIDES),
+    }
+    generated_at = _dt.now().strftime("%Y-%m-%d %H:%M")
+
+    init_schema()
+    with connect() as conn:
+        for key, body in payloads.items():
+            conn.execute(
+                "INSERT OR REPLACE INTO kv_state (namespace, key, body) "
+                "VALUES (?, ?, ?)",
+                (
+                    "analytics", key,
+                    _json.dumps({"generated_at": generated_at, "data": body}),
+                ),
+            )
+
+
+def refresh_earnings_calendar(days_ahead: int = 14) -> dict:
+    """Persist a 14-day earnings calendar for watchlist + open positions
+    into kv_state(namespace='calendar', key='earnings'). Dashboard reads
+    from there so the widget can render without hitting yfinance live."""
+    from core.data.market_data import get_earnings_warnings
+    from core.db import connect, init_schema
+    from datetime import datetime as _dt
+    import json as _json
+
+    portfolio = load_portfolio()
+    tickers = list(dict.fromkeys(
+        [t.get("ticker") for t in portfolio.get("open_trades", []) or [] if t.get("ticker")]
+        + list(config.WATCHLIST or [])
+    ))
+    warnings = get_earnings_warnings(tickers, days_ahead=days_ahead)
+    payload = {
+        "generated_at": _dt.now().strftime("%Y-%m-%d %H:%M"),
+        "days_ahead": days_ahead,
+        "events": warnings,
+    }
+    init_schema()
+    with connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO kv_state (namespace, key, body) "
+            "VALUES (?, ?, ?)",
+            ("calendar", "earnings", _json.dumps(payload)),
+        )
+    logger.info("Earnings calendar refreshed: %d events over %dd",
+                len(warnings), days_ahead)
+    return payload
+
 
 def _append_expectancy_snapshot(portfolio: dict) -> None:
     """Append today's setup-expectancy + calibration metrics to

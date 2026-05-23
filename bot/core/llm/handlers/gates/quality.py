@@ -75,6 +75,12 @@ def gate_edge(entry: dict, ctx: GateContext) -> bool:
         p_adj, entry.get("entry_price"), entry.get("stop_loss"), entry.get("take_profit"),
     )
     if ok:
+        # Stamp the edge value so closed-trade what-if analyses (e.g.
+        # `compute_shadow_what_if` in hit_stats) can re-evaluate the
+        # entry decision against shadow MIN_EXPECTED_EDGE values.
+        entry["expected_edge_at_entry"] = round(float(edge), 4)
+        if isinstance(p_adj, (int, float)):
+            entry["p_adj_at_entry"] = round(float(p_adj), 3)
         return True
     logger.warning(
         "Entry BLOCKED by edge gate: edge=%.3f < %.3f (p_raw=%s, haircut=%s, p_adj=%s)",

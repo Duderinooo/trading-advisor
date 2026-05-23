@@ -179,6 +179,75 @@ def _render_morning_brief() -> str:
     return "\n".join(parts)
 
 
+def _gap_pre_check() -> None:
+    """Pre-market gap scan — runs at 08:00 CET before Sonnet.
+
+    Pulls live quotes (Tradegate / L&S pre-open prices via livefeed) for
+    watchlist + open positions and flags any with |change_pct| ≥
+    GAP_FLAG_PERCENT vs the previous XETRA close. Surfaces both as a
+    Telegram alert (so the user sees gappers before the brief) and as a
+    structured event the morning Claude call can react to.
+
+    Why pre-Sonnet: the morning brief already gets snapshot data with
+    `change_pct`, but Sonnet's narrative tends to bury gap signals
+    behind setup classification. Pulling them out as a dedicated alert
+    keeps the user oriented to overnight risk on open positions and
+    flags pre-market breakouts on watchlist tickers before XETRA opens
+    and we miss the entry window.
+    """
+    try:
+        from core.data.market_data import get_market_data
+
+        pf = load_portfolio()
+        open_tickers = [t["ticker"] for t in pf.get("open_trades", []) or []]
+        watch_tickers = list(config.WATCHLIST)
+        all_tickers = list(dict.fromkeys(open_tickers + watch_tickers))
+        if not all_tickers:
+            return
+
+        snapshots = get_market_data(all_tickers)
+        threshold = config.GAP_FLAG_PERCENT
+
+        gappers: list[dict] = []
+        for ticker in all_tickers:
+            snap = snapshots.get(ticker) or {}
+            # Prefer live (pre-market via Tradegate/L&S) over delayed daily close.
+            change = snap.get("live_change_pct")
+            if change is None:
+                change = snap.get("change_pct")
+            if change is None:
+                continue
+            try:
+                change = float(change)
+            except (TypeError, ValueError):
+                continue
+            if abs(change) < threshold:
+                continue
+            gappers.append({
+                "ticker": ticker,
+                "change_pct": round(change, 2),
+                "is_open": ticker in open_tickers,
+                "price": snap.get("price"),
+                "prev_close": snap.get("prev_close"),
+            })
+
+        if not gappers:
+            return
+
+        gappers.sort(key=lambda g: abs(g["change_pct"]), reverse=True)
+        lines = ["📊 *PRE-MARKET GAPS* (≥ {:.1f}%)".format(threshold), ""]
+        for g in gappers:
+            tag = "🟢" if g["change_pct"] > 0 else "🔴"
+            held = " (OPEN)" if g["is_open"] else ""
+            price = f" @ {g['price']:.2f}" if isinstance(g["price"], (int, float)) else ""
+            lines.append(f"{tag} {g['ticker']}{held}: {g['change_pct']:+.2f}%{price}")
+        send_alert("Pre-market gaps", "\n".join(lines))
+        logger.info("Pre-market gaps: %s",
+                    ", ".join(f"{g['ticker']} {g['change_pct']:+.1f}%" for g in gappers))
+    except Exception:
+        logger.exception("Gap pre-check failed")
+
+
 def _earnings_pre_check() -> None:
     """Direct earnings alert for open positions — fires before Claude."""
     try:
@@ -265,8 +334,18 @@ def run_morning_prep(force: bool = False) -> None:
     except Exception:
         logger.exception("Stale-thesis check failed")
 
+    _gap_pre_check()
     _earnings_pre_check()
     _dividend_pre_check()
+
+    # Refresh dashboard's earnings-calendar kv_state row so the widget
+    # shows the upcoming-7d view from today's data, not yesterday's.
+    try:
+        from services.summary import refresh_analytics, refresh_earnings_calendar
+        refresh_earnings_calendar(days_ahead=14)
+        refresh_analytics()
+    except Exception:
+        logger.exception("Morning analytics/earnings refresh failed")
 
     try:
         analysis = analyze_portfolio(

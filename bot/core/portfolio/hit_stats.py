@@ -11,7 +11,7 @@ format_hit_stats: human-readable rendering for Telegram + morning prompt.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import config
 from core.portfolio.cash_movements import effective_pnl_eur, effective_pnl_pct
@@ -185,14 +185,23 @@ def compute_hit_stats(closed_trades: list[dict], cash_movements: list[dict] | No
             bucket = "us_open"
         else:
             bucket = "late"
-        by_hour_bucket.setdefault(bucket, {"wins": 0, "total": 0})
-        by_hour_bucket[bucket]["total"] += 1
+        bucket_stats = by_hour_bucket.setdefault(
+            bucket, {"wins": 0, "total": 0, "pnl_pct_sum": 0.0}
+        )
+        bucket_stats["total"] += 1
+        bucket_stats["pnl_pct_sum"] += _eff_pct(t)
         if (t.get("pnl_pct") or 0) > 0:
-            by_hour_bucket[bucket]["wins"] += 1
+            bucket_stats["wins"] += 1
 
-    for bucket_dict in (by_dow, by_hour_bucket):
-        for k, s in bucket_dict.items():
-            s["rate"] = round(s["wins"] / s["total"] * 100, 1) if s["total"] else 0
+    for k, s in by_dow.items():
+        s["rate"] = round(s["wins"] / s["total"] * 100, 1) if s["total"] else 0
+    for k, s in by_hour_bucket.items():
+        s["rate"] = round(s["wins"] / s["total"] * 100, 1) if s["total"] else 0
+        # avg PnL per bucket is the expectancy signal — win-rate alone
+        # hides asymmetry (low-rate bucket can still be profitable if
+        # the wins are large).
+        s["avg_pnl_pct"] = round(s["pnl_pct_sum"] / s["total"], 2) if s["total"] else 0
+        del s["pnl_pct_sum"]
 
     # --- Hold-duration buckets (entry → exit days) ---
     by_hold: dict[str, dict] = {}
@@ -471,6 +480,120 @@ def format_hit_stats(stats: dict) -> str:
         lines.append(f"Kelly-Mult: {km} (adaptiv aus Brier-Score)")
 
     return "\n".join(lines)
+
+
+def compute_shadow_what_if(
+    closed_trades: list[dict],
+    shadow_overrides: dict[str, float],
+) -> dict:
+    """Counterfactual: for each closed trade with a recorded edge value,
+    decide whether it would have been blocked under shadow MIN_EXPECTED_EDGE.
+
+    Currently supports the single shadow key MIN_EXPECTED_EDGE — the
+    only gate value we capture on the rec (via gate_edge stamping
+    `expected_edge_at_entry`). Other shadow keys are recognised but
+    skipped until their gate writes a similar trace.
+
+    Returns:
+        {
+            'tested_count':           trades with the required trace
+            'would_skip_count':       N that shadow would have blocked
+            'would_skip_pnl_eur':     net PnL of blocked trades (positive
+                                      = shadow misses profits; negative =
+                                      shadow avoids losses)
+            'kept_count':             N that pass under shadow too
+            'kept_pnl_eur':           net PnL of pass-through trades
+            'net_delta_eur':          kept_pnl_eur (i.e. what you'd have
+                                      made under shadow); subtract
+                                      original total to compare.
+            'overrides':              the shadow overrides used
+        }
+    Empty dict if no trades carry the required trace.
+    """
+    if not shadow_overrides or not closed_trades:
+        return {}
+    shadow_edge = shadow_overrides.get("MIN_EXPECTED_EDGE")
+    if shadow_edge is None:
+        return {}
+
+    tested = [
+        t for t in closed_trades
+        if isinstance(t.get("expected_edge_at_entry"), (int, float))
+    ]
+    if not tested:
+        return {}
+
+    would_skip = [t for t in tested if t["expected_edge_at_entry"] < shadow_edge]
+    kept = [t for t in tested if t["expected_edge_at_entry"] >= shadow_edge]
+    return {
+        "tested_count": len(tested),
+        "would_skip_count": len(would_skip),
+        "would_skip_pnl_eur": round(
+            sum(float(t.get("pnl_eur") or 0) for t in would_skip), 2
+        ),
+        "kept_count": len(kept),
+        "kept_pnl_eur": round(
+            sum(float(t.get("pnl_eur") or 0) for t in kept), 2
+        ),
+        "net_delta_eur": round(
+            sum(float(t.get("pnl_eur") or 0) for t in kept), 2
+        ),
+        "overrides": dict(shadow_overrides),
+    }
+
+
+def compute_hit_rate_trend(
+    closed_trades: list[dict],
+    window_days: int = 30,
+    step_days: int = 1,
+) -> list[dict]:
+    """Rolling N-day hit-rate over time, anchored on trade exit_date.
+
+    For each step_days-spaced point in the last `total span` of activity,
+    look back window_days and compute win-rate + avg pnl % across trades
+    that closed in that window. Lets the dashboard plot a sparkline so
+    the user can see whether the learning loop is improving the strategy.
+
+    Returns list of {'date', 'n', 'win_rate', 'avg_pnl_pct'} oldest-first.
+    Empty list if not enough trades to span at least one window.
+    """
+    if not closed_trades:
+        return []
+
+    parsed: list[tuple[datetime, dict]] = []
+    for t in closed_trades:
+        ed = t.get("exit_date") or ""
+        try:
+            parsed.append((datetime.strptime(ed[:10], "%Y-%m-%d"), t))
+        except (ValueError, TypeError):
+            continue
+    if not parsed:
+        return []
+
+    parsed.sort(key=lambda p: p[0])
+    first_dt = parsed[0][0]
+    last_dt = parsed[-1][0]
+    if (last_dt - first_dt).days < window_days:
+        # Not enough span — one summary point is misleading as a trend.
+        return []
+
+    out: list[dict] = []
+    cursor = first_dt + timedelta(days=window_days)
+    step = timedelta(days=step_days)
+    while cursor <= last_dt:
+        win_start = cursor - timedelta(days=window_days)
+        bucket = [t for dt, t in parsed if win_start <= dt <= cursor]
+        if bucket:
+            wins = sum(1 for t in bucket if (t.get("pnl_pct") or 0) > 0)
+            avg_pnl = sum(float(t.get("pnl_pct") or 0) for t in bucket) / len(bucket)
+            out.append({
+                "date": cursor.strftime("%Y-%m-%d"),
+                "n": len(bucket),
+                "win_rate": round(wins / len(bucket) * 100, 1),
+                "avg_pnl_pct": round(avg_pnl, 2),
+            })
+        cursor += step
+    return out
 
 
 # ---------- Portfolio heat (risk-sizing guardrail) ----------

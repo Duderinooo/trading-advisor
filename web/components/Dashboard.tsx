@@ -7,11 +7,16 @@ import { Card, Kpi } from "@/components/Card";
 import ClosedTrades from "@/components/ClosedTrades";
 import CollapsibleSection from "@/components/CollapsibleSection";
 import CorrelationHeatmap from "@/components/CorrelationHeatmap";
+import DrawdownTrajectory from "@/components/DrawdownTrajectory";
+import EarningsCalendar from "@/components/EarningsCalendar";
 import EquityChart from "@/components/EquityChart";
 import GateAttribution from "@/components/GateAttribution";
 import Heartbeat from "@/components/Heartbeat";
+import HitRateTrend from "@/components/HitRateTrend";
 import MaeMfe from "@/components/MaeMfe";
 import MistakeTrend from "@/components/MistakeTrend";
+import ShadowDelta from "@/components/ShadowDelta";
+import TimeOfDay from "@/components/TimeOfDay";
 import OpenTrades from "@/components/OpenTrades";
 import PendingRecommendations from "@/components/PendingRecommendations";
 import RiskOfRuin from "@/components/RiskOfRuin";
@@ -457,6 +462,21 @@ export default function Dashboard({
         >
           <Card title="Mistake-Class Trend (rolling 10 losses)">
             <MistakeTrend closed={portfolio.closed_trades} />
+          </Card>
+          <Card title="Hit-Rate Trend (rolling 30d)">
+            <HitRateTrend />
+          </Card>
+          <Card title="Time-of-Day Expectancy">
+            <TimeOfDay />
+          </Card>
+          <Card title="Drawdown Trajectory">
+            <DrawdownTrajectory />
+          </Card>
+          <Card title="Earnings Calendar (next 14d)">
+            <EarningsCalendar />
+          </Card>
+          <Card title="Shadow Config — What-If">
+            <ShadowDelta />
           </Card>
           <Card title="Gate Attribution">
             <GateAttribution />

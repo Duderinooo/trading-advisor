@@ -55,7 +55,7 @@ function readPending(): unknown[] {
   return out;
 }
 
-function readKv(namespace: string, key: string): unknown {
+export function readKv(namespace: string, key: string): unknown {
   if (!dbExists()) return undefined;
   const row = getDb()
     .prepare("SELECT body FROM kv_state WHERE namespace = ? AND key = ?")

@@ -65,6 +65,73 @@ def _equity_curve(portfolio: dict) -> tuple[float, float, float]:
     return equity, peak, dd_pct
 
 
+def compute_drawdown_trajectory(portfolio: dict) -> dict:
+    """Per-event drawdown trajectory for the dashboard.
+
+    Walks the same event timeline as `_equity_curve` but emits an
+    (date, equity, peak, dd_pct) tuple at every closed-trade or cash
+    movement so the dashboard can show how drawdown evolved over the
+    series. Adds halt/recovery threshold lines (current capital × the
+    config %) so the chart can render them as horizontal references.
+
+    Returns:
+        {
+            'starting_eur', 'equity_eur', 'peak_eur',
+            'current_dd_pct', 'current_dd_eur',
+            'soft_threshold_pct', 'halt_threshold_pct',
+            'soft_distance_pct', 'halt_distance_pct',
+            'soft_active', 'halt_active',
+            'trajectory': [{'date', 'equity', 'peak', 'dd_pct'}, ...],
+        }
+    `*_distance_pct` is positive when room remains, negative once the
+    line is crossed — lets the UI signal "you have X% buffer left".
+    """
+    starting = float(
+        portfolio.get("total_capital_eur", config.BUDGET_EUR) or config.BUDGET_EUR
+    )
+    events: list[tuple[str, float]] = []
+    for t in portfolio.get("closed_trades", []) or []:
+        events.append((t.get("exit_date") or "", float(t.get("pnl_eur") or 0)))
+    for m in portfolio.get("cash_movements", []) or []:
+        events.append((m.get("date") or "", float(m.get("amount") or 0)))
+    events.sort(key=lambda e: e[0])
+
+    trajectory: list[dict] = []
+    equity = starting
+    peak = starting
+    for date, delta in events:
+        equity += delta
+        if equity > peak:
+            peak = equity
+        dd_pct = (peak - equity) / peak * 100 if peak > 0 else 0.0
+        trajectory.append({
+            "date": (date or "")[:10],
+            "equity": round(equity, 2),
+            "peak": round(peak, 2),
+            "dd_pct": round(dd_pct, 2),
+        })
+
+    current_dd_pct = (peak - equity) / peak * 100 if peak > 0 else 0.0
+    current_dd_eur = round(peak - equity, 2)
+    halt = config.DRAWDOWN_HALT_PERCENT
+    soft = getattr(config, "DRAWDOWN_SOFT_PERCENT", halt / 2)
+    return {
+        "starting_eur": round(starting, 2),
+        "equity_eur": round(equity, 2),
+        "peak_eur": round(peak, 2),
+        "current_dd_pct": round(current_dd_pct, 2),
+        "current_dd_eur": current_dd_eur,
+        "soft_threshold_pct": soft,
+        "halt_threshold_pct": halt,
+        "soft_distance_pct": round(soft - current_dd_pct, 2),
+        "halt_distance_pct": round(halt - current_dd_pct, 2),
+        "soft_active": current_dd_pct >= soft and current_dd_pct < halt,
+        "halt_active": bool(portfolio.get("dd_halt_active"))
+                       or current_dd_pct >= halt,
+        "trajectory": trajectory,
+    }
+
+
 def maintain_drawdown_state(portfolio: dict) -> bool:
     """Drawdown hysteresis: latch halt on entry threshold, lift only on recovery threshold.
     Why: without hysteresis, equity flickering around the halt-line toggles state every call.

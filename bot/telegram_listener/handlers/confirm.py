@@ -407,6 +407,30 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        # Correlation pre-warning: gate at analyzer-time only blocks at
+        # MAX_CORRELATED_HOLDINGS+1 holdings ≥ MAX_CORRELATION. Pass-through
+        # recs can still carry single high-corr pairs the user should see
+        # *before* doubling exposure to the same factor. Warn-only — user
+        # decides whether the thesis justifies the concentration.
+        correlations = rec.get("correlations") or {}
+        if isinstance(correlations, dict) and correlations:
+            high = sorted(
+                ((t, c) for t, c in correlations.items()
+                 if isinstance(c, (int, float)) and c >= 0.5),
+                key=lambda x: -x[1],
+            )
+            if high:
+                warn_lines = ["⚠️ *Correlation hinweis*"]
+                for t, c in high[:3]:
+                    warn_lines.append(f"  • {t}: ρ={c:.2f}")
+                warn_lines.append(
+                    "_ρ ≥ 0.7 mit ≥2 Holdings würde gates-blocken; "
+                    "hier nur info._"
+                )
+                await update.message.reply_text(
+                    "\n".join(warn_lines), parse_mode="Markdown",
+                )
+
         size_eur = float(rec.get("size_eur", 0) or 0)
         if shares_override is not None:
             shares = float(shares_override)
