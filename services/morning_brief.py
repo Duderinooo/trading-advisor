@@ -277,8 +277,8 @@ def run_morning_prep(force: bool = False) -> None:
             return
 
         # LLM text discarded. Render Telegram deterministic.
-        pf = load_portfolio()
-        tr = pf.get("last_morning_trace") or {}
+        from core.llm.telemetry.trace_store import load_traces
+        tr = load_traces().get("last_morning_trace") or {}
         tool_called = bool(tr.get("tool_called"))
         sonnet_failed = (
             not tool_called

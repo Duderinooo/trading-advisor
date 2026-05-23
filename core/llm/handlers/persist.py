@@ -30,12 +30,18 @@ def persist_results(
     trace_k: str | None,
 ) -> None:
     """Single lock-scoped write. recs is the Recs container from dispatch_tool_calls."""
+    # Trace persists to state/traces.json (telemetry, not trading state).
+    if trace is not None and trace_k is not None:
+        try:
+            from core.llm.telemetry.trace_store import save_trace
+            save_trace(trace_k, trace)
+        except Exception:
+            logger.exception("trace persist failed (non-fatal)")
+
     with portfolio_lock:
         fresh = load_portfolio()
         if corr_matrix is not None:
             fresh["correlation_matrix"] = corr_matrix
-        if trace is not None and trace_k is not None:
-            fresh[trace_k] = trace
         if new_levels is not None:
             _persist_watch_levels(
                 fresh, new_levels, ctx.excluded, ctx.market_data, ctx.mode, trace,

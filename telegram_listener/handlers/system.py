@@ -97,7 +97,8 @@ async def morning_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         pf = load_portfolio()
         levels = pf.get("watch_levels", [])
-        tr = pf.get("last_morning_trace") or {}
+        from core.llm.telemetry.trace_store import load_traces
+        tr = load_traces().get("last_morning_trace") or {}
         # Detect skipped analyze_portfolio (daily-cap etc.): trace ts older than 90s.
         tr_fresh = False
         if tr.get("ts"):
