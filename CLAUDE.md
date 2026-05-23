@@ -130,6 +130,48 @@ would have hit TP1 before SL. `gate_false_negative_rates()` aggregates per-gate
 false-negative-rate (blocked-but-would-have-won / total-blocks). This is the
 primary tuning-evidence source for "is this gate too strict?"
 
+## Role separation: deterministic engine vs LLM
+
+The system has stratified over time. Codify the split so future changes preserve it.
+
+**Deterministic engine (Python, no LLM):**
+- Risk halt (kill-switch, daily-loss, drawdown, heat, edge gate)
+- Position sizing (ATR-risk × Kelly × Conviction × dd-soft-scale × VIX-dampener)
+- Liquidity + whole-share + fee gates
+- Slippage budget (adaptive from rolling 30-trade window)
+- Setup-profile gate routing (RS-override, breakout-volume, earnings-bypass)
+- SL/TP loop + trailing-stop ratchet + partial-TP + BE-shift
+- Watch-level proximity + confirm-close + zone-mode detection
+- Event TTL-dedup + entry-gate cooldowns
+- Calibration / Brier-haircut / hit-rate stats
+
+**LLM job (Claude — Sonnet morning, Haiku event/opening):**
+- Market narrative + regime interpretation
+- Thesis construction (why is this setup attractive?)
+- Setup classification (mean-reversion vs breakout-resistance vs gap-fill)
+- Conviction scoring (own confidence, p_win estimate)
+- News + earnings + macro context synthesis
+- Entry / exit / add / update recommendation generation
+- Watch-level placement (trigger price + invalidate + thesis)
+
+**Forbidden for Claude (deterministic only):**
+- Computing position size (just emit `size_eur` from Kelly + risk inputs)
+- Computing edge / confluence / correlation
+- Bypassing gates ("trust me, this is different")
+- Final-decide on risk halt / kill-switch / DD halt
+
+**Why this matters:**
+- Gates are auditable + replayable (see `core/replay/`, `core/backtest.py`)
+- LLM intuition over hard-coded rules works when LLM does the SOFT decisions
+  and deterministic rules do the HARD ones
+- Future: if a deterministic gate accepts what an LLM thesis disagreed with,
+  we want the trace. If a deterministic gate blocks what the LLM saw, we want
+  the FNR data (see `core/llm/telemetry/outcomes.py`)
+
+When adding new logic, ask: is this a rule (deterministic) or an interpretation
+(LLM)? Rules go to gates/. Interpretations get a tool-schema in
+`core/llm/prompt/prompts/tools.py` for Claude to emit.
+
 ## Claude models in use
 
 - `CLAUDE_MODEL_MORNING = "claude-sonnet-4-6"` — once per trading day, senior reasoning
