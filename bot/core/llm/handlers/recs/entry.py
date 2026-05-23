@@ -149,7 +149,12 @@ def _assemble_entry_rec_and_alert(entry: dict, gctx: GateContext) -> dict:
         f"Hold {hmin}-{hmax}d | Cash €{cash:.0f}{trail_line}"
         f"{wkn_line}"
         f"{rt_block}\n"
-        f"_Reply `/confirm` (auto={shares_str}) oder `/confirm <stück> @<preis>` für override._"
+        f"_Reply `/confirm` (auto={shares_str}) oder `/confirm <stück> @<preis>` für override._",
+        # Inline keyboard for phone-friendly quick actions. /confirm still
+        # requires the price-quote reply since slippage gate needs a fill
+        # price — so only the destructive paths (reject, downgrade-to-watch)
+        # get buttons.
+        buttons=[("❌ Reject", "rec:reject"), ("👁️ Watch", "rec:watch")],
     )
     if message_id:
         rec["message_id"] = message_id

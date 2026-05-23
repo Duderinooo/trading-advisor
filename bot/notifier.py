@@ -7,7 +7,7 @@ import logging
 import threading
 import time
 
-from telegram import Bot
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
 from dotenv import load_dotenv
 
@@ -86,9 +86,18 @@ def _chunk_message(message: str) -> list[str]:
     return chunks if chunks else [message[:MAX_MESSAGE_LENGTH]]
 
 
-async def _send_message_async(message: str) -> int | None:
+async def _send_message_async(
+    message: str,
+    buttons: list[tuple[str, str]] | None = None,
+) -> int | None:
     """Send a message via Telegram (async). Auto-chunks long messages.
-    Returns the first chunk's message_id (used as anchor for reply-based commands)."""
+    Returns the first chunk's message_id (used as anchor for reply-based commands).
+
+    Optional `buttons` attaches an inline keyboard to the first chunk only —
+    later chunks share the anchor message_id so callback handlers can look
+    up the rec via that same message_id regardless of which chunk was clicked.
+    Each tuple is (label, callback_data).
+    """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         logger.warning("Telegram not configured. Message:\n%s", message)
         return None
@@ -97,7 +106,16 @@ async def _send_message_async(message: str) -> int | None:
     chunks = _chunk_message(message)
     first_id: int | None = None
 
+    reply_markup = None
+    if buttons:
+        reply_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton(label, callback_data=data) for label, data in buttons]
+        ])
+
     for i, chunk in enumerate(chunks):
+        # Inline keyboard goes on the first chunk only; subsequent chunks
+        # would steal focus from the actionable buttons.
+        chunk_markup = reply_markup if i == 0 else None
         sent = None
         try:
             sent = await bot.send_message(
@@ -105,6 +123,7 @@ async def _send_message_async(message: str) -> int | None:
                 text=chunk,
                 parse_mode="Markdown",
                 disable_web_page_preview=True,
+                reply_markup=chunk_markup,
             )
             if i < len(chunks) - 1:
                 await asyncio.sleep(0.3)
@@ -115,6 +134,7 @@ async def _send_message_async(message: str) -> int | None:
                         chat_id=TELEGRAM_CHAT_ID,
                         text=chunk,
                         disable_web_page_preview=True,
+                        reply_markup=chunk_markup,
                     )
                 except TelegramError as e2:
                     logger.error("Telegram send failed: %s", e2)
@@ -127,23 +147,30 @@ async def _send_message_async(message: str) -> int | None:
     return first_id
 
 
-def send_notification(message: str) -> int | None:
+def send_notification(
+    message: str,
+    buttons: list[tuple[str, str]] | None = None,
+) -> int | None:
     """Send a notification via Telegram. Returns first message_id on success, None on failure.
 
     Safe from both sync contexts (main loop) and async contexts (listener thread):
     if a loop is already running, routes via a helper thread; otherwise uses asyncio.run.
+
+    Optional `buttons` attaches an inline keyboard. Each tuple is
+    (label, callback_data). Used by entry-rec dispatch to add quick
+    Reject / Watch actions visible from a phone notification.
     """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(_send_message_async(message))
+        return asyncio.run(_send_message_async(message, buttons))
 
     # Running inside an event loop — delegate to a short-lived helper thread with its own loop.
     import threading
     result: list[int | None] = [None]
 
     def _runner():
-        result[0] = asyncio.run(_send_message_async(message))
+        result[0] = asyncio.run(_send_message_async(message, buttons))
 
     t = threading.Thread(target=_runner, daemon=True)
     t.start()

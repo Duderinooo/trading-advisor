@@ -79,6 +79,7 @@ export default function Dashboard({
   const [open, setOpen] = useState({
     performance: false,
     risk: false,
+    insights: false,
     learning: false,
     history: false,
   });
@@ -212,6 +213,7 @@ export default function Dashboard({
       { id: "active", label: "Active", count: openCount + pendingCount },
       { id: "performance", label: "Performance" },
       { id: "risk", label: "Risk" },
+      { id: "insights", label: "Insights" },
       { id: "learning", label: "Learning" },
       { id: "history", label: "History", count: closedCount },
     ],
@@ -219,7 +221,7 @@ export default function Dashboard({
   );
 
   const jump = useCallback((id: string) => {
-    if (["performance", "risk", "learning", "history"].includes(id)) {
+    if (["performance", "risk", "insights", "learning", "history"].includes(id)) {
       setOpen((o) => ({ ...o, [id]: true }));
     }
     requestAnimationFrame(() => {
@@ -230,6 +232,30 @@ export default function Dashboard({
       }
     });
   }, []);
+
+  // Live browser tab title: reflects open trades + unrealized PnL + drawdown
+  // so the tab in the macOS dock / browser tab strip surfaces state even when
+  // the page is in the background. SSR-safe: runs only after mount.
+  useEffect(() => {
+    const starting = Number(portfolio.total_capital_eur || 0);
+    const dd = starting > 0
+      ? Math.max(0, (starting - equity) / starting * 100)
+      : 0;
+    const unrealStr = unrealized >= 0
+      ? `+€${unrealized.toFixed(2)}`
+      : `-€${Math.abs(unrealized).toFixed(2)}`;
+    const ddStr = dd >= 0.01 ? ` · DD ${dd.toFixed(1)}%` : "";
+    const ks = portfolio.kill_switch_active || portfolio.kill_switch;
+    const prefix = ks ? "🛑 " : openCount > 0 ? "📊 " : "";
+    document.title = `${prefix}TA · ${openCount} open · ${unrealStr}${ddStr}`;
+    return () => {
+      document.title = "Trading Advisor";
+    };
+  }, [
+    openCount, equity, unrealized,
+    portfolio.total_capital_eur,
+    portfolio.kill_switch_active, portfolio.kill_switch,
+  ]);
 
   // Heartbeat staleness: seconds since last_tick. Computed client-only to avoid
   // SSR/CSR hydration mismatch (Date.now() differs between server and client).
@@ -452,6 +478,31 @@ export default function Dashboard({
           </Card>
         </CollapsibleSection>
 
+        {/* Insights — analytics-driven views (Phase E follow-up) */}
+        <CollapsibleSection
+          id="insights"
+          title="Insights"
+          meta="bot-computed analytics"
+          open={open.insights}
+          onToggle={() => setOpen((o) => ({ ...o, insights: !o.insights }))}
+        >
+          <Card title="Drawdown Trajectory">
+            <DrawdownTrajectory />
+          </Card>
+          <Card title="Hit-Rate Trend (rolling 30d)">
+            <HitRateTrend />
+          </Card>
+          <Card title="Time-of-Day Expectancy">
+            <TimeOfDay />
+          </Card>
+          <Card title="Earnings Calendar (next 14d)">
+            <EarningsCalendar />
+          </Card>
+          <Card title="Shadow Config — What-If">
+            <ShadowDelta />
+          </Card>
+        </CollapsibleSection>
+
         {/* Learning */}
         <CollapsibleSection
           id="learning"
@@ -462,21 +513,6 @@ export default function Dashboard({
         >
           <Card title="Mistake-Class Trend (rolling 10 losses)">
             <MistakeTrend closed={portfolio.closed_trades} />
-          </Card>
-          <Card title="Hit-Rate Trend (rolling 30d)">
-            <HitRateTrend />
-          </Card>
-          <Card title="Time-of-Day Expectancy">
-            <TimeOfDay />
-          </Card>
-          <Card title="Drawdown Trajectory">
-            <DrawdownTrajectory />
-          </Card>
-          <Card title="Earnings Calendar (next 14d)">
-            <EarningsCalendar />
-          </Card>
-          <Card title="Shadow Config — What-If">
-            <ShadowDelta />
           </Card>
           <Card title="Gate Attribution">
             <GateAttribution />

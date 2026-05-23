@@ -8,14 +8,15 @@ import asyncio
 import logging
 import threading
 
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from telegram_listener._common import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 from telegram_listener.commands import (
     add_handler, audit_handler, cancel_handler, close_handler, confirm_handler,
     dividend_handler, help_handler, killstatus_handler, morning_handler,
-    panic_handler, positions_handler, resume_handler, stats_handler,
-    watch_handler, watchclear_handler, watchlist_handler, watchremove_handler,
+    panic_handler, positions_handler, rec_callback_handler, resume_handler,
+    stats_handler, watch_handler, watchclear_handler, watchlist_handler,
+    watchremove_handler,
 )
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,8 @@ async def _async_run():
     app.add_handler(CommandHandler("stats", stats_handler))
     app.add_handler(CommandHandler("help", help_handler))
     app.add_handler(CommandHandler("start", help_handler))
+    # Inline-keyboard buttons on entry-rec messages → rec_callback_handler.
+    app.add_handler(CallbackQueryHandler(rec_callback_handler, pattern=r"^rec:"))
 
     await app.initialize()
     await app.start()
