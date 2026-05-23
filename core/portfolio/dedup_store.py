@@ -48,8 +48,8 @@ def _migrate_from_portfolio_if_needed() -> None:
     if _DEDUP_PATH.exists():
         return
     try:
-        from core.portfolio.io import load_portfolio
-        pf = load_portfolio()
+        from core.portfolio.io import _load_portfolio_raw
+        pf = _load_portfolio_raw()
         initial = _empty_state()
         for k in _DEDUP_KEYS:
             v = pf.get(k)

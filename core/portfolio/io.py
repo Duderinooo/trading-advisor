@@ -9,7 +9,10 @@ import json
 import tempfile
 import threading
 import logging
+from datetime import datetime
 from pathlib import Path
+
+import config
 
 
 logger = logging.getLogger(__name__)
@@ -23,8 +26,9 @@ portfolio_lock = threading.RLock()
 paper_lock = threading.RLock()
 
 
-def load_portfolio() -> dict:
-    """Load current trading portfolio from JSON file. Returns default shape if missing."""
+def _load_portfolio_raw() -> dict:
+    """Low-level read of portfolio.json without splicing satellite stores.
+    Used by satellite-store migration helpers to avoid recursion."""
     if _PORTFOLIO_PATH.exists():
         with open(_PORTFOLIO_PATH) as f:
             return json.load(f)
@@ -36,9 +40,34 @@ def load_portfolio() -> dict:
     }
 
 
+def load_portfolio() -> dict:
+    """Load current trading portfolio. Splices pending_recommendations from
+    state/pending.json so existing call-sites still see them under the
+    familiar key (Phase E5 transparent shim)."""
+    pf = _load_portfolio_raw()
+    try:
+        from core.portfolio.pending_store import load_pending
+        pf["pending_recommendations"] = load_pending()
+    except Exception:
+        logger.exception("pending splice into load_portfolio failed")
+    return pf
+
+
 def save_portfolio(portfolio: dict):
-    """Atomic write via tmp + rename. Always safe under crash."""
+    """Atomic write via tmp + rename. Always safe under crash.
+
+    Extracts pending_recommendations + writes to state/pending.json before
+    writing portfolio.json (transparent shim for Phase E5)."""
     portfolio["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    # Split out pending → state/pending.json (own lock)
+    pending = portfolio.pop("pending_recommendations", None)
+    if pending is not None:
+        try:
+            from core.portfolio.pending_store import save_pending
+            save_pending(pending)
+        except Exception:
+            logger.exception("pending split-out at save_portfolio failed")
 
     fd, tmp_path = tempfile.mkstemp(
         prefix=".portfolio_", suffix=".json", dir=_PORTFOLIO_PATH.parent

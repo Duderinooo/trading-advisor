@@ -38,8 +38,8 @@ def _migrate_from_portfolio_if_needed() -> None:
     if _RUNTIME_PATH.exists():
         return
     try:
-        from core.portfolio.io import load_portfolio
-        pf = load_portfolio()
+        from core.portfolio.io import _load_portfolio_raw
+        pf = _load_portfolio_raw()
         initial = {k: pf[k] for k in _RUNTIME_KEYS if k in pf}
         _RUNTIME_PATH.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(

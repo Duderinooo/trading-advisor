@@ -46,18 +46,18 @@ def persist_results(
         except Exception:
             logger.exception("correlation_matrix persist failed (non-fatal)")
 
+    # Pending recs → state/pending.json (separate lock).
+    from core.portfolio.pending_store import append_pending, load_pending, save_pending
+    for rec in (recs.entry, recs.add, recs.update):
+        if rec is not None:
+            append_pending(rec)
+
     with portfolio_lock:
         fresh = load_portfolio()
         if new_levels is not None:
             _persist_watch_levels(
                 fresh, new_levels, ctx.excluded, ctx.market_data, ctx.mode, trace,
             )
-        if recs.entry is not None:
-            fresh.setdefault("pending_recommendations", []).append(recs.entry)
-        if recs.add is not None:
-            fresh.setdefault("pending_recommendations", []).append(recs.add)
-        if recs.update is not None:
-            fresh.setdefault("pending_recommendations", []).append(recs.update)
         if recs.exit is not None:
             _persist_exit_with_cooldown_dedupe(fresh, recs.exit)
         fresh["last_analysis"] = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -206,7 +206,8 @@ def _persist_exit_with_cooldown_dedupe(fresh: dict, exit_persisted: dict) -> Non
         except ValueError:
             pass
 
-    _existing = fresh.get("pending_recommendations", []) or []
+    from core.portfolio.pending_store import append_pending, load_pending
+    _existing = load_pending()
     _has_pending = any(
         r.get("kind") == "exit"
         and (r.get("ticker") or "").upper() == _et
@@ -217,4 +218,4 @@ def _persist_exit_with_cooldown_dedupe(fresh: dict, exit_persisted: dict) -> Non
                  "existing pending exit-rec, keep old (no timer reset)", {})
         logger.info("Exit-rec for %s suppressed (existing pending kept)", _et)
         return
-    fresh.setdefault("pending_recommendations", []).append(exit_persisted)
+    append_pending(exit_persisted)
