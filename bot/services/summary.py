@@ -121,6 +121,18 @@ def _run_db_backup() -> None:
     except Exception:
         logger.exception("EOD db backup failed")
 
+    # JSONL rotation runs alongside the DB snapshot: same daily cadence,
+    # same fail-soft envelope.
+    try:
+        from tools.rotate_jsonl import rotate_all
+        results = rotate_all()
+        trimmed = {k: v for k, v in results.items() if v[0] != v[1]}
+        if trimmed:
+            logger.info("EOD jsonl rotation: %s",
+                        ", ".join(f"{k}:{a}->{b}" for k, (a, b) in trimmed.items()))
+    except Exception:
+        logger.exception("EOD jsonl rotation failed")
+
 
 def _append_expectancy_snapshot(portfolio: dict) -> None:
     """Append today's setup-expectancy + calibration metrics to

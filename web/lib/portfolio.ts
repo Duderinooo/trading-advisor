@@ -106,6 +106,23 @@ export async function readPortfolio(): Promise<Portfolio> {
 }
 
 export async function readPaperPortfolio(): Promise<PaperPortfolio | null> {
+  // Phase E7 follow-up: paper portfolio migrated from
+  // training_portfolio.json to SQLite kv_state(namespace='paper').
+  // Falls back to the legacy file for pre-migration installs.
+  const fromDb = readKv("paper", "portfolio") as
+    | Partial<PaperPortfolio>
+    | undefined;
+  if (fromDb) {
+    return {
+      open_trades: fromDb.open_trades ?? [],
+      closed_trades: fromDb.closed_trades ?? [],
+      cash_eur: fromDb.cash_eur ?? 0,
+      total_capital_eur: fromDb.total_capital_eur ?? 0,
+      started_at: fromDb.started_at,
+      paper: true,
+      last_updated: fromDb.last_updated,
+    };
+  }
   try {
     const raw = await fs.readFile(PAPER_PORTFOLIO_PATH, "utf8");
     const data = JSON.parse(raw);

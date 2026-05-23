@@ -15,7 +15,7 @@ import yfinance as yf
 import config
 from core.events.types import EventType
 from core.data.market_data import get_market_data
-from core.data.news_rss import fetch_rss_news
+from core.data.news_rss import fetch_macro_rss, fetch_rss_news
 from core.portfolio import (
     portfolio_lock, load_portfolio, save_portfolio,
     exit_suppressed_tickers,
@@ -253,6 +253,45 @@ def check_news_events() -> list[dict]:
 
         events = []
         new_hashes = []
+
+        # Macro scan — ticker-agnostic, runs once per cycle. Catches
+        # geo/commodity headlines that no watchlist ticker would surface
+        # (OPEC decisions, ECB rate moves, sanctions, conflict). Only
+        # commodity-trigger matches are emitted; ticker-specific
+        # classification is skipped because the headline pool is broad
+        # and would generate false matches against single-ticker patterns.
+        try:
+            macro_items = fetch_macro_rss(max_age_hours=6, limit_per_feed=30)
+        except Exception:
+            logger.exception("Macro RSS fetch failed")
+            macro_items = []
+
+        for item in macro_items:
+            title = item.get("title") or ""
+            if not title:
+                continue
+            h = hashlib.md5(title.lower().encode()).hexdigest()[:16]
+            if h in seen_today:
+                continue
+
+            triggered = [
+                comm for comm, pat in _COMMODITY_TRIGGER_PATTERNS.items()
+                if pat.search(title)
+            ]
+            if not triggered:
+                continue
+
+            new_hashes.append(h)
+            seen_today.add(h)
+            events.append({
+                "type": EventType.NEWS_GEO,
+                "headline": title,
+                "triggered_commodities": triggered,
+                "source_ticker": None,
+                "macro_source": item.get("source"),
+                "macro_locale": item.get("locale"),
+                "priority": "HIGH",
+            })
 
         for ticker in scan_tickers:
             is_open = ticker in open_tickers

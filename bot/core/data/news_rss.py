@@ -3,6 +3,12 @@
 Why: yfinance.news is US/EN-biased and lags German sources (Handelsblatt, WELT,
 boerse.de) by 5-30min on DAX scandals. Google News RSS aggregates them all,
 multilingual, no API key. Single feed pattern → no per-source mapping.
+
+Two scan modes:
+- fetch_rss_news(ticker)   — per-ticker, used by check_news_events main loop
+- fetch_macro_rss(locales) — ticker-agnostic top-business headlines, used to
+  catch geo/macro news (OPEC, ECB, war, sanctions) that no watchlist ticker
+  would surface on its own
 """
 
 import logging
@@ -112,4 +118,82 @@ def fetch_rss_news(
             "source": (entry.get("source") or {}).get("title", "?"),
             "published_at": pub_dt.isoformat() if pub_dt else None,
         })
+    return items
+
+
+# Google News topical-feed IDs:
+#   b   = Business
+#   w   = World
+#   tc  = Technology
+#   nat = Nation
+# We pull Business + World — Business has stock-relevant headlines, World
+# catches geo events (war, sanctions, OPEC, central-bank decisions).
+_MACRO_TOPICS = ("BUSINESS", "WORLD")
+
+# Locales to pull. DE + US cover ~all our watchlist (XETRA + US-listed
+# commodities). Adding more locales scales the request count linearly,
+# so keep this short. ceid encodes country:lang.
+_MACRO_LOCALES = (
+    ("de", "DE", "DE:de"),
+    ("en", "US", "US:en"),
+)
+
+_GOOGLE_TOPIC_TPL = (
+    "https://news.google.com/rss/headlines/section/topic/{topic}?hl={hl}&gl={gl}&ceid={ceid}"
+)
+
+
+def fetch_macro_rss(
+    max_age_hours: int = 6,
+    limit_per_feed: int = 30,
+) -> list[dict]:
+    """Pull top business + world headlines from Google News topical feeds
+    (DE + US locales). Returns list of {'title', 'source', 'published_at',
+    'locale', 'topic'} newest-first within max_age_hours.
+
+    max_age_hours intentionally shorter than the per-ticker fetch (24h)
+    because macro/geo signals decay fast — yesterday's OPEC headline
+    isn't actionable today, but yesterday's earnings-beat thesis on a
+    held position still is.
+
+    Empty list on any failure — never raises.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+    items: list[dict] = []
+    for hl, gl, ceid in _MACRO_LOCALES:
+        for topic in _MACRO_TOPICS:
+            url = _GOOGLE_TOPIC_TPL.format(topic=topic, hl=hl, gl=gl, ceid=ceid)
+            try:
+                r = requests.get(
+                    url,
+                    timeout=_TIMEOUT_SECONDS,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                if r.status_code != 200:
+                    continue
+                feed = feedparser.parse(r.content)
+            except (requests.RequestException, Exception) as e:
+                logger.warning(
+                    "Macro RSS fetch failed for topic=%s locale=%s: %s",
+                    topic, ceid, e,
+                )
+                continue
+
+            for entry in feed.entries[:limit_per_feed]:
+                title = entry.get("title", "")
+                if not title:
+                    continue
+                pub_struct = entry.get("published_parsed")
+                pub_dt = None
+                if pub_struct:
+                    pub_dt = datetime(*pub_struct[:6], tzinfo=timezone.utc)
+                    if pub_dt < cutoff:
+                        continue
+                items.append({
+                    "title": title,
+                    "source": (entry.get("source") or {}).get("title", "?"),
+                    "published_at": pub_dt.isoformat() if pub_dt else None,
+                    "locale": gl,
+                    "topic": topic.lower(),
+                })
     return items

@@ -98,17 +98,12 @@ def save_portfolio(portfolio: dict):
         raise
 
 
-def load_paper_portfolio() -> dict:
-    """Load training/paper portfolio. Returns fresh default if missing.
+_PAPER_KV_NAMESPACE = "paper"
+_PAPER_KV_KEY = "portfolio"
+_PAPER_MIGRATED = False
 
-    Paper-Spur lernt ohne Ausführungs-Risiko: jeder rec_entry, der alle Gates passt,
-    wird automatisch geöffnet (mit €1/Seite Fee), via SL/TP-Loop geschlossen.
-    Strikt getrennt von Real-Portfolio (eigene Datei, eigener Lock) damit Paper-Stats
-    nie in Real-Brier-Haircut fließen.
-    """
-    if _PAPER_PORTFOLIO_PATH.exists():
-        with open(_PAPER_PORTFOLIO_PATH) as f:
-            return json.load(f)
+
+def _default_paper_portfolio() -> dict:
     return {
         "open_trades": [],
         "closed_trades": [],
@@ -119,21 +114,84 @@ def load_paper_portfolio() -> dict:
     }
 
 
+def _migrate_paper_if_needed() -> None:
+    """One-shot: import existing training_portfolio.json into SQLite
+    (kv_state, namespace='paper'). After migration the source file is
+    renamed .migrated so subsequent startups skip the import."""
+    global _PAPER_MIGRATED
+    if _PAPER_MIGRATED:
+        return
+    from core.db import connect, init_schema
+    init_schema()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM kv_state WHERE namespace=? AND key=?",
+            (_PAPER_KV_NAMESPACE, _PAPER_KV_KEY),
+        ).fetchone()
+        if row["n"] > 0:
+            _PAPER_MIGRATED = True
+            return
+
+        if _PAPER_PORTFOLIO_PATH.exists():
+            try:
+                with open(_PAPER_PORTFOLIO_PATH) as f:
+                    legacy = json.load(f)
+                conn.execute(
+                    "INSERT OR REPLACE INTO kv_state "
+                    "(namespace, key, body) VALUES (?, ?, ?)",
+                    (_PAPER_KV_NAMESPACE, _PAPER_KV_KEY, json.dumps(legacy)),
+                )
+                logger.info(
+                    "paper_portfolio migration: imported training_portfolio.json"
+                )
+                try:
+                    _PAPER_PORTFOLIO_PATH.rename(
+                        _PAPER_PORTFOLIO_PATH.with_suffix(".json.migrated")
+                    )
+                except Exception:
+                    logger.exception(
+                        "Renaming training_portfolio.json after migration failed"
+                    )
+            except Exception:
+                logger.exception("paper_portfolio migration read failed")
+    _PAPER_MIGRATED = True
+
+
+def load_paper_portfolio() -> dict:
+    """Load training/paper portfolio. Returns fresh default if missing.
+
+    Paper-Spur lernt ohne Ausführungs-Risiko: jeder rec_entry, der alle Gates passt,
+    wird automatisch geöffnet (mit €1/Seite Fee), via SL/TP-Loop geschlossen.
+    Strikt getrennt von Real-Portfolio (eigener Lock, eigene SQLite-Namespace
+    `kv_state[paper]`) damit Paper-Stats nie in Real-Brier-Haircut fließen.
+    """
+    _migrate_paper_if_needed()
+    from core.db import connect
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT body FROM kv_state WHERE namespace=? AND key=?",
+            (_PAPER_KV_NAMESPACE, _PAPER_KV_KEY),
+        ).fetchone()
+    if not row:
+        return _default_paper_portfolio()
+    try:
+        return json.loads(row["body"])
+    except json.JSONDecodeError:
+        logger.exception("paper_portfolio row malformed; resetting to default")
+        return _default_paper_portfolio()
+
+
 def save_paper_portfolio(portfolio: dict):
-    """Atomic write of paper portfolio. Same crash-safety as save_portfolio."""
+    """Atomic upsert into the paper kv_state row. Same crash-safety as
+    portfolio.json's tmp+rename — SQLite WAL gives us the transactional
+    guarantee."""
+    _migrate_paper_if_needed()
     portfolio["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
     portfolio["paper"] = True
-    fd, tmp_path = tempfile.mkstemp(
-        prefix=".training_portfolio_", suffix=".json",
-        dir=_PAPER_PORTFOLIO_PATH.parent,
-    )
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(portfolio, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, _PAPER_PORTFOLIO_PATH)
-    except Exception:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        raise
+    from core.db import connect
+    with connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO kv_state (namespace, key, body) "
+            "VALUES (?, ?, ?)",
+            (_PAPER_KV_NAMESPACE, _PAPER_KV_KEY, json.dumps(portfolio)),
+        )
