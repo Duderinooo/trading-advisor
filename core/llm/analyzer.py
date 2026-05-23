@@ -29,7 +29,7 @@ from core.llm.prompt.context import build_request_context
 from core.llm.handlers.parser import (
     call_claude, dispatch_tool_calls, extract_tool_use, format_analysis_text,
 )
-from core.llm.handlers.tools import auto_paper_open
+from core.llm.handlers.paper_open import auto_paper_open
 from core.llm.telemetry.trace import build_trace, log_trace_warnings, trace_key
 
 

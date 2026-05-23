@@ -27,7 +27,8 @@ from core.llm.prompt.prompts import (
     UPDATE_TARGETS_TOOL, RECOMMEND_EXIT_TOOL, SUBMIT_PASS_TOOL,
 )
 from core.llm.prompt.context import RequestContext
-from core.llm.handlers.tools import dump, build_thesis_degradation_lines
+from core.llm.prompt.thesis_diff import build_thesis_degradation_lines
+from core.llm.serialization import dump
 
 
 logger = logging.getLogger(__name__)
