@@ -90,7 +90,45 @@ Snapshot fields `base_quality_score` (0-10) and `base_quality_items` (`core.port
 - **Config changes must come with a one-line comment** explaining the trigger (past incident, guide section, etc.). Future-you needs the *why*.
 - **Never bypass `portfolio_lock`** on write paths. Reads are fine without, writes are not.
 - **Prefer extending existing files.** `core/` submodules already slice the surface; new files must justify themselves.
-- **Token-budget the prompts.** Any new context added to `core/analyzer.analysis_request` must be cache-stable (don't embed timestamps or random IDs that bust the cache).
+- **Token-budget the prompts.** Any new context added to `core/llm/prompt/builder.build_user_message` must be cache-stable (don't embed timestamps or random IDs that bust the cache).
+
+## Tuning rules (no tuning on N=1)
+
+Several constants in `config/` were retuned across the past months in response
+to specific incidents. The temptation is to react to every loss / missed-winner
+with a threshold tweak — that path leads to event-driven overfitting.
+
+**Rule:** Threshold tuning is allowed only when:
+
+1. **Sample-size sufficient.** ≥`MIN_SAMPLE_SIZE_FOR_TUNING = 20` outcome
+   observations (in `config/risk.py`). Single-trade anecdotes do not qualify.
+2. **Data-driven evidence.** The change must reference a metric source:
+   - `compute_hit_stats(portfolio)` (per-setup_type expectancy)
+   - `core.llm.telemetry.outcomes.gate_false_negative_rates()` (per-gate FNR)
+   - `analytics/setup_expectancy_history.jsonl` (rolling expectancy)
+3. **Postmortem written.** Drop a `research/YYYY-MM-DD-<topic>.md` documenting
+   symptom / root cause / fix / constant changed / lessons. One-line pointer
+   stays next to the changed constant; full context lives in `research/`.
+4. **Inline pointer required.** Every retuned constant must have a comment
+   `# YYYY-MM-DD: see research/<topic>.md` directly above. No exceptions —
+   future-you should never have to git-blame to find the rationale.
+
+**What does NOT qualify as tuning evidence:**
+
+- "This one PUM.DE trade lost" — N=1
+- "Sonnet suggested this" — LLM intuition, not data
+- "Felt too strict" — pure vibe
+- "Generic best-practice from US-equity literature" — venue-specific (XETRA
+  mid-caps need different floors than US large-caps — see
+  `research/2026-05-07-breakout-volume-floor.md`)
+
+**Gate-block counterfactuals.** Every entry blocked by a gate is automatically
+recorded by `core.llm.telemetry.outcomes.record_blocked_entry`. Next trading
+day's daily-OHLC is pulled by `compute_pending_outcomes` (runs in
+`services/summary.run_eod_summary`) and resolves whether the blocked trade
+would have hit TP1 before SL. `gate_false_negative_rates()` aggregates per-gate
+false-negative-rate (blocked-but-would-have-won / total-blocks). This is the
+primary tuning-evidence source for "is this gate too strict?"
 
 ## Claude models in use
 
