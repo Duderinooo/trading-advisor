@@ -255,6 +255,8 @@ def main() -> None:
     logger.info("Weekend News Scan: Sonntag 18-22 CET (geo-news catch-up)")
     logger.info("=" * 50)
 
+    from core.db import init_schema
+    init_schema()
     startup_cleanup()
     start_listener_thread()
 

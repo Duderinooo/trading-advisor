@@ -1,98 +1,157 @@
-"""Closed trades out of portfolio.json → state/closed_trades.jsonl.
+"""Closed trades — persisted in SQLite (state/bot.db, table closed_trades).
 
-closed_trades is an append-mostly list that grows unbounded. Keeping it in
-portfolio.json bloated the file + made every load+save touch the full history.
+History:
+- Originally lived inside portfolio.json under the `closed_trades` key.
+- Phase E4 extracted to state/closed_trades.jsonl (line-per-trade, atomic
+  full rewrite).
+- Phase E7 (2026-05-23): migrated to SQLite. Same public API
+  (load/save/append) so all consumers — including the transparent shim in
+  core.portfolio.io — keep working without changes. One-shot migration
+  copies any leftover jsonl rows into the table on first read.
 
-Storage: state/closed_trades.jsonl — one trade per line (newest at bottom).
-Atomic full-file rewrite via tmp+rename — closed_trades doesn't change often
-(only /close handler + SL/TP loop + partial-fill events), so write-cost is
-acceptable. Future SQLite migration trivial because the line-per-record
-format already mirrors a table row.
-
-Used via transparent shim in core/portfolio/io.py: load_portfolio() splices
-closed_trades in from this file; save_portfolio() extracts + persists here.
+Each row stores the trade dict as a JSON blob in `body`, with `ticker`
+and `closed_at` promoted to columns for cheap filtering / indexed lookups.
+Consumers (hit_stats, heat, risk, sizing, backtest) all want a
+`list[dict]` — load_closed_trades reconstructs that shape, so callers are
+unaware of the storage swap.
 """
 
 import json
 import logging
-import os
-import tempfile
 import threading
 from pathlib import Path
+
+from core.db import connect, init_schema
 
 
 logger = logging.getLogger(__name__)
 
 
-_CLOSED_PATH = (
+_LEGACY_JSONL_PATH = (
     Path(__file__).resolve().parent.parent.parent / "state" / "closed_trades.jsonl"
 )
 _CLOSED_LOCK = threading.RLock()
+_MIGRATED = False
 
 
-def _migrate_from_portfolio_if_needed() -> None:
-    """One-shot: populate state/closed_trades.jsonl from portfolio.json if missing."""
-    if _CLOSED_PATH.exists():
+def _migrate_from_legacy_if_needed() -> None:
+    """One-shot import from legacy jsonl + portfolio.json fallback.
+
+    Runs once per process. After import the legacy file stays on disk
+    (renamed .migrated suffix) — DELETED nothing in case of human
+    intervention is needed, but won't be re-read again on subsequent
+    startups because we check the table contents first.
+    """
+    global _MIGRATED
+    if _MIGRATED:
         return
-    try:
-        from core.portfolio.io import _load_portfolio_raw
-        pf = _load_portfolio_raw()
-        initial = pf.get("closed_trades") or []
-        _CLOSED_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            "w", dir=_CLOSED_PATH.parent, delete=False,
-        ) as tmp:
-            for trade in initial:
-                tmp.write(json.dumps(trade) + "\n")
-            tmp_path = tmp.name
-        os.replace(tmp_path, _CLOSED_PATH)
-        logger.info("closed_trades migration: persisted %d trades to state/closed_trades.jsonl",
-                    len(initial))
-    except Exception:
-        logger.exception("closed_trades migration failed; using empty list")
+    init_schema()
+    with connect() as conn:
+        row = conn.execute("SELECT COUNT(*) AS n FROM closed_trades").fetchone()
+        if row["n"] > 0:
+            _MIGRATED = True
+            return
+
+        rows: list[dict] = []
+        if _LEGACY_JSONL_PATH.exists():
+            try:
+                with _LEGACY_JSONL_PATH.open() as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            rows.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            logger.warning(
+                                "Skipping malformed closed_trades line: %s", line[:80]
+                            )
+            except Exception:
+                logger.exception("Reading legacy closed_trades.jsonl failed")
+        else:
+            try:
+                from core.portfolio.io import _load_portfolio_raw
+                pf = _load_portfolio_raw()
+                rows = pf.get("closed_trades") or []
+            except Exception:
+                logger.exception("Fallback portfolio.json read failed")
+
+        if rows:
+            conn.executemany(
+                "INSERT INTO closed_trades (ticker, closed_at, body) VALUES (?, ?, ?)",
+                [
+                    (
+                        t.get("ticker") or "",
+                        t.get("closed_at") or t.get("close_date") or "",
+                        json.dumps(t),
+                    )
+                    for t in rows
+                ],
+            )
+            logger.info(
+                "closed_trades migration: imported %d rows from %s",
+                len(rows),
+                "jsonl" if _LEGACY_JSONL_PATH.exists() else "portfolio.json",
+            )
+            if _LEGACY_JSONL_PATH.exists():
+                try:
+                    _LEGACY_JSONL_PATH.rename(
+                        _LEGACY_JSONL_PATH.with_suffix(".jsonl.migrated")
+                    )
+                except Exception:
+                    logger.exception("Renaming legacy jsonl after migration failed")
+    _MIGRATED = True
 
 
 def load_closed_trades() -> list[dict]:
-    """Return full closed_trades list. Reads line-by-line; tolerates partial
-    JSON parse failures (skips bad lines)."""
+    """Return all closed trades in insertion order (oldest first)."""
     with _CLOSED_LOCK:
-        _migrate_from_portfolio_if_needed()
-        if not _CLOSED_PATH.exists():
-            return []
+        _migrate_from_legacy_if_needed()
+        with connect() as conn:
+            rows = conn.execute(
+                "SELECT body FROM closed_trades ORDER BY id ASC"
+            ).fetchall()
         out: list[dict] = []
-        try:
-            with _CLOSED_PATH.open() as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        out.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        logger.warning("Skipping malformed closed_trades line: %s",
-                                       line[:80])
-        except Exception:
-            logger.exception("closed_trades load failed; returning empty")
-            return []
+        for r in rows:
+            try:
+                out.append(json.loads(r["body"]))
+            except json.JSONDecodeError:
+                logger.warning("Skipping malformed closed_trades row")
         return out
 
 
 def save_closed_trades(trades: list[dict]) -> None:
-    """Atomic full rewrite. Used by the transparent shim in save_portfolio."""
+    """Replace the full table with `trades`. Used by the transparent shim
+    in save_portfolio for compat with the old list-mutation pattern."""
     with _CLOSED_LOCK:
-        _CLOSED_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            "w", dir=_CLOSED_PATH.parent, delete=False,
-        ) as tmp:
-            for trade in trades:
-                tmp.write(json.dumps(trade) + "\n")
-            tmp_path = tmp.name
-        os.replace(tmp_path, _CLOSED_PATH)
+        _migrate_from_legacy_if_needed()
+        with connect() as conn:
+            conn.execute("DELETE FROM closed_trades")
+            if trades:
+                conn.executemany(
+                    "INSERT INTO closed_trades (ticker, closed_at, body) "
+                    "VALUES (?, ?, ?)",
+                    [
+                        (
+                            t.get("ticker") or "",
+                            t.get("closed_at") or t.get("close_date") or "",
+                            json.dumps(t),
+                        )
+                        for t in trades
+                    ],
+                )
 
 
 def append_closed_trade(trade: dict) -> None:
-    """Append one trade — true append (no rewrite)."""
+    """Insert one trade. True append (no full rewrite)."""
     with _CLOSED_LOCK:
-        _CLOSED_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _CLOSED_PATH.open("a") as f:
-            f.write(json.dumps(trade) + "\n")
+        _migrate_from_legacy_if_needed()
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO closed_trades (ticker, closed_at, body) VALUES (?, ?, ?)",
+                (
+                    trade.get("ticker") or "",
+                    trade.get("closed_at") or trade.get("close_date") or "",
+                    json.dumps(trade),
+                ),
+            )
