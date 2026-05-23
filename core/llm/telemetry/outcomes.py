@@ -21,6 +21,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from core.data.historical import get_daily_bars_range
+from core.data.historical_intraday import first_touch_intraday
 
 
 logger = logging.getLogger(__name__)
@@ -177,8 +178,21 @@ def _resolve_against_daily_bars(record: dict, today: date) -> dict | None:
             "trough_pct": round((trough_low - entry) / entry * 100, 2) if entry > 0 else 0.0,
         }
 
+    resolved_via = "daily_bar"
     if hit_sl and hit_tp1:
-        would_win = None  # ambiguous: daily bar can't order intraday touches
+        # Daily-bar ambiguous — try intraday-15m for tick-order resolution.
+        first = first_touch_intraday(
+            ticker, datetime.strptime(resolved_bar["date"], "%Y-%m-%d").date(),
+            sl, tp1,
+        )
+        if first == "tp":
+            would_win = True
+            resolved_via = "intraday_15m"
+        elif first == "sl":
+            would_win = False
+            resolved_via = "intraday_15m"
+        else:
+            would_win = None  # intraday also ambiguous / unavailable
     elif hit_tp1:
         would_win = True
     else:
@@ -188,6 +202,7 @@ def _resolve_against_daily_bars(record: dict, today: date) -> dict | None:
         **record,
         "resolved_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "resolved_bar_date": resolved_bar["date"],
+        "resolved_via": resolved_via,
         "bars_walked": bars.index(resolved_bar) + 1,
         "next_day_high": resolved_bar["high"],
         "next_day_low": resolved_bar["low"],

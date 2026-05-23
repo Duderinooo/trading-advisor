@@ -32,6 +32,7 @@ from pathlib import Path
 
 import config
 from core.data.historical import get_daily_bar
+from core.data.historical_intraday import first_touch_intraday
 
 
 logger = logging.getLogger(__name__)
@@ -103,15 +104,22 @@ def replay_sltp_step(
         tp_hit = isinstance(tp, (int, float)) and high >= tp
 
         if sl_hit and tp_hit:
-            # Daily-bar can't order intraday touches → ambiguous, leave open
-            result.events.append({
-                "type": "AMBIGUOUS",
-                "ticker": ticker, "sl": sl, "tp": tp,
-                "bar_high": high, "bar_low": low,
-            })
-            result.ambiguous += 1
-            surviving.append(trade)
-            continue
+            # Daily-bar can't order touches — try intraday 15m resolution.
+            first = first_touch_intraday(ticker, target_date, sl, tp)
+            if first == "sl":
+                sl_hit, tp_hit = True, False  # resolved: SL first
+            elif first == "tp":
+                sl_hit, tp_hit = False, True  # resolved: TP first
+            else:
+                # Still ambiguous (no intraday data, or 15m bar also straddles).
+                result.events.append({
+                    "type": "AMBIGUOUS",
+                    "ticker": ticker, "sl": sl, "tp": tp,
+                    "bar_high": high, "bar_low": low,
+                })
+                result.ambiguous += 1
+                surviving.append(trade)
+                continue
 
         if sl_hit:
             pnl_eur = (sl - entry) * shares if entry and shares else 0
