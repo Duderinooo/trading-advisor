@@ -11,10 +11,10 @@ from dataclasses import dataclass
 from anthropic import Anthropic
 
 from core.llm.prompt.context import RequestContext
-from core.llm.handlers.add import handle_add_recommendation
-from core.llm.handlers.entry import handle_entry_recommendation
-from core.llm.handlers.exit_rec import handle_exit_recommendation
-from core.llm.handlers.update import handle_update_targets
+from core.llm.handlers.recs.add import handle_add_recommendation
+from core.llm.handlers.recs.entry import handle_entry_recommendation
+from core.llm.handlers.recs.exit_rec import handle_exit_recommendation
+from core.llm.handlers.recs.update import handle_update_targets
 
 
 @dataclass

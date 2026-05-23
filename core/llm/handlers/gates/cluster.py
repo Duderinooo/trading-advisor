@@ -81,7 +81,7 @@ def gate_red_team(entry: dict, ctx: GateContext) -> bool:
     CON.DE KILL 10:07 → re-rec 12:53)."""
     if not config.RED_TEAM_ENABLED:
         return True
-    from core.llm.handlers.red_team import run_red_team
+    from core.llm.handlers.gates.red_team import run_red_team
     critique = run_red_team(entry, ctx.snap_md, ctx.regime, ctx.model)
     if not isinstance(critique, dict):
         return True
