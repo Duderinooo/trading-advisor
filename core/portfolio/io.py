@@ -41,15 +41,20 @@ def _load_portfolio_raw() -> dict:
 
 
 def load_portfolio() -> dict:
-    """Load current trading portfolio. Splices pending_recommendations from
-    state/pending.json so existing call-sites still see them under the
-    familiar key (Phase E5 transparent shim)."""
+    """Load current trading portfolio. Splices pending_recommendations
+    (Phase E5) + closed_trades (Phase E4) from satellite state-stores so
+    existing call-sites still see them under the familiar keys."""
     pf = _load_portfolio_raw()
     try:
         from core.portfolio.pending_store import load_pending
         pf["pending_recommendations"] = load_pending()
     except Exception:
         logger.exception("pending splice into load_portfolio failed")
+    try:
+        from core.portfolio.closed_trades_store import load_closed_trades
+        pf["closed_trades"] = load_closed_trades()
+    except Exception:
+        logger.exception("closed_trades splice into load_portfolio failed")
     return pf
 
 
@@ -68,6 +73,15 @@ def save_portfolio(portfolio: dict):
             save_pending(pending)
         except Exception:
             logger.exception("pending split-out at save_portfolio failed")
+
+    # Split out closed_trades → state/closed_trades.jsonl (own lock).
+    closed = portfolio.pop("closed_trades", None)
+    if closed is not None:
+        try:
+            from core.portfolio.closed_trades_store import save_closed_trades
+            save_closed_trades(closed)
+        except Exception:
+            logger.exception("closed_trades split-out at save_portfolio failed")
 
     fd, tmp_path = tempfile.mkstemp(
         prefix=".portfolio_", suffix=".json", dir=_PORTFOLIO_PATH.parent
