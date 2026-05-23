@@ -11,4 +11,5 @@ from config.llm import *  # noqa: F401,F403
 from config.market import *  # noqa: F401,F403
 from config.risk import *  # noqa: F401,F403
 from config.sectors import *  # noqa: F401,F403
+from config.setup_profiles import SETUP_PROFILES, SetupProfile, get_profile  # noqa: F401
 from config.watchlists import *  # noqa: F401,F403

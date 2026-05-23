@@ -13,6 +13,7 @@ confluence:       deterministic score 0-10, mean-rev family relaxed by 2.
 import logging
 
 import config
+from config.setup_profiles import get_profile
 from core.gate_log import log_gate
 from core.data.market_data import get_earnings_warnings
 from core.portfolio import (
@@ -102,9 +103,8 @@ def gate_weekly_trend(entry: dict, ctx: GateContext) -> bool:
 
 def gate_earnings(entry: dict, ctx: GateContext) -> bool:
     """Earnings hard-block T-N to T+0. Gap-risk is coin-flip, no systematic edge.
-    Override: setup_type=earnings_drift (post-earnings drift T+1+)."""
-    setup = (entry.get("setup_type") or "").lower()
-    if setup == "earnings_drift":
+    Bypass via SetupProfile.bypass_earnings_block (e.g. earnings_drift T+1+)."""
+    if get_profile(entry.get("setup_type")).bypass_earnings_block:
         return True
     ew = get_earnings_warnings([ctx.ticker], days_ahead=config.EARNINGS_ENTRY_BLOCK_DAYS)
     if not ew:
@@ -121,13 +121,10 @@ def gate_earnings(entry: dict, ctx: GateContext) -> bool:
 
 
 def gate_rs(entry: dict, ctx: GateContext) -> bool:
-    """Relative-Strength: no LONG on laggers vs uptrend. Override setups have
-    RS-negative as part of the thesis (mean-rev / reversal / gap_fill / squeeze)."""
-    setup = (entry.get("setup_type") or "").lower()
-    override_setups = {
-        "mean_reversion", "reversal_oversold", "gap_fill", "pre_breakout_squeeze",
-    }
-    if setup in override_setups:
+    """Relative-Strength: no LONG on laggers vs uptrend. Bypass via
+    SetupProfile.rs_override (mean-rev family enters RS-negative on purpose)."""
+    profile = get_profile(entry.get("setup_type"))
+    if profile.rs_override:
         return True
     rs = ctx.snap_md.get("rs_20d_vs_index_pct")
     if not isinstance(rs, (int, float)):
@@ -136,21 +133,20 @@ def gate_rs(entry: dict, ctx: GateContext) -> bool:
         return True
     logger.warning(
         "Entry BLOCKED by RS gate: %s rs_20d=%+.2fpp < %.2fpp (setup=%s)",
-        ctx.ticker, rs, config.MIN_RS_20D_VS_INDEX_PCT, setup,
+        ctx.ticker, rs, config.MIN_RS_20D_VS_INDEX_PCT, profile.name,
     )
     log_gate(ctx.ticker, "relative_strength", True,
              f"rs_20d {rs:+.1f}pp < {config.MIN_RS_20D_VS_INDEX_PCT}pp",
-             {"rs_20d": rs, "setup": setup})
+             {"rs_20d": rs, "setup": profile.name})
     record_entry_gate_cooldown(ctx.ticker, "relative_strength",
                                f"rs_20d {rs:+.1f}pp < {config.MIN_RS_20D_VS_INDEX_PCT}pp")
     return False
 
 
 def gate_breakout_volume(entry: dict, ctx: GateContext) -> bool:
-    """Breakout-resistance setups need vol_ratio ≥ MIN_BREAKOUT_VOLUME_RATIO to
-    distinguish real breakout from fake (no-volume tag-and-fade)."""
-    setup = (entry.get("setup_type") or "").lower()
-    if setup != "breakout_resistance":
+    """Volume-confirm gate for setups whose SetupProfile.requires_breakout_volume
+    is True. Distinguishes real breakout from no-volume tag-and-fade."""
+    if not get_profile(entry.get("setup_type")).requires_breakout_volume:
         return True
     vr = ctx.snap_md.get("volume_ratio")
     if not isinstance(vr, (int, float)) or vr >= config.MIN_BREAKOUT_VOLUME_RATIO:
@@ -166,20 +162,19 @@ def gate_breakout_volume(entry: dict, ctx: GateContext) -> bool:
 
 
 def gate_confluence(entry: dict, ctx: GateContext) -> bool:
-    """Deterministic confluence score 0-10 ≥ floor. Mean-rev family + squeeze
-    relaxed by 2 (Antithese zur Trend-Confluence). Stamps score + items on rec."""
-    setup = (entry.get("setup_type") or "").lower()
+    """Deterministic confluence score 0-10 ≥ floor. Floor adjusted per
+    SetupProfile.min_confluence_offset (mean-rev family relaxed -2).
+    Stamps score + items on rec."""
+    profile = get_profile(entry.get("setup_type"))
     snap = ctx.snap_md
     conf = compute_confluence(snap, ctx.regime) if snap else {
         "score": 0, "items": {}, "missing": ["no_data"],
     }
-    min_conf = config.MIN_CONFLUENCE_SCORE
-    if setup in ("mean_reversion", "reversal_oversold", "gap_fill", "pre_breakout_squeeze"):
-        min_conf = max(3, config.MIN_CONFLUENCE_SCORE - 2)
+    min_conf = max(3, config.MIN_CONFLUENCE_SCORE + profile.min_confluence_offset)
     if conf["score"] < min_conf:
         logger.warning(
             "Entry BLOCKED by confluence gate: %s score=%d < %d (setup=%s, missing: %s)",
-            ctx.ticker, conf["score"], min_conf, setup, ", ".join(conf.get("missing") or []),
+            ctx.ticker, conf["score"], min_conf, profile.name, ", ".join(conf.get("missing") or []),
         )
         log_gate(ctx.ticker, "confluence", True,
                  f"score {conf['score']}/10 < {min_conf}",

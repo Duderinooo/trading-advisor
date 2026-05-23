@@ -21,6 +21,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import config
+from config.setup_profiles import get_profile
 from core.portfolio import load_portfolio, edge_ok
 
 logger = logging.getLogger(__name__)
@@ -61,25 +62,25 @@ def _replay_trade(trade: dict) -> list[dict]:
         else:
             out.append({"gate": "sl_distance", "blocked": False, "reason": f"sl={d:.2f}×ATR"})
 
+    profile = get_profile(setup)
+
     # Confluence
     if isinstance(conf_score, (int, float)):
-        min_conf = config.MIN_CONFLUENCE_SCORE
-        if setup in ("mean_reversion", "reversal_oversold", "gap_fill"):
-            min_conf = max(3, config.MIN_CONFLUENCE_SCORE - 2)
+        min_conf = max(3, config.MIN_CONFLUENCE_SCORE + profile.min_confluence_offset)
         out.append({
             "gate": "confluence", "blocked": conf_score < min_conf,
             "reason": f"score={conf_score} vs MIN={min_conf}",
         })
 
     # RS gate
-    if isinstance(rs, (int, float)) and setup not in ("mean_reversion", "reversal_oversold", "gap_fill"):
+    if isinstance(rs, (int, float)) and not profile.rs_override:
         out.append({
             "gate": "relative_strength", "blocked": rs < config.MIN_RS_20D_VS_INDEX_PCT,
             "reason": f"rs={rs:+.1f}pp vs MIN={config.MIN_RS_20D_VS_INDEX_PCT}pp",
         })
 
     # Breakout volume
-    if setup == "breakout_resistance" and isinstance(vol_ratio, (int, float)):
+    if profile.requires_breakout_volume and isinstance(vol_ratio, (int, float)):
         out.append({
             "gate": "breakout_volume",
             "blocked": vol_ratio < config.MIN_BREAKOUT_VOLUME_RATIO,
