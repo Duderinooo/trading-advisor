@@ -69,10 +69,70 @@ def run_eod_summary() -> None:
             f"Kill-Switch: {ks_state} | DD-Halt: {dd_state}"
         )
         send_notification(msg)
+        _persist_eod_analytics_snapshots(portfolio)
         mark_eod_summary_done()
         logger.info("✅ EOD summary sent")
     except Exception:
         logger.exception("EOD summary failed")
+
+
+def _persist_eod_analytics_snapshots(portfolio: dict) -> None:
+    """Resolve yesterday's blocked-entry counterfactuals + persist a daily
+    snapshot of setup-expectancy + calibration. Fail-soft: any analytics error
+    must not break the EOD summary."""
+    try:
+        from core.llm.telemetry.outcomes import (
+            compute_pending_outcomes, gate_false_negative_rates,
+        )
+        summary = compute_pending_outcomes()
+        if summary["resolved"]:
+            logger.info(
+                "EOD outcomes: %d resolved (%d would-have-won), %d still pending",
+                summary["resolved"], summary["false_neg_count"], summary["remaining"],
+            )
+            fnr = gate_false_negative_rates()
+            if fnr:
+                logger.info("Gate false-negative rates: %s", fnr)
+    except Exception:
+        logger.exception("EOD outcomes resolution failed")
+
+    try:
+        _append_expectancy_snapshot(portfolio)
+    except Exception:
+        logger.exception("EOD expectancy snapshot failed")
+
+
+def _append_expectancy_snapshot(portfolio: dict) -> None:
+    """Append today's setup-expectancy + calibration metrics to
+    analytics/setup_expectancy_history.jsonl. Daily resolution; cheap rolling
+    snapshot for tuning audits."""
+    import json
+    import os
+    from pathlib import Path
+    from core.portfolio import compute_hit_stats
+
+    stats = compute_hit_stats(
+        portfolio.get("closed_trades", []), portfolio.get("cash_movements", []),
+    )
+    if not stats:
+        return
+    snapshot = {
+        "date": str(date.today()),
+        "n_trades": stats.get("total"),
+        "win_rate": stats.get("win_rate"),
+        "avg_r": stats.get("avg_r"),
+        "by_setup_type": stats.get("by_setup_type"),
+        "by_regime": stats.get("by_regime"),
+        "calibration": stats.get("calibration"),
+        "kelly_mult": stats.get("kelly_mult"),
+    }
+    analytics_dir = (
+        Path(os.path.dirname(os.path.abspath(__file__))) / ".." / "analytics"
+    ).resolve()
+    analytics_dir.mkdir(parents=True, exist_ok=True)
+    out_path = analytics_dir / "setup_expectancy_history.jsonl"
+    with out_path.open("a") as f:
+        f.write(json.dumps(snapshot) + "\n")
 
 
 def run_weekend_summary() -> None:

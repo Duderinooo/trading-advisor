@@ -120,5 +120,24 @@ def run_entry_gates(entry: dict, ctx: GateContext) -> dict | None:
 
     for gate in chain:
         if not gate(entry, ctx):
+            _record_outcome_if_measurable(entry, ctx, gate.__name__)
             return None
     return entry
+
+
+def _record_outcome_if_measurable(entry: dict, ctx: GateContext, gate_name: str) -> None:
+    """Capture blocked entry for next-day counterfactual measurement.
+    Fail-soft: outcome-tracking must never block the trading flow."""
+    try:
+        from core.llm.telemetry.outcomes import record_blocked_entry
+        record_blocked_entry(
+            gate_name=gate_name,
+            ticker=ctx.ticker,
+            entry_price=entry.get("entry_price"),
+            stop_loss=entry.get("stop_loss"),
+            take_profit=entry.get("take_profit"),
+            setup_type=entry.get("setup_type"),
+            regime=ctx.regime,
+        )
+    except Exception:
+        logger.exception("Outcome record failed for %s/%s", ctx.ticker, gate_name)
