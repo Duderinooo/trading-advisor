@@ -285,6 +285,11 @@ def main() -> None:
     logger.info("Weekend News Scan: Sonntag 18-22 CET (geo-news catch-up)")
     logger.info("=" * 50)
 
+    # Enable gate_log writes (off by default so test runs don't pollute
+    # production gate_blocks.jsonl with synthetic recs — incident
+    # 2026-05-23). Must be set before any handler imports run_entry_gates.
+    os.environ.setdefault("TA_GATE_LOG_ENABLED", "1")
+
     from core.db import init_schema
     init_schema()
     startup_cleanup()

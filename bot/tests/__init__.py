@@ -8,3 +8,4 @@ functions in core.portfolio / core.events / core.livefeed / macro are covered.
 I/O paths (load/save_portfolio, Claude calls, Telegram, market_data fetch) are
 out of scope by design — see CLAUDE.md "Test surface".
 """
+

@@ -12,6 +12,7 @@ Schema:
 
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -19,6 +20,13 @@ logger = logging.getLogger(__name__)
 
 _LOG_PATH = Path(__file__).resolve().parent.parent / "gate_blocks.jsonl"
 _MAX_BYTES = 5 * 1024 * 1024  # 5MB → rotate to .1 backup, keep one
+
+# Test isolation. main.py sets TA_GATE_LOG_ENABLED=1 at startup so the
+# production bot writes gate decisions; tests run without that flag and
+# thus skip the writes. Prevents incidents like 2026-05-23 where
+# production gate_blocks.jsonl had 92 BAS.DE blocks in one day — all
+# from test_decision_result.py runs during the dev session.
+_ENABLED_ENV_KEY = "TA_GATE_LOG_ENABLED"
 
 
 def _rotate_if_needed():
@@ -34,6 +42,8 @@ def _rotate_if_needed():
 
 def log_gate(ticker: str, gate: str, blocked: bool, reason: str = "", context: dict | None = None):
     """Append one gate-decision line to gate_blocks.jsonl. Never raises."""
+    if not os.environ.get(_ENABLED_ENV_KEY):
+        return
     try:
         _rotate_if_needed()
         rec = {

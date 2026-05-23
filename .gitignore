@@ -27,7 +27,7 @@ trading.log
 
 # Gate-decision JSONL log (rotated locally, regenerated each run)
 gate_blocks.jsonl
-gate_blocks.jsonl.1
+gate_blocks.jsonl.*
 
 # Claude call audit (regenerated each run, contains full system prompts)
 claude_calls.jsonl
