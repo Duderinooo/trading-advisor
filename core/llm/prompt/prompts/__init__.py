@@ -1,0 +1,31 @@
+"""core.llm.prompt.prompts — prompt strings + tool schemas (4-layer architecture).
+
+Split from monolithic core/llm/prompt/prompts.py (452 LOC). Public re-exports
+preserve every previously-importable name.
+"""
+
+from core.llm.prompt.prompts.modes import (
+    EVENT_TRIGGER_PROMPT, MORNING_PREP_PROMPT, OPENING_CHECK_PROMPT,
+)
+from core.llm.prompt.prompts.red_team import RED_TEAM_SYSTEM, RED_TEAM_TOOL
+from core.llm.prompt.prompts.strategy import (
+    ANALYST_RULES, CONVICTION_MAP, CORE_PHILOSOPHY, ENTRY_STATE_RULES,
+    EXECUTION_RULES, EXIT_RULES, LONG_FEATURES, QUALITY_FAMILY_RULES,
+    RED_FLAGS_DOC, SETUP_TYPES_RULES, STRATEGY_PROMPT, STRATEGY_SYSTEM,
+    TOOL_ROLES,
+)
+from core.llm.prompt.prompts.tools import (
+    RECOMMEND_ADD_TOOL, RECOMMEND_ENTRY_TOOL, RECOMMEND_EXIT_TOOL,
+    SUBMIT_PASS_TOOL, UPDATE_TARGETS_TOOL, WATCH_LEVELS_TOOL,
+)
+
+__all__ = [
+    "STRATEGY_SYSTEM", "STRATEGY_PROMPT", "CORE_PHILOSOPHY", "EXECUTION_RULES",
+    "ENTRY_STATE_RULES", "LONG_FEATURES", "RED_FLAGS_DOC", "CONVICTION_MAP",
+    "QUALITY_FAMILY_RULES", "ANALYST_RULES", "EXIT_RULES", "SETUP_TYPES_RULES",
+    "TOOL_ROLES",
+    "MORNING_PREP_PROMPT", "OPENING_CHECK_PROMPT", "EVENT_TRIGGER_PROMPT",
+    "WATCH_LEVELS_TOOL", "RECOMMEND_ENTRY_TOOL", "RECOMMEND_ADD_TOOL",
+    "RECOMMEND_EXIT_TOOL", "UPDATE_TARGETS_TOOL", "SUBMIT_PASS_TOOL",
+    "RED_TEAM_SYSTEM", "RED_TEAM_TOOL",
+]
