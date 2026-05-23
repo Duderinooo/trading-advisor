@@ -859,7 +859,7 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # stayed empty until 08:00 next day).
         if len(portfolio["open_trades"]) >= 2:
             try:
-                from core.analyzer import compute_correlation_snapshot
+                from core.metrics import compute_correlation_snapshot
                 snap = compute_correlation_snapshot(portfolio)
                 if snap is not None:
                     portfolio["correlation_matrix"] = snap
@@ -980,7 +980,7 @@ async def close_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # ticker. Bug 2026-05-07: SIE.DE + RWE.DE matrix persisted in dashboard
         # for 2 days after both were closed because /close path didn't refresh.
         try:
-            from core.analyzer import compute_correlation_snapshot
+            from core.metrics import compute_correlation_snapshot
             snap = compute_correlation_snapshot(portfolio)
             if snap is None:
                 portfolio.pop("correlation_matrix", None)
