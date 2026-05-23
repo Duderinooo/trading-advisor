@@ -130,9 +130,9 @@ def analyze_portfolio(
     )
 
     # Paper-portfolio mirror outside the real-portfolio lock (own paper_lock).
-    if recs["entry"] is not None:
+    if recs.entry is not None:
         try:
-            auto_paper_open(recs["entry"])
+            auto_paper_open(recs.entry)
         except Exception:
             logger.exception("paper-portfolio auto-open failed")
 

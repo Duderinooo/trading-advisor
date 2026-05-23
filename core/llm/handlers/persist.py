@@ -13,6 +13,7 @@ from core.portfolio import (
     portfolio_lock, load_portfolio, save_portfolio,
     max_affordable_share_price_eur,
 )
+from core.llm.handlers.parser import Recs
 from core.llm.prompt.context import RequestContext
 
 
@@ -22,14 +23,13 @@ logger = logging.getLogger(__name__)
 def persist_results(
     ctx: RequestContext,
     *,
-    recs: dict,
+    recs: Recs,
     new_levels: list | None,
     corr_matrix: dict | None,
     trace: dict | None,
     trace_k: str | None,
 ) -> None:
-    """Single lock-scoped write. recs is {entry, add, update, exit} from
-    response_parser.dispatch_tool_calls."""
+    """Single lock-scoped write. recs is the Recs container from dispatch_tool_calls."""
     with portfolio_lock:
         fresh = load_portfolio()
         if corr_matrix is not None:
@@ -40,14 +40,14 @@ def persist_results(
             _persist_watch_levels(
                 fresh, new_levels, ctx.excluded, ctx.market_data, ctx.mode, trace,
             )
-        if recs["entry"] is not None:
-            fresh.setdefault("pending_recommendations", []).append(recs["entry"])
-        if recs["add"] is not None:
-            fresh.setdefault("pending_recommendations", []).append(recs["add"])
-        if recs["update"] is not None:
-            fresh.setdefault("pending_recommendations", []).append(recs["update"])
-        if recs["exit"] is not None:
-            _persist_exit_with_cooldown_dedupe(fresh, recs["exit"])
+        if recs.entry is not None:
+            fresh.setdefault("pending_recommendations", []).append(recs.entry)
+        if recs.add is not None:
+            fresh.setdefault("pending_recommendations", []).append(recs.add)
+        if recs.update is not None:
+            fresh.setdefault("pending_recommendations", []).append(recs.update)
+        if recs.exit is not None:
+            _persist_exit_with_cooldown_dedupe(fresh, recs.exit)
         fresh["last_analysis"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         save_portfolio(fresh)
 

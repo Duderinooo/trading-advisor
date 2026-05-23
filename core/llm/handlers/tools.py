@@ -1,8 +1,11 @@
 """Tool-use handlers: process recommend_entry/add/update/exit calls from Claude.
 
-Owns all engine-gate enforcement on entry recs (14 gates), plus the smaller
-add/update/exit flows. Helper functions for red-team critique, thesis-decay
-confirmation, paper-portfolio mirror, and thesis-degradation diff live here too.
+Entry handler delegates the 23-gate engine pipeline to core.llm.handlers.gates;
+this module only assembles the final rec dict + sends the Telegram alert on
+full pass. Add/update/exit handlers are short enough to stay inline.
+
+Helpers (red-team critique, thesis-decay confirmation, paper-portfolio mirror,
+thesis-degradation diff, JSON dump/compact) also live here.
 
 Stateless: handlers receive market_data + portfolio snapshot and return a
 dict to persist (or None on block). The analyzer orchestrator does the actual
@@ -23,14 +26,7 @@ from core.llm.telemetry.api_usage import increment_usage
 from core.llm.telemetry.call_log import log_claude_call
 from core.gate_log import log_gate
 from core.llm.prompt.prompts import RED_TEAM_SYSTEM, RED_TEAM_TOOL
-from core.portfolio import (
-    portfolio_lock, load_portfolio, suggest_position_size,
-    compute_hit_stats, compute_sector_exposure,
-    risk_halt_status, edge_ok, compute_confluence,
-    compute_correlations, dd_scaling_factor,
-    record_entry_gate_cooldown,
-)
-from core.data.market_data import get_earnings_warnings, get_returns
+from core.portfolio import load_portfolio
 
 
 logger = logging.getLogger(__name__)
@@ -308,7 +304,8 @@ def auto_paper_open(rec: dict) -> None:
         )
 
 
-# ---------- Entry recommendation handler (14 engine gates) ----------
+
+# ---------- Entry recommendation handler ----------
 
 def handle_entry_recommendation(
     entry: dict,
@@ -320,451 +317,38 @@ def handle_entry_recommendation(
     cash: float,
     model: str,
 ) -> dict | None:
-    """Run all engine gates on a recommend_entry tool-call.
+    """Run the engine-gate pipeline + assemble the persisted rec on full pass.
 
-    Returns persisted rec dict on success (with status/regime/version stamps +
-    message_id from Telegram alert), or None when any gate blocks. Mutates
-    `entry` dict in-place when clamping (SL widening, size shrinking).
-    """
-    # ---- Validation: required fields (catches truncated tool_use) ----
-    _required = ("ticker", "entry_price", "stop_loss", "take_profit",
-                 "size_eur", "conviction", "p_win", "thesis",
-                 "setup_type", "top_fail_mode")
-    _missing = [k for k in _required if not entry.get(k)]
-    if _missing:
-        log_gate(
-            (entry.get("ticker") or "?").upper(),
-            "incomplete_rec", True,
-            f"recommend_entry missing required fields: {','.join(_missing)} — "
-            f"likely max_tokens truncation",
-            {"missing": _missing, "received_keys": sorted(entry.keys())},
-        )
-        logger.error(
-            "recommend_entry DROPPED: %s missing %s (truncated tool_use?)",
-            entry.get("ticker"), _missing,
-        )
-        return None
+    Gate enforcement lives in core.llm.handlers.gates. Returns the rec dict
+    (with status/regime/version stamps + Telegram message_id) on success, or
+    None when any gate blocks. Mutates `entry` in-place during gate clamps."""
+    from core.llm.handlers.gates import build_gate_context, run_entry_gates
 
-    # ---- Already-open silent drop (pyramiding goes via recommend_add) ----
-    _t = (entry.get("ticker") or "").upper()
-    _open_tickers = {
-        (tr.get("ticker") or "").upper()
-        for tr in load_portfolio().get("open_trades", [])
-    }
-    if _t in _open_tickers:
-        log_gate(
-            _t, "already_open", True,
-            "ticker has open position — re-entry suppressed (use recommend_add_to_position)",
-            {},
-        )
-        logger.info("Entry suppressed: %s already open (Claude should use recommend_add)", _t)
-        return None
-
-    # ---- Sonnet→Haiku event-watch coupling ----
-    if mode == "event":
-        _watch_match = next(
-            (w for w in load_portfolio().get("watch_levels", [])
-             if (w.get("ticker") or "").upper() == _t),
-            None,
-        )
-        if not _watch_match:
-            logger.warning(
-                "Entry BLOCKED by event-watch-coupling: %s has no morning watch_level", _t,
-            )
-            log_gate(
-                _t, "event_watch_coupling", True,
-                "no morning watch_level for event-mode entry",
-                {"ticker": _t},
-            )
-            return None
-        # Stamp morning thesis so downstream carries Sonnet-vetted version.
-        morning_thesis = _watch_match.get("thesis")
-        if morning_thesis:
-            entry["watch_thesis"] = morning_thesis
-
-    # ---- Risk halt (kill-switch, daily loss, drawdown, heat) ----
-    _pf_snapshot = load_portfolio()
-    _halt = risk_halt_status(_pf_snapshot)
-    if _halt["halt"]:
-        reason = " | ".join(_halt["reasons"])
-        logger.warning("Entry BLOCKED by risk halt: %s", reason)
-        log_gate(_t, "risk_halt", True, reason, _halt.get("metrics"))
-        if "risk_halt" in config.GATE_BLOCK_NOTIFY_WHITELIST:
-            _notify(f"⛔ *ENTRY BLOCKIERT* ({_t})\n{reason}")
-        return None
-
-    # ---- Regime gate ----
-    if config.RISK_OFF_BLOCKS_LONGS and regime.startswith("RISK_OFF"):
-        direction = str(entry.get("direction") or "LONG").upper()
-        if direction == "LONG":
-            logger.warning("Entry BLOCKED by regime gate: RISK_OFF + LONG")
-            log_gate(_t, "regime", True,
-                     f"RISK_OFF + LONG (regime={regime})", {"regime": regime})
-            return None
-
-    # ---- No-entry-zone (open/close noise windows) ----
-    _now = datetime.now()
-    _now_min = _now.hour * 60 + _now.minute
-    _blocked_window = None
-    for sh, sm, eh, em in config.NO_ENTRY_WINDOWS:
-        if sh * 60 + sm <= _now_min < eh * 60 + em:
-            _blocked_window = f"{sh:02d}:{sm:02d}–{eh:02d}:{em:02d}"
-            break
-    if _blocked_window:
-        logger.warning("Entry BLOCKED by no-entry-zone: %s in window %s", _t, _blocked_window)
-        log_gate(_t, "no_entry_zone", True,
-                 f"window {_blocked_window}", {"window": _blocked_window})
-        return None
-
-    # ---- Extended-UP-Day gate (chase-protection, asymmetric) ----
-    _snap_md = market_data.get(_t) or {}
-    _change_pct = _snap_md.get("change_pct")
-    _atr_pct = _snap_md.get("atr14_pct")
-    if (isinstance(_change_pct, (int, float))
-            and isinstance(_atr_pct, (int, float)) and _atr_pct > 0
-            and _change_pct > 1.5 * _atr_pct):
-        logger.warning(
-            "Entry BLOCKED by extended-UP-day gate: %s change=%+.2f%% > 1.5×ATR%%=%.2f%%",
-            _t, _change_pct, 1.5 * _atr_pct,
-        )
-        log_gate(_t, "extended_up_day", True,
-                 f"change_pct {_change_pct:+.2f}% > 1.5×atr14_pct ({1.5 * _atr_pct:.2f}%)",
-                 {"change_pct": _change_pct, "atr14_pct": _atr_pct,
-                  "threshold_pct": 1.5 * _atr_pct})
-        return None
-
-    # ---- SL-distance sanity (clamp too-tight, reject too-wide) ----
-    _entry_p = float(entry.get("entry_price") or 0)
-    _sl = float(entry.get("stop_loss") or 0)
-    _atr = _snap_md.get("atr14")
-    if _entry_p > _sl > 0 and isinstance(_atr, (int, float)) and _atr > 0:
-        _sl_dist_atr = (_entry_p - _sl) / _atr
-        if _sl_dist_atr < config.MIN_SL_DISTANCE_ATR:
-            _clamped_sl = round(_entry_p - config.MIN_SL_DISTANCE_ATR * _atr, 2)
-            logger.warning(
-                "SL clamped (too tight): %s %.2f→%.2f (%.2f×ATR → %.2f×ATR)",
-                _t, _sl, _clamped_sl, _sl_dist_atr, config.MIN_SL_DISTANCE_ATR,
-            )
-            log_gate(_t, "sl_distance", False,
-                     f"SL clamped {_sl_dist_atr:.2f}×ATR → {config.MIN_SL_DISTANCE_ATR}×ATR",
-                     {"sl_dist_atr": round(_sl_dist_atr, 2), "kind": "tight_clamped",
-                      "sl_from": _sl, "sl_to": _clamped_sl})
-            entry["stop_loss"] = _clamped_sl
-        elif _sl_dist_atr > config.MAX_SL_DISTANCE_ATR:
-            logger.warning(
-                "Entry BLOCKED by SL-too-wide: %s SL %.2f×ATR > %.2f×ATR",
-                _t, _sl_dist_atr, config.MAX_SL_DISTANCE_ATR,
-            )
-            log_gate(_t, "sl_distance", True,
-                     f"SL {_sl_dist_atr:.2f}×ATR > {config.MAX_SL_DISTANCE_ATR}",
-                     {"sl_dist_atr": round(_sl_dist_atr, 2), "kind": "wide"})
-            return None
-
-    # ---- Edge gate (with Brier-haircut, cap ±0.20) ----
-    _HAIRCUT_CAP = 0.20
-    _p_raw = entry.get("p_win")
-    _stats = compute_hit_stats(
-        _pf_snapshot.get("closed_trades", []), _pf_snapshot.get("cash_movements", []),
+    gctx = build_gate_context(
+        entry, mode=mode, market_data=market_data, market_ctx=market_ctx,
+        regime=regime, cash=cash, model=model,
     )
-    _haircut = 0.0
-    if _stats and _stats.get("calibration"):
-        _haircut = _stats["calibration"].get("haircut") or 0.0
-    if isinstance(_p_raw, (int, float)) and _haircut != 0:
-        _capped_haircut = max(-_HAIRCUT_CAP, min(_HAIRCUT_CAP, _haircut))
-        _p_adj = max(0.01, min(0.99, _p_raw - _capped_haircut))
-    else:
-        _p_adj = _p_raw
-    _ok, _edge = edge_ok(
-        _p_adj, entry.get("entry_price"), entry.get("stop_loss"), entry.get("take_profit"),
-    )
-    if not _ok:
-        logger.warning(
-            "Entry BLOCKED by edge gate: edge=%.3f < %.3f (p_raw=%s, haircut=%s, p_adj=%s)",
-            _edge, config.MIN_EXPECTED_EDGE, _p_raw, _haircut, _p_adj,
-        )
-        log_gate(
-            _t, "edge", True,
-            f"edge {_edge:.3f} < {config.MIN_EXPECTED_EDGE}",
-            {"edge": round(_edge, 3), "p_raw": _p_raw, "p_adj": _p_adj, "haircut": _haircut},
-        )
-        record_entry_gate_cooldown(_t, "edge", f"edge {_edge:.3f} < {config.MIN_EXPECTED_EDGE}")
+    passed = run_entry_gates(entry, gctx)
+    if passed is None:
         return None
+    return _assemble_entry_rec_and_alert(passed, gctx)
 
-    # ---- Sector cluster gate ----
-    _sector = config.SECTOR_MAP.get(_t)
-    if _sector:
-        _exposure = compute_sector_exposure(_pf_snapshot)
-        _current = _exposure.get(_sector, [])
-        if len(_current) >= config.MAX_POSITIONS_PER_SECTOR and _t not in _current:
-            logger.warning(
-                "Entry BLOCKED by sector gate: %s in %s, already %d open (%s)",
-                _t, _sector, len(_current), ", ".join(_current),
-            )
-            log_gate(_t, "sector", True,
-                     f"{_sector} {len(_current)}/{config.MAX_POSITIONS_PER_SECTOR}",
-                     {"sector": _sector, "current": _current})
-            return None
 
-    # ---- Adaptive-Kelly clamp (modifier, not blocker) ----
-    _p_clamp = entry.get("p_win")
-    _entry_c = float(entry.get("entry_price") or 0)
-    _sl_c = float(entry.get("stop_loss") or 0)
-    _tp_c = entry.get("take_profit")
-    _tp1 = _tp_c[0] if isinstance(_tp_c, list) and _tp_c else (
-        _tp_c if isinstance(_tp_c, (int, float)) else None
-    )
-    if (isinstance(_p_clamp, (int, float)) and 0 < _p_clamp < 1
-            and _entry_c > _sl_c > 0 and isinstance(_tp1, (int, float)) and _tp1 > _entry_c):
-        _r2r = (_tp1 - _entry_c) / (_entry_c - _sl_c)
-        _km = (_stats or {}).get("kelly_mult") or config.KELLY_FRACTION
-        _atr_pct_kelly = _snap_md.get("atr14_pct")
-        _kelly_cap = suggest_position_size(
-            _atr_pct_kelly, cash, p_win=_p_clamp, reward_to_risk=_r2r, kelly_mult=_km,
-        )
-        _orig_size = float(entry.get("size_eur") or 0)
-        if _orig_size > _kelly_cap > 0:
-            entry["size_eur"] = _kelly_cap
-            entry["kelly_clamp"] = {
-                "kelly_mult": _km, "r2r": round(_r2r, 2),
-                "original_size_eur": _orig_size, "capped_size_eur": _kelly_cap,
-            }
-            logger.warning(
-                "Kelly-clamp: size €%.2f → €%.2f (kelly_mult=%.2f, p=%.2f, R:R=%.2f)",
-                _orig_size, _kelly_cap, _km, _p_clamp, _r2r,
-            )
-
-    # ---- VIX size-dampening (modifier) ----
-    _vix = (market_ctx.get("^VIX") or {}).get("price")
-    _vix_factor = 1.0
-    if isinstance(_vix, (int, float)):
-        if _vix > 30:
-            _vix_factor = 0.25
-        elif _vix > 20:
-            _vix_factor = 0.5
-    if _vix_factor < 1.0:
-        _orig = float(entry.get("size_eur") or 0)
-        if _orig > 0:
-            entry["size_eur"] = round(_orig * _vix_factor, 2)
-            entry["vix_dampener"] = {
-                "vix": _vix, "factor": _vix_factor, "original_size_eur": _orig,
-            }
-            logger.warning(
-                "VIX-dampener: size €%.2f → €%.2f (VIX=%.2f, factor=%.2f)",
-                _orig, entry["size_eur"], _vix, _vix_factor,
-            )
-
-    # ---- Weekly-trend gate ----
-    _direction = str(entry.get("direction") or "LONG").upper()
-    _wk = _snap_md.get("wk_trend")
-    if _direction == "LONG" and _wk == "DOWN":
-        logger.warning("Entry BLOCKED by weekly-trend gate: %s LONG vs wk_trend=DOWN", _t)
-        log_gate(_t, "weekly_trend", True, "LONG vs wk_trend=DOWN", {"wk_trend": _wk})
-        return None
-
-    # ---- Earnings hard-block (T-N to T+0, override: earnings_drift) ----
-    _setup = (entry.get("setup_type") or "").lower()
-    if _setup != "earnings_drift":
-        _ew = get_earnings_warnings([_t], days_ahead=config.EARNINGS_ENTRY_BLOCK_DAYS)
-        if _ew:
-            _w = _ew[0]
-            logger.warning(
-                "Entry BLOCKED by earnings gate: %s in %d Tag(en) (%s)",
-                _t, _w["days_until"], _w["earnings_date"],
-            )
-            log_gate(_t, "earnings", True,
-                     f"earnings in {_w['days_until']}d",
-                     {"days_until": _w["days_until"], "earnings_date": _w["earnings_date"]})
-            return None
-
-    # ---- Relative-Strength gate (override: mean_rev / reversal / gap_fill / squeeze) ----
-    _rs = _snap_md.get("rs_20d_vs_index_pct")
-    _rs_override_setups = {
-        "mean_reversion", "reversal_oversold", "gap_fill", "pre_breakout_squeeze",
-    }
-    if isinstance(_rs, (int, float)) and _setup not in _rs_override_setups:
-        if _rs < config.MIN_RS_20D_VS_INDEX_PCT:
-            logger.warning(
-                "Entry BLOCKED by RS gate: %s rs_20d=%+.2fpp < %.2fpp (setup=%s)",
-                _t, _rs, config.MIN_RS_20D_VS_INDEX_PCT, _setup,
-            )
-            log_gate(_t, "relative_strength", True,
-                     f"rs_20d {_rs:+.1f}pp < {config.MIN_RS_20D_VS_INDEX_PCT}pp",
-                     {"rs_20d": _rs, "setup": _setup})
-            record_entry_gate_cooldown(_t, "relative_strength",
-                                       f"rs_20d {_rs:+.1f}pp < {config.MIN_RS_20D_VS_INDEX_PCT}pp")
-            return None
-
-    # ---- Volume-Confirmation für Breakouts ----
-    if _setup == "breakout_resistance":
-        _vr = _snap_md.get("volume_ratio")
-        if isinstance(_vr, (int, float)) and _vr < config.MIN_BREAKOUT_VOLUME_RATIO:
-            logger.warning(
-                "Entry BLOCKED by volume gate: %s breakout vol_ratio=%.2f < %.2f",
-                _t, _vr, config.MIN_BREAKOUT_VOLUME_RATIO,
-            )
-            log_gate(_t, "breakout_volume", True,
-                     f"vol_ratio {_vr:.2f} < {config.MIN_BREAKOUT_VOLUME_RATIO}",
-                     {"vol_ratio": _vr})
-            return None
-
-    # ---- Confluence-Score gate (mean-rev family relaxed by 2) ----
-    _conf = compute_confluence(_snap_md, regime) if _snap_md else {
-        "score": 0, "items": {}, "missing": ["no_data"],
-    }
-    _min_conf = config.MIN_CONFLUENCE_SCORE
-    if _setup in ("mean_reversion", "reversal_oversold", "gap_fill", "pre_breakout_squeeze"):
-        _min_conf = max(3, config.MIN_CONFLUENCE_SCORE - 2)
-    if _conf["score"] < _min_conf:
-        logger.warning(
-            "Entry BLOCKED by confluence gate: %s score=%d < %d (setup=%s, missing: %s)",
-            _t, _conf["score"], _min_conf, _setup, ", ".join(_conf.get("missing") or []),
-        )
-        log_gate(_t, "confluence", True,
-                 f"score {_conf['score']}/10 < {_min_conf}",
-                 {"score": _conf["score"], "min": _min_conf,
-                  "missing": _conf.get("missing") or []})
-        return None
-    entry["confluence_score"] = _conf["score"]
-    entry["confluence_items"] = _conf["items"]
-
-    # ---- Correlation gate ----
-    _holdings = [
-        tr.get("ticker") for tr in _pf_snapshot.get("open_trades", []) if tr.get("ticker")
-    ]
-    _holdings = [h for h in _holdings if h and h.upper() != _t]
-    if _holdings:
-        try:
-            _returns = get_returns([_t] + _holdings, days=config.CORRELATION_LOOKBACK_DAYS)
-            _corrs = compute_correlations(_returns, _t)
-            _high = {h: c for h, c in _corrs.items() if c >= config.MAX_CORRELATION}
-            if len(_high) > config.MAX_CORRELATED_HOLDINGS:
-                logger.warning(
-                    "Entry BLOCKED by correlation gate: %s vs %s (corrs %s)",
-                    _t, list(_high.keys()), _high,
-                )
-                log_gate(_t, "correlation", True,
-                         f"{len(_high)} corr ≥ {config.MAX_CORRELATION}",
-                         {"high_corrs": _high})
-                return None
-            if _corrs:
-                entry["correlations"] = _corrs
-        except Exception as e:
-            logger.warning("Correlation check failed for %s: %s", _t, e)
-
-    # ---- Red-team critic (KILL or low confidence → block + cooldown) ----
-    if config.RED_TEAM_ENABLED:
-        _critique = run_red_team(entry, _snap_md, regime, model)
-        if isinstance(_critique, dict):
-            _verdict = (_critique.get("verdict") or "").upper()
-            _conf_rt = _critique.get("confidence_thesis_holds")
-            _reason_rt = _critique.get("reason") or ""
-            _modes = _critique.get("top_failure_modes") or []
-            _kill = (
-                _verdict == "KILL"
-                or (isinstance(_conf_rt, (int, float)) and _conf_rt < config.RED_TEAM_MIN_CONFIDENCE)
-            )
-            if _kill:
-                logger.warning(
-                    "Entry BLOCKED by red-team: %s verdict=%s conf=%s reason=%s",
-                    _t, _verdict, _conf_rt, _reason_rt,
-                )
-                log_gate(_t, "red_team", True,
-                         f"verdict={_verdict} conf={_conf_rt}",
-                         {"verdict": _verdict, "confidence": _conf_rt,
-                          "failure_modes": _modes, "reason": _reason_rt})
-                record_entry_gate_cooldown(_t, "red_team",
-                                           f"verdict={_verdict} conf={_conf_rt}")
-                return None
-            entry["red_team_review"] = {
-                "verdict": _verdict,
-                "confidence_thesis_holds": _conf_rt,
-                "top_failure_modes": _modes,
-                "reason": _reason_rt,
-            }
-
-    # ---- DD-soft scaling (modifier) ----
-    _scale = dd_scaling_factor(_pf_snapshot)
-    if _scale < 1.0:
-        _orig_dd = float(entry.get("size_eur") or 0)
-        if _orig_dd > 0:
-            entry["size_eur"] = round(_orig_dd * _scale, 2)
-            entry["dd_soft_scale"] = {"factor": _scale, "original_size_eur": _orig_dd}
-            logger.warning(
-                "DD-soft scaling: size €%.2f → €%.2f (factor=%.2f)",
-                _orig_dd, entry["size_eur"], _scale,
-            )
-
-    # ---- Auto-split single TP at 1R ----
-    if config.AUTO_SPLIT_SINGLE_TP_AT_1R:
-        _tp = entry.get("take_profit")
-        _e = float(entry.get("entry_price") or 0)
-        _s = float(entry.get("stop_loss") or 0)
-        _risk = _e - _s if (_e > _s > 0) else 0
-        _tp_list = _tp if isinstance(_tp, list) else ([_tp] if _tp else [])
-        if len(_tp_list) == 1 and _risk > 0:
-            _tp1_new = round(_e + _risk, 2)
-            _tp2 = float(_tp_list[0])
-            if _tp1_new < _tp2:
-                entry["take_profit"] = [_tp1_new, _tp2]
-                entry["auto_split_tp"] = True
-                logger.info(
-                    "Auto-split TP for partial scale-out: %s TP1=%.2f (1R) + TP2=%.2f (orig)",
-                    _t, _tp1_new, _tp2,
-                )
-
-    # ---- Whole-share hard gate (post all size-modifiers) ----
-    _e = float(entry.get("entry_price") or 0)
-    _size_ws = float(entry.get("size_eur") or 0)
-    _whole = int(_size_ws / _e) if _e > 0 else 0
-    if _whole < 1:
-        _frac = (_size_ws / _e) if _e > 0 else 0
-        logger.warning(
-            "Entry BLOCKED by whole_shares: %s €%.2f / size €%.2f = %.3f Stk (<1, no SL on TR)",
-            _t, _e, _size_ws, _frac,
-        )
-        log_gate(_t, "whole_shares", True,
-                 f"price €{_e:.2f} > size €{_size_ws:.2f} (only {_frac:.3f} shares)",
-                 {"price": _e, "size_eur": _size_ws, "whole_shares": round(_frac, 3)})
-        return None
-
-    # ---- Fixed-fee gate (TP1 gross ≥ 2× fee + min_net) ----
-    _tp_fee = entry.get("take_profit")
-    _tp1_fee = (
-        float(_tp_fee[0]) if isinstance(_tp_fee, list) and _tp_fee
-        else (float(_tp_fee) if isinstance(_tp_fee, (int, float)) else 0)
-    )
-    _shares_fee = int(_size_ws / _e) if _e > 0 else 0
-    _gross_profit_eur = (_tp1_fee - _e) * _shares_fee if _tp1_fee > _e > 0 else 0
-    _fees_roundtrip = 2 * config.FIXED_FEE_EUR_PER_SIDE
-    _required_eur = _fees_roundtrip + config.MIN_NET_PROFIT_EUR
-    if _gross_profit_eur < _required_eur:
-        logger.warning(
-            "Entry BLOCKED by fee_gate: %s gross @TP1 €%.2f < required €%.2f "
-            "(fees €%.2f + min_net €%.2f); shares=%d, TP1=%.2f, entry=%.2f",
-            _t, _gross_profit_eur, _required_eur, _fees_roundtrip,
-            config.MIN_NET_PROFIT_EUR, _shares_fee, _tp1_fee, _e,
-        )
-        log_gate(_t, "fee_gate", True,
-                 f"gross @TP1 €{_gross_profit_eur:.2f} < €{_required_eur:.2f}",
-                 {"gross_profit_eur": round(_gross_profit_eur, 2),
-                  "fees_roundtrip_eur": _fees_roundtrip,
-                  "min_net_eur": config.MIN_NET_PROFIT_EUR,
-                  "shares": _shares_fee, "tp1": _tp1_fee, "entry": _e})
-        return None
-
-    # ---- All gates passed → assemble rec + send Telegram alert ----
+def _assemble_entry_rec_and_alert(entry: dict, gctx) -> dict:
+    """Stamp regime/version metadata, render the Telegram entry-alert, log to
+    MemPalace. Called only after all engine gates pass."""
     log_gate(
-        _t, "all_passed", False, "entry approved",
+        gctx.ticker, "all_passed", False, "entry approved",
         {"size_eur": entry.get("size_eur"), "conviction": entry.get("conviction"),
          "p_win": entry.get("p_win")},
     )
-    _vix_at_entry = (market_ctx.get("^VIX") or {}).get("price")
-    _spy = market_ctx.get("SPY5.DE") or {}
-    _spy_price = _spy.get("price")
-    _spy_ma200 = _spy.get("ma200")
-    _spy_above_ma200 = (
-        bool(_spy_price > _spy_ma200)
-        if isinstance(_spy_price, (int, float)) and isinstance(_spy_ma200, (int, float))
+    vix_at_entry = (gctx.market_ctx.get("^VIX") or {}).get("price")
+    spy = gctx.market_ctx.get("SPY5.DE") or {}
+    spy_price = spy.get("price")
+    spy_ma200 = spy.get("ma200")
+    spy_above_ma200 = (
+        bool(spy_price > spy_ma200)
+        if isinstance(spy_price, (int, float)) and isinstance(spy_ma200, (int, float))
         else None
     )
     from core.portfolio import PROMPT_VERSION, STRATEGY_VERSION
@@ -772,73 +356,72 @@ def handle_entry_recommendation(
         **entry,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "status": "pending",
-        "regime_at_entry": regime,
-        "vix_at_entry": _vix_at_entry if isinstance(_vix_at_entry, (int, float)) else None,
-        "spy_above_ma200": _spy_above_ma200,
-        "model": model,
+        "regime_at_entry": gctx.regime,
+        "vix_at_entry": vix_at_entry if isinstance(vix_at_entry, (int, float)) else None,
+        "spy_above_ma200": spy_above_ma200,
+        "model": gctx.model,
         "prompt_version": PROMPT_VERSION,
         "strategy_version": STRATEGY_VERSION,
         "decision_version": entry.get("decision_version") or PROMPT_VERSION,
     }
-    _ticker = rec.get("ticker", "?")
-    _entry_v = rec.get("entry_price", 0)
-    _sl_v = rec.get("stop_loss", 0)
-    _tp_v = rec.get("take_profit", [])
-    _size_v = rec.get("size_eur", 0)
-    _conv = rec.get("conviction", 0)
-    _hmin = rec.get("hold_days_min", "?")
-    _hmax = rec.get("hold_days_max", "?")
-    _thesis = rec.get("thesis", "")
-    _trail = rec.get("trailing_stop_pct")
-    _tp_str = " / ".join(f"€{t:.2f}" for t in (_tp_v if isinstance(_tp_v, list) else [_tp_v]))
-    _trail_line = f"\nTrailing: {_trail}%" if _trail else ""
-    _capital = float(
-        _pf_snapshot.get("total_capital_eur", config.BUDGET_EUR) or config.BUDGET_EUR
+    ticker = rec.get("ticker", "?")
+    entry_p = rec.get("entry_price", 0)
+    sl = rec.get("stop_loss", 0)
+    tp = rec.get("take_profit", [])
+    size = rec.get("size_eur", 0)
+    conv = rec.get("conviction", 0)
+    hmin = rec.get("hold_days_min", "?")
+    hmax = rec.get("hold_days_max", "?")
+    thesis = rec.get("thesis", "")
+    trail = rec.get("trailing_stop_pct")
+    tp_str = " / ".join(f"€{t:.2f}" for t in (tp if isinstance(tp, list) else [tp]))
+    trail_line = f"\nTrailing: {trail}%" if trail else ""
+    capital = float(
+        gctx.portfolio.get("total_capital_eur", config.BUDGET_EUR) or config.BUDGET_EUR
     )
-    _cash = float(_pf_snapshot.get("cash_eur", 0) or 0)
-    _shares_raw = _size_v / _entry_v if _entry_v > 0 else 0.0
-    if _shares_raw >= 1:
-        _shares_prev = float(int(_shares_raw))
-        _shares_str = f"{int(_shares_prev)} Stk"
+    cash = float(gctx.portfolio.get("cash_eur", 0) or 0)
+    shares_raw = size / entry_p if entry_p > 0 else 0.0
+    if shares_raw >= 1:
+        shares_prev = float(int(shares_raw))
+        shares_str = f"{int(shares_prev)} Stk"
     else:
-        _shares_prev = round(_shares_raw, 2)
-        _shares_str = f"{_shares_prev:.2f} Stk (Bruchstück)"
-    _actual_size = round(_shares_prev * _entry_v, 2)
-    _pct_cap = (_actual_size / _capital * 100) if _capital > 0 else 0.0
-    _risk_eur = (_entry_v - _sl_v) * _shares_prev if _entry_v > _sl_v > 0 else 0.0
-    _risk_pct = (_risk_eur / _capital * 100) if _capital > 0 else 0.0
+        shares_prev = round(shares_raw, 2)
+        shares_str = f"{shares_prev:.2f} Stk (Bruchstück)"
+    actual_size = round(shares_prev * entry_p, 2)
+    risk_eur = (entry_p - sl) * shares_prev if entry_p > sl > 0 else 0.0
+    risk_pct = (risk_eur / capital * 100) if capital > 0 else 0.0
 
-    _rt = rec.get("red_team_review") or {}
-    _rt_block = ""
-    if _rt:
-        _rt_modes = _rt.get("top_failure_modes") or []
-        _rt_modes_str = "\n  • " + "\n  • ".join(_rt_modes[:3]) if _rt_modes else ""
-        _rt_conf = _rt.get("confidence_thesis_holds")
-        _rt_verdict = _rt.get("verdict") or "?"
-        _rt_emoji = "🐻" if _rt_verdict == "WEAKEN" else "✅"
-        _rt_block = (
-            f"\n{_rt_emoji} *Red-Team*: {_rt_verdict} (conf {_rt_conf})"
-            f"{_rt_modes_str}\n"
+    rt = rec.get("red_team_review") or {}
+    rt_block = ""
+    if rt:
+        rt_modes = rt.get("top_failure_modes") or []
+        rt_modes_str = "\n  • " + "\n  • ".join(rt_modes[:3]) if rt_modes else ""
+        rt_conf = rt.get("confidence_thesis_holds")
+        rt_verdict = rt.get("verdict") or "?"
+        rt_emoji = "🐻" if rt_verdict == "WEAKEN" else "✅"
+        rt_block = (
+            f"\n{rt_emoji} *Red-Team*: {rt_verdict} (conf {rt_conf})"
+            f"{rt_modes_str}\n"
         )
 
-    _wkn = config.TR_WKN_MAP.get(_ticker)
-    _wkn_line = f"\n📱 TR-WKN: `{_wkn}` (yfinance: {_ticker})" if _wkn else ""
+    wkn = config.TR_WKN_MAP.get(ticker)
+    wkn_line = f"\n📱 TR-WKN: `{wkn}` (yfinance: {ticker})" if wkn else ""
 
     message_id = _notify(
-        f"🎯 *ENTRY* | `{_ticker}` | {_shares_str} à €{_entry_v:.2f} = €{_actual_size:.2f}\n"
-        f"Grund: {_thesis}\n"
-        f"Conv {_conv}/5\n"
-        f"SL €{_sl_v:.2f} | TP {_tp_str} | Risk €{_risk_eur:.2f} ({_risk_pct:.2f}% Kap.) | "
-        f"Hold {_hmin}-{_hmax}d | Cash €{_cash:.0f}{_trail_line}"
-        f"{_wkn_line}"
-        f"{_rt_block}\n"
-        f"_Reply `/confirm` (auto={_shares_str}) oder `/confirm <stück> @<preis>` für override._"
+        f"🎯 *ENTRY* | `{ticker}` | {shares_str} à €{entry_p:.2f} = €{actual_size:.2f}\n"
+        f"Grund: {thesis}\n"
+        f"Conv {conv}/5\n"
+        f"SL €{sl:.2f} | TP {tp_str} | Risk €{risk_eur:.2f} ({risk_pct:.2f}% Kap.) | "
+        f"Hold {hmin}-{hmax}d | Cash €{cash:.0f}{trail_line}"
+        f"{wkn_line}"
+        f"{rt_block}\n"
+        f"_Reply `/confirm` (auto={shares_str}) oder `/confirm <stück> @<preis>` für override._"
     )
     if message_id:
         rec["message_id"] = message_id
     if MEMPALACE_AVAILABLE:
         log_trade(rec, "RECOMMENDED", rec.get("thesis", ""))
-    logger.info("Entry recommendation: %s @ €%.2f (msg_id=%s)", _ticker, _entry_v, message_id)
+    logger.info("Entry recommendation: %s @ €%.2f (msg_id=%s)", ticker, entry_p, message_id)
     return rec
 
 

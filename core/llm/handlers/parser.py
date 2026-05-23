@@ -6,6 +6,7 @@ dispatch_tool_calls routes each rec to its handler in core.tool_handlers.
 """
 
 import logging
+from dataclasses import dataclass
 
 from anthropic import Anthropic
 
@@ -14,6 +15,16 @@ from core.llm.handlers.tools import (
     handle_entry_recommendation, handle_add_recommendation,
     handle_update_targets, handle_exit_recommendation,
 )
+
+
+@dataclass
+class Recs:
+    """Typed container for the four rec kinds a single Claude call can emit.
+    Each field is either the persisted-rec dict or None (gate-blocked / not called)."""
+    entry: dict | None = None
+    add: dict | None = None
+    update: dict | None = None
+    exit: dict | None = None
 
 
 logger = logging.getLogger(__name__)
@@ -132,22 +143,19 @@ def format_analysis_text(text_parts: list[str], pass_reason: str | None) -> str:
     return "\n".join(dedup) or "(keine Text-Analyse)"
 
 
-def dispatch_tool_calls(payload: dict, ctx: RequestContext, model: str) -> dict:
-    """Route each populated rec to its handler. Returns {entry, add, update, exit}
-    each either a persisted-rec dict or None (gate-blocked / not called)."""
-    result: dict[str, dict | None] = {
-        "entry": None, "add": None, "update": None, "exit": None,
-    }
+def dispatch_tool_calls(payload: dict, ctx: RequestContext, model: str) -> Recs:
+    """Route each populated rec to its handler. Returns a Recs container."""
+    recs = Recs()
     if payload["entry"]:
-        result["entry"] = handle_entry_recommendation(
+        recs.entry = handle_entry_recommendation(
             payload["entry"],
             mode=ctx.mode, market_data=ctx.market_data, market_ctx=ctx.market_ctx,
             regime=ctx.regime, cash=ctx.cash, model=model,
         )
     if payload["add"]:
-        result["add"] = handle_add_recommendation(payload["add"], ctx.market_data)
+        recs.add = handle_add_recommendation(payload["add"], ctx.market_data)
     if payload["update"]:
-        result["update"] = handle_update_targets(payload["update"])
+        recs.update = handle_update_targets(payload["update"])
     if payload["exit"]:
-        result["exit"] = handle_exit_recommendation(payload["exit"], ctx.market_data)
-    return result
+        recs.exit = handle_exit_recommendation(payload["exit"], ctx.market_data)
+    return recs
