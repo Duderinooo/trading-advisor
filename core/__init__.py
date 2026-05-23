@@ -63,6 +63,9 @@ from core.llm.telemetry.api_usage import (
 )
 from core.auto_kill import maybe_auto_kill, check_macro_shock
 from core.gate_log import read_gate_blocks
+from core.types import (
+    CashMovement, ClosedTrade, Recommendation, Trade, TriggeredEvent, WatchLevel,
+)
 
 __all__ = [
     # portfolio
@@ -93,4 +96,7 @@ __all__ = [
     "can_make_api_call", "get_daily_usage", "get_minutes_since_last_analysis",
     # auto kill + gate log
     "maybe_auto_kill", "check_macro_shock", "read_gate_blocks",
+    # typed schemas
+    "Trade", "ClosedTrade", "Recommendation", "WatchLevel",
+    "CashMovement", "TriggeredEvent",
 ]
