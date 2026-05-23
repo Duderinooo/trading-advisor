@@ -16,7 +16,7 @@ export async function GET(req: NextRequest) {
     return Response.json({ error: "invalid file" }, { status: 400 });
   }
 
-  const fullPath = path.join(process.cwd(), "..", file);
+  const fullPath = path.join(process.cwd(), "..", "bot", file);
   try {
     const stat = await fs.stat(fullPath);
     const content = await fs.readFile(fullPath, "utf8");

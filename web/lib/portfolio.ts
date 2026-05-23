@@ -1,22 +1,89 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { dbExists, getDb } from "./db";
 import type { ClaudeCall, GateBlock, PaperPortfolio, Portfolio } from "./types";
 
-const PORTFOLIO_PATH = path.join(process.cwd(), "..", "portfolio.json");
-const PAPER_PORTFOLIO_PATH = path.join(process.cwd(), "..", "training_portfolio.json");
-const GATE_LOG_PATH = path.join(process.cwd(), "..", "gate_blocks.jsonl");
-const BACKTEST_PATH = path.join(process.cwd(), "..", "backtest_report.json");
-const CALLS_LOG_PATH = path.join(process.cwd(), "..", "claude_calls.jsonl");
-const PROMPT_DIR = path.join(process.cwd(), "..", ".system_prompts");
+/**
+ * Paths follow the 2026-05-23 bot/ + web/ split: web is `<repo>/web`,
+ * bot files are under `<repo>/bot`. Resolved relative to `process.cwd()`
+ * which Next.js anchors at the web/ directory during `next dev` and
+ * `next build`.
+ */
+const BOT_DIR = path.join(process.cwd(), "..", "bot");
+const PORTFOLIO_PATH = path.join(BOT_DIR, "portfolio.json");
+const PAPER_PORTFOLIO_PATH = path.join(BOT_DIR, "training_portfolio.json");
+const GATE_LOG_PATH = path.join(BOT_DIR, "gate_blocks.jsonl");
+const BACKTEST_PATH = path.join(BOT_DIR, "backtest_report.json");
+const CALLS_LOG_PATH = path.join(BOT_DIR, "claude_calls.jsonl");
+const PROMPT_DIR = path.join(BOT_DIR, ".system_prompts");
+
+/**
+ * State that used to live in portfolio.json — closed_trades,
+ * pending_recommendations, heartbeat, correlation_matrix, the per-mode
+ * traces — was migrated to SQLite (state/bot.db) by the bot's Phase E7
+ * refactor. The dashboard joins both sources here so the rest of the
+ * codebase still sees one Portfolio shape.
+ */
+
+function readClosedTrades(): unknown[] {
+  if (!dbExists()) return [];
+  const rows = getDb()
+    .prepare("SELECT body FROM closed_trades ORDER BY id ASC")
+    .all() as { body: string }[];
+  const out: unknown[] = [];
+  for (const r of rows) {
+    try {
+      out.push(JSON.parse(r.body));
+    } catch {
+      // skip malformed rows — same tolerance as the Python loader
+    }
+  }
+  return out;
+}
+
+function readPending(): unknown[] {
+  if (!dbExists()) return [];
+  const rows = getDb()
+    .prepare("SELECT body FROM pending_recommendations ORDER BY id ASC")
+    .all() as { body: string }[];
+  const out: unknown[] = [];
+  for (const r of rows) {
+    try {
+      out.push(JSON.parse(r.body));
+    } catch {}
+  }
+  return out;
+}
+
+function readKv(namespace: string, key: string): unknown {
+  if (!dbExists()) return undefined;
+  const row = getDb()
+    .prepare("SELECT body FROM kv_state WHERE namespace = ? AND key = ?")
+    .get(namespace, key) as { body: string } | undefined;
+  if (!row) return undefined;
+  try {
+    return JSON.parse(row.body);
+  } catch {
+    return undefined;
+  }
+}
 
 export async function readPortfolio(): Promise<Portfolio> {
   const raw = await fs.readFile(PORTFOLIO_PATH, "utf8");
   const data = JSON.parse(raw);
+  const closed = readClosedTrades();
+  const pending = readPending();
+  const heartbeat = readKv("runtime", "heartbeat");
+  const correlation_matrix = readKv("runtime", "correlation_matrix");
+  const last_morning_trace = readKv("trace", "last_morning_trace");
+  const last_event_trace = readKv("trace", "last_event_trace");
+  const last_opening_trace_xetra = readKv("trace", "last_opening_trace_xetra");
+  const last_opening_trace_us = readKv("trace", "last_opening_trace_us");
   return {
     open_trades: data.open_trades ?? [],
-    closed_trades: data.closed_trades ?? [],
+    closed_trades: closed as Portfolio["closed_trades"],
     watch_levels: data.watch_levels ?? [],
-    pending_recommendations: data.pending_recommendations ?? [],
+    pending_recommendations: pending as Portfolio["pending_recommendations"],
     cash_movements: data.cash_movements ?? [],
     equity_history: data.equity_history ?? [],
     cash_eur: data.cash_eur ?? 0,
@@ -29,12 +96,12 @@ export async function readPortfolio(): Promise<Portfolio> {
     kill_switch_reason: data.kill_switch_reason,
     kill_switch_ts: data.kill_switch_ts,
     dd_halt_active: data.dd_halt_active,
-    heartbeat: data.heartbeat,
-    correlation_matrix: data.correlation_matrix,
-    last_morning_trace: data.last_morning_trace,
-    last_event_trace: data.last_event_trace,
-    last_opening_trace_xetra: data.last_opening_trace_xetra,
-    last_opening_trace_us: data.last_opening_trace_us,
+    heartbeat: heartbeat as Portfolio["heartbeat"],
+    correlation_matrix: correlation_matrix as Portfolio["correlation_matrix"],
+    last_morning_trace: last_morning_trace as Portfolio["last_morning_trace"],
+    last_event_trace: last_event_trace as Portfolio["last_event_trace"],
+    last_opening_trace_xetra: last_opening_trace_xetra as Portfolio["last_opening_trace_xetra"],
+    last_opening_trace_us: last_opening_trace_us as Portfolio["last_opening_trace_us"],
   };
 }
 

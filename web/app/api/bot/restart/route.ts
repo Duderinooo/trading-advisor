@@ -43,7 +43,9 @@ export async function POST(request: Request) {
     return Response.json({ ok: false, error: "localhost only" }, { status: 403 });
   }
 
-  const botDir = path.resolve(process.cwd(), "..");
+  // 2026-05-23 bot/web split: code lives in <repo>/bot, venv stays at <repo>/venv.
+  const repoRoot = path.resolve(process.cwd(), "..");
+  const botDir = path.join(repoRoot, "bot");
   const logPath = path.join(botDir, "bot.log");
 
   const initialPids = findBotPids();
@@ -77,7 +79,7 @@ export async function POST(request: Request) {
   const fd = openSync(logPath, "a");
   const child = spawn(
     "caffeinate",
-    ["-is", "./venv/bin/python", "main.py"],
+    ["-is", path.join(repoRoot, "venv", "bin", "python"), "main.py"],
     {
       cwd: botDir,
       detached: true,
