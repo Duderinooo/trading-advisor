@@ -11,87 +11,38 @@ EXCLUDED_TICKERS = [
 ]
 
 # Watchlist - XETRA Tickers (EUR prices for Trade Republic).
-# Whole-share-Filter (2026-05-04): nur Tickers <€100 sind handelbar (TR-SL braucht
-# ganze Stücke; Cap = total_capital × MAX_POSITION_SIZE_PERCENT/100). Teure Tickers
-# (NVD/APC/AMD/MSF/TL0/SAP/SIE/ALV/AIR/HEI) entfernt; Mid-/Small-Caps unter €100
-# zugefügt für sektorale Diversifikation. Preise Snapshot 2026-05-04.
+#
+# 2026-05-23 reduction (27 → 8 tickers): focused list per user-spec — fewer,
+# liquid, clean-trend names beats 27 half-active tickers + huge trigger matrix.
+# Removed: too-noisy (BAYN, FRE, DTE, HEN3), redundant auto-cluster (BMW/MBG/
+# VOW3/P911/CON kept zero — auto-supplier exposure deferred), tech-US-clones
+# (2PP, INL, UT8), small-cap-renewables (NDX1, S92, VH2, VBK).
+# Legacy SECTOR_MAP entries kept for migration-safety on existing positions.
 WATCHLIST = [
-    # Tech US (XETRA-EUR-Listings)
-    "2PP.DE",       # PayPal - €43
-    "INL.DE",       # Intel - €84
-    "UT8.DE",       # Uber - €66
+    # Semis / AI Infra — best fit for current edge model
+    "IFX.DE",       # Infineon (Semis-EU, Auto-/IoT-Exposure)
+    "AIXA.DE",      # Aixtron (compound semis, SiC/GaN for AI/EV)
+    "SMHN.DE",      # Suss MicroTec (Wafer-Bonder, Fab-Equipment)
 
-    # Tech EU
-    "IFX.DE",       # Infineon - €57 (Semis-EU, Auto-/IoT-Exposure)
+    # Banks — high-beta, rate-sensitive, clean trend structure
+    "DBK.DE",       # Deutsche Bank
+    "CBK.DE",       # Commerzbank
 
-    # Semi-Equipment / AI-Infra (added 2026-05-20 — effektive Watchlist war zu
-    # eng, 9 von 20 stocks wurden in 5 Mornings nie armiert — mehr AI-Infra
-    # Kandidaten für Setup-Vielfalt)
-    "AIXA.DE",      # Aixtron - €52 (compound semis, SiC/GaN für AI/EV)
-    "WAF.DE",       # Siltronic - €89 (Silicon-Wafer für AI-Chips)
-    "SMHN.DE",      # Suss MicroTec - €87 (Wafer-Bonder, Fab-Equipment)
+    # Industrial / Infra — boring compounder swings
+    "DHL.DE",       # DHL Group (global logistics cycle)
+    "RWE.DE",       # RWE (Strom, Renewables)
 
-    # Auto (ICE + EV-Exposure)
-    "BMW.DE",       # BMW - €78
-    "MBG.DE",       # Mercedes-Benz - €50
-    "VOW3.DE",      # Volkswagen Vz - €84 (Auto-Massenmarkt)
-    "P911.DE",      # Porsche AG - €40 (Luxus-EV/ICE)
-    "CON.DE",       # Continental - €61 (Auto-Supplier, Reifen)
-
-    # Banks (high-beta, rate-sensitive)
-    "DBK.DE",       # Deutsche Bank - €26
-    "CBK.DE",       # Commerzbank - €34
-
-    # Telecom
-    "DTE.DE",       # Deutsche Telekom - €27 (Defensive, Dividenden-Anker)
-
-    # Logistics / Industrial
-    "DHL.DE",       # DHL Group - €47 (Globaler Logistik-Zyklus)
-
-    # Pharma / Healthcare
-    "BAYN.DE",      # Bayer - €37 (news-driven, Glyphosat/Pharma-Trials)
-    "FRE.DE",       # Fresenius - €41 (Healthcare-Services)
-
-    # Chemicals
-    "BAS.DE",       # BASF - €53 (Global Chemicals, China-Zyklus)
-    # 1COV.DE (Covestro) removed 2026-05-18 — delisted after ADNOC squeeze-out,
-    # yfinance history empty (5d), bot can't price/trade it.
-
-    # Consumer
-    "HEN3.DE",      # Henkel Vz - €62 (Consumer-Goods, Defensive)
-    "PUM.DE",       # Puma - €24 (Sportswear, China-/Brand-Sentiment)
-    "ZAL.DE",       # Zalando - €21 (E-Commerce-EU)
-
-    # Utility / Energy Transition
-    "RWE.DE",       # RWE - €60 (Stromproduzent, Renewables)
-    # ENR.DE entfernt 2026-05-04: €178 — über €100 Cap, würde dynamisch gefiltert.
-    "NDX1.DE",      # Nordex - €43 (Wind-Turbinen, added 2026-05-20)
-    "S92.DE",       # SMA Solar - €62 (Solar-Inverter, added 2026-05-20)
-    "VH2.DE",       # Friedrich Vorwerk - €70 (Energie-Infra / H2, added 2026-05-20)
-    "VBK.DE",       # VERBIO - €35 (Biofuels, added 2026-05-20)
+    # Consumer / Turnaround — opportunistic only, not blind mean-revert
+    "PUM.DE",       # Puma (Sportswear, China/brand sentiment)
 ]
 
-# 🛢️ ROHSTOFFE - für geopolitische Events (Iran, Krieg, etc.)
-# Alle via yfinance verifiziert!
+# 🛢️ ROHSTOFFE - macro hedge layer (event-driven only)
+# 2026-05-23 reduction (7 → 2): keep only the two highest-signal hedges.
+# Silver/Uranium/diversified-commodity/Brent dropped — too much noise + thin
+# event-correlation at €1k scale.
 COMMODITIES = [
-    # 🛢️ ÖL - Iran/Nahost/OPEC
-    # WTI + Brent 3x Long (Borsa Italiana yfinance-feed). User trades via TR-WKN
-    # A3GM4L (WTI) und A3GM4K (Brent) — gleiche ISIN/Vintage, einfach anderer Markt.
-    "3OIL.MI",      # WisdomTree WTI 3x Daily Long, ~€47, TR-WKN A3GM4L
-    "3BRL.MI",      # WisdomTree Brent 3x Daily Long, ~€54, TR-WKN A3GM4K
-
-    # 🥇 GOLD - Safe Haven bei Krisen
-    "4GLD.DE",      # Xetra-Gold - €130
-
-    # 🥈 SILBER - Safe Haven + Industrial
-    "EXX1.DE",      # iShares Physical Silver - €26
-
-    # ☢️ URAN - Nuklear-Renaissance, Energiekrise
-    "U3O8.DE",      # Sprott Physical Uranium - €14 (günstig!)
-    "NUKL.DE",      # Global X Uranium ETF - €53
-
-    # 📦 BREITE COMMODITIES - Supply Chain, Inflation
-    "EXXY.DE",      # iShares Diversified Commodity - €33
+    "3OIL.MI",      # WisdomTree WTI 3x Daily Long, TR-WKN A3GM4L (Iran/OPEC/Nahost)
+    "4GLD.DE",      # Xetra-Gold (safe haven, Fed/recession/bank-crisis)
 ]
 
 # Markt-Indikatoren (nur beobachten, nicht traden)
@@ -103,11 +54,8 @@ MARKET_INDICATORS = [
 
 # TR-WKN mapping: yfinance-Ticker → Trade-Republic WKN für Telegram-alerts.
 # Notwendig wenn User-tradable-Listing andere ISIN/Vintage hat als yfinance-feed.
-# Beispiel: 3OIL.MI yfinance-listing = neue 2062-Vintage (auch auf Borsa Italiana),
-# aber user kauft auf TR via WKN — Alert zeigt WKN damit user direkt suchen kann.
 TR_WKN_MAP = {
     "3OIL.MI": "A3GM4L",  # WisdomTree WTI 3x Daily Long
-    "3BRL.MI": "A3GM4K",  # WisdomTree Brent 3x Daily Long
 }
 
 # Mapping: Common names -> XETRA tickers (for convenience)
@@ -139,20 +87,6 @@ COMMODITY_TRIGGERS = {
         "krieg", "war",
         "sanktion", "sanktionen", "sanctions",
     ],
-    # Brent 3x: gleiche Geo-Trigger wie WTI (Märkte korreliert), Brent ist
-    # europe/middle-east-bias → leicht stärker auf MENA-news, daher zusätzlich
-    # russia/ukraine/north-sea Trigger.
-    "3BRL.MI": [
-        "iran", "iranian", "iranische", "iranisch",
-        "opec", "opec+",
-        "nahost", "middle east",
-        "öl", "ölpreis", "rohöl", "crude oil", "brent", "wti",
-        "saudi", "saudi-arabien", "saudi arabia",
-        "krieg", "war",
-        "sanktion", "sanktionen", "sanctions",
-        "russland", "russia", "ukraine",
-        "north sea", "nordsee",
-    ],
     "4GLD.DE": [
         "rezession", "recession",
         "bankenkrise", "banking crisis", "finanzkrise", "financial crisis",
@@ -162,25 +96,5 @@ COMMODITY_TRIGGERS = {
         "inflation",
         "market crash", "marktcrash", "stock market crash", "kurssturz",
         "gold", "goldpreis",
-    ],
-    "EXX1.DE": [
-        "silber", "silver", "silberpreis",
-        "safe haven",
-        "bankenkrise", "banking crisis",
-    ],
-    "U3O8.DE": [
-        "uran", "uranium",
-        "nuklear", "nuclear", "kernkraft", "atomkraft", "atomenergie",
-        "smr", "small modular reactor",
-    ],
-    "NUKL.DE": [
-        "uran", "uranium",
-        "nuklear", "nuclear", "kernkraft", "atomkraft", "atomenergie",
-        "smr", "small modular reactor",
-    ],
-    "EXXY.DE": [
-        "supply chain", "lieferkette",
-        "supply shock", "lieferengpass",
-        "rohstoffknappheit", "raw material shortage",
     ],
 }
