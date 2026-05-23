@@ -1,23 +1,81 @@
-"""Feature flags — boolean toggles for system-wide behavior.
+"""Feature flags — single source of truth for boolean system toggles.
 
-Phase A1: plain constants (current state). Phase A2 will introduce a
-FeatureFlag dataclass with expiry + rationale metadata + is_enabled() helper.
-For now, callers continue to read these constants directly.
+Why a registry vs plain constants:
+- expiry-date metadata: temporary experiments self-flag for cleanup review
+- rationale: every flag carries its "why" — prevents drift into permanent technical debt
+- audit surface: expired_flags() lists toggles past their review date
+- typed: is_enabled(name) instead of bare globals — typo-safe lookup
+
+Backwards-compat: legacy module-level constants (RED_TEAM_ENABLED etc.) are
+exposed as plain bools derived from FLAGS so existing call-sites keep working.
+New code should use `is_enabled("red_team")` instead.
 """
 
-# Red-Team-Pass: zweiter Claude-Call kritisiert eigene Rec im Bear-Modus.
-# Blockt wenn confidence_thesis_holds < threshold ODER verdict==KILL.
-# Gleicher Modell-Tier wie Hauptcall (Haiku Event/Opening, Sonnet Morning).
-RED_TEAM_ENABLED = True
+from dataclasses import dataclass
 
-# Auto-split single TP into [1R, original-TP] for partial scale-out.
-AUTO_SPLIT_SINGLE_TP_AT_1R = True
 
-# Regime gate — RISK_OFF blocks new LONG entries (conservative full-trust bias).
-RISK_OFF_BLOCKS_LONGS = True
+@dataclass(frozen=True)
+class FeatureFlag:
+    """One feature toggle with metadata."""
+    name: str
+    enabled: bool
+    expires_on: str | None  # ISO date "YYYY-MM-DD" or None for permanent
+    rationale: str          # one-liner: why does this flag exist?
 
-# Stock-news pre-gate: skip Claude call when ticker has neither open position
-# nor active morning watch_level — no thesis to verify, no position to manage,
-# no actionable verdict possible. Set False to restore the CLAUDE.md "filter at
-# output, not input" rule (every news headline goes to Claude).
-NEWS_REQUIRE_OPEN_OR_WATCH = True
+
+# Single source of truth. Edit values here; legacy constants below mirror.
+FLAGS: dict[str, FeatureFlag] = {
+    "red_team": FeatureFlag(
+        name="red_team",
+        enabled=True,
+        expires_on=None,
+        rationale="Bear-critic Claude call on entry recs — KILL/low-conf blocks + cooldown",
+    ),
+    "auto_split_tp": FeatureFlag(
+        name="auto_split_tp",
+        enabled=True,
+        expires_on=None,
+        rationale="Single-TP recs get 1R TP1 prepended for partial scale-out at BE",
+    ),
+    "risk_off_blocks_longs": FeatureFlag(
+        name="risk_off_blocks_longs",
+        enabled=True,
+        expires_on=None,
+        rationale="No new LONG when SPY < MA200 (conservative full-trust bias)",
+    ),
+    "news_require_open_or_watch": FeatureFlag(
+        name="news_require_open_or_watch",
+        enabled=True,
+        expires_on=None,
+        rationale="Skip Claude call for stock-news on tickers without position/watch",
+    ),
+}
+
+
+def is_enabled(name: str) -> bool:
+    """Lookup-by-name; KeyError on unknown flag (typo-safe)."""
+    return FLAGS[name].enabled
+
+
+def expired_flags(today: str | None = None) -> list[str]:
+    """Names of flags whose expires_on has passed (for /flags-audit cmd).
+    today: ISO date "YYYY-MM-DD". Defaults to today's date."""
+    if today is None:
+        from datetime import date
+        today = str(date.today())
+    return [
+        f.name for f in FLAGS.values()
+        if f.expires_on is not None and f.expires_on < today
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Backwards-compat: legacy module-level constants
+# ---------------------------------------------------------------------------
+# Existing call-sites read `config.RED_TEAM_ENABLED` etc. — keep working.
+# New code should use is_enabled("red_team") for typo-safe lookup.
+
+RED_TEAM_ENABLED = FLAGS["red_team"].enabled
+AUTO_SPLIT_SINGLE_TP_AT_1R = FLAGS["auto_split_tp"].enabled
+RISK_OFF_BLOCKS_LONGS = FLAGS["risk_off_blocks_longs"].enabled
+NEWS_REQUIRE_OPEN_OR_WATCH = FLAGS["news_require_open_or_watch"].enabled
