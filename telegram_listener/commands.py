@@ -1,19 +1,18 @@
-"""Telegram command listener: manual trade confirmation + close + portfolio queries.
+"""All Telegram command handlers — watch/confirm/close/add/portfolio/system/analytics.
 
-Runs in a background thread with its own asyncio loop, so the main event-check
-loop is never blocked. All portfolio mutations acquire `portfolio_lock`.
+Pragmatic single-file home for the 17 handlers + their helpers. Split further
+into handlers/ subpackage when individual files outgrow ~250 LOC.
+
+Imports utilities from telegram_listener._common (auth, decorator, parsers,
+constants) so this module is import-cheap to load at startup.
 """
 
-import os
-import re
-import logging
-import threading
 import asyncio
-import functools
+import logging
 from datetime import datetime, timedelta
 
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import ContextTypes
 
 import config
 from core import (
@@ -25,129 +24,13 @@ from core import (
 )
 from memory import log_trade, MEMPALACE_AVAILABLE
 
+from telegram_listener._common import (
+    _MISTAKE_CLASS_MAP, _NUMBER_RE, _TICKER_RE, _WATCH_TYPES,
+    _authorized, _parse_close_args, _parse_confirm_args,
+    _parse_dividend_args, telegram_handler,
+)
+
 logger = logging.getLogger(__name__)
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-
-_TICKER_RE = re.compile(r"^[A-Z0-9]{1,6}(?:\.[A-Z]{1,3})?$")
-
-
-def _authorized(update: Update) -> bool:
-    """Only accept commands from the configured chat."""
-    if not update.effective_chat or not TELEGRAM_CHAT_ID:
-        return False
-    return str(update.effective_chat.id) == str(TELEGRAM_CHAT_ID)
-
-
-def telegram_handler(fn):
-    """Wrap a CommandHandler coroutine with two safety nets:
-
-    1. Null-message guard: Telegram delivers Update objects without `.message`
-       for edited_message / channel_post / reactions / inline_query. Without
-       this guard, calling `update.message.reply_text(...)` AttributeErrors
-       silently. (Bug 2026-04-28: /add ran twice because first call crashed
-       on `update.message=None` after restart-buffered update, leaving state
-       partially mutated and user with no Telegram feedback.)
-    2. Generic exception → reply: surface crashes to the chat instead of
-       silent log-only failure. State changes BEFORE the crash already saved
-       (handlers commit under portfolio_lock) — user needs to know.
-    """
-    @functools.wraps(fn)
-    async def wrapped(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        if update.message is None:
-            logger.debug(
-                "Update without .message in %s (effective_message type=%s) — skipped",
-                fn.__name__,
-                type(update.effective_message).__name__ if update.effective_message else "None",
-            )
-            return
-        try:
-            return await fn(update, ctx)
-        except Exception as e:
-            logger.exception("Handler %s crashed", fn.__name__)
-            try:
-                cmd = fn.__name__.removesuffix("_handler")
-                await update.message.reply_text(
-                    f"⚠️ Internal error in /{cmd}: `{type(e).__name__}: {e}`\n"
-                    "_State-Änderungen vor dem Crash sind bereits gespeichert. Log prüfen._",
-                    parse_mode="Markdown",
-                )
-            except Exception:
-                pass
-    return wrapped
-
-
-_NUMBER_RE = re.compile(r"^\d+(?:\.\d+)?$")
-
-
-def _parse_confirm_args(args: list[str]) -> tuple[str | None, float | None, float | None]:
-    """Parse `/confirm` arguments. All three components are optional.
-
-    Shares are float so TR Bruchstücke (e.g. 0.55) work.
-
-    Examples:
-        []                   -> (None, None, None)          # use rec defaults
-        ["3"]                -> (None, None, 3.0)
-        ["0.55"]             -> (None, None, 0.55)
-        ["@172.50", "3"]     -> (None, 172.50, 3.0)
-        ["NVD.DE", "3"]      -> ("NVD.DE", None, 3.0)
-    """
-    ticker = None
-    price = None
-    shares = None
-    for tok in args:
-        if tok.startswith("@"):
-            try:
-                price = float(tok[1:])
-            except ValueError:
-                pass
-            continue
-        if _NUMBER_RE.match(tok):
-            shares = float(tok)
-            continue
-        upper = tok.upper()
-        if _TICKER_RE.match(upper) and any(c.isalpha() for c in upper):
-            ticker = upper
-    return ticker, price, shares
-
-
-_MISTAKE_CLASS_MAP = {
-    "thesis_wrong": "prediction",
-    "timing_early": "timing",
-    "timing_late": "timing",
-    "whipsaw": "timing",
-    "slippage": "execution",
-    "sl_too_tight": "execution",
-    "news_shock": "external",
-    "regime_shift": "external",
-}
-
-
-def _parse_close_args(args: list[str]) -> tuple[str | None, float | None, str | None]:
-    ticker = None
-    exit_price = None
-    tag = None
-    for tok in args:
-        if tok.startswith("@"):
-            try:
-                exit_price = float(tok[1:])
-            except ValueError:
-                pass
-            continue
-        if tok.startswith("#"):
-            t = tok[1:].lower()
-            if t in config.MISTAKE_TAGS:
-                tag = t
-            continue
-        upper = tok.upper()
-        if _TICKER_RE.match(upper) and any(c.isalpha() for c in upper):
-            ticker = upper
-    return ticker, exit_price, tag
-
-
-_WATCH_TYPES = {"breakout_long", "support_bounce", "resistance_reject", "inverse_etf_entry"}
 
 
 @telegram_handler
@@ -1015,26 +898,6 @@ async def close_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
-def _parse_dividend_args(args: list[str]) -> tuple[str | None, float | None, str]:
-    """Parse `/dividend TICKER AMOUNT [reason...]`. Order-tolerant for ticker/amount."""
-    ticker = None
-    amount = None
-    reason_tokens: list[str] = []
-    for tok in args:
-        if amount is None and _NUMBER_RE.match(tok):
-            try:
-                amount = float(tok)
-                continue
-            except ValueError:
-                pass
-        if ticker is None:
-            upper = tok.upper()
-            if _TICKER_RE.match(upper) and any(c.isalpha() for c in upper):
-                ticker = upper
-                continue
-        reason_tokens.append(tok)
-    return ticker, amount, " ".join(reason_tokens).strip()
-
 
 @telegram_handler
 async def dividend_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1455,72 +1318,3 @@ async def help_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def _global_error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
-    """Last-resort safety net for anything that escapes per-handler @telegram_handler.
-    Logs the error + tries to ping the user (best-effort)."""
-    err = ctx.error
-    logger.exception("Telegram global error handler caught: %r", err)
-    try:
-        chat_id = TELEGRAM_CHAT_ID
-        if chat_id and ctx.bot is not None:
-            await ctx.bot.send_message(
-                chat_id=chat_id,
-                text=(
-                    f"⚠️ *Telegram-Listener-Crash*\n"
-                    f"`{type(err).__name__}: {err}`\n"
-                    f"_Bot weiter aktiv. Log prüfen._"
-                ),
-                parse_mode="Markdown",
-            )
-    except Exception:
-        pass
-
-
-async def _async_run():
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    app.add_error_handler(_global_error_handler)
-    app.add_handler(CommandHandler("confirm", confirm_handler))
-    app.add_handler(CommandHandler("add", add_handler))
-    app.add_handler(CommandHandler("watch", watch_handler))
-    app.add_handler(CommandHandler("watchlist", watchlist_handler))
-    app.add_handler(CommandHandler("watchremove", watchremove_handler))
-    app.add_handler(CommandHandler("watchclear", watchclear_handler))
-    app.add_handler(CommandHandler("close", close_handler))
-    app.add_handler(CommandHandler("dividend", dividend_handler))
-    app.add_handler(CommandHandler("positions", positions_handler))
-    app.add_handler(CommandHandler("cancel", cancel_handler))
-    app.add_handler(CommandHandler("panic", panic_handler))
-    app.add_handler(CommandHandler("resume", resume_handler))
-    app.add_handler(CommandHandler("killstatus", killstatus_handler))
-    app.add_handler(CommandHandler("morning", morning_handler))
-    app.add_handler(CommandHandler("audit", audit_handler))
-    app.add_handler(CommandHandler("stats", stats_handler))
-    app.add_handler(CommandHandler("help", help_handler))
-    app.add_handler(CommandHandler("start", help_handler))
-
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    logger.info("🎧 Telegram listener online")
-
-    # Block forever; daemon thread exits with main process.
-    await asyncio.Event().wait()
-
-
-def start_listener_thread() -> threading.Thread | None:
-    """Launch the Telegram listener on a background daemon thread."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("Telegram listener NOT started: TELEGRAM_BOT_TOKEN/CHAT_ID missing")
-        return None
-
-    def _target():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(_async_run())
-        except Exception:
-            logger.exception("Telegram listener crashed")
-
-    t = threading.Thread(target=_target, daemon=True, name="telegram_listener")
-    t.start()
-    return t
