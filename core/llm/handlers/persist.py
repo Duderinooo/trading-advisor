@@ -70,9 +70,9 @@ def _persist_watch_levels(
         if trace is not None:
             trace["dropped_excluded"] = dropped
 
-    # Self-sabotage filter: drop resistance_reject between own entry and TP1.
-    # (Bug 2026-04-27: RWE breakout @60.6 with TP1 62.4 + watch_reject @60.7 →
-    # tag-and-dip read as exit while breakout was working.)
+    # 2026-04-27: see research/2026-04-27-watch-self-sabotage.md
+    # Drop resistance_reject between own entry and TP1 (tag-and-dip would
+    # otherwise look like a forced exit on a working breakout).
     _open_by_ticker = {t["ticker"]: t for t in fresh.get("open_trades", [])}
     _conflict_filtered = []
     _dropped_self_sabotage = 0
@@ -124,8 +124,8 @@ def _persist_watch_levels(
             trace["dropped_unaffordable"] = len(_dropped_unaffordable_lvls)
     filtered = _kept_lvls
 
-    # Merge-by-ticker (empty new = keep existing). Bug 2026-04-28: Sonnet
-    # returning [] used to WIPE all morning levels.
+    # Merge-by-ticker: empty new = keep existing (a Sonnet "no new setups"
+    # response must not wipe the morning's planned watch-levels).
     existing = fresh.get("watch_levels", [])
     if not filtered:
         if mode == "morning":

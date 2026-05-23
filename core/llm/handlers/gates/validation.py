@@ -15,9 +15,8 @@ logger = logging.getLogger(__name__)
 
 
 def gate_required_fields(entry: dict, ctx: GateContext) -> bool:
-    """Reject truncated tool_use blocks. Required keys defined by the v7 schema.
-    Bug 2026-04-30: SIE.DE + 3OIL.MI recs hit max_tokens=300, both missing
-    setup_type + top_fail_mode, persisted as 'untagged' forever."""
+    """Reject truncated tool_use blocks. Required keys per v7 schema.
+    See research/2026-04-29-watch-tool-truncation.md for the symptom history."""
     required = (
         "ticker", "entry_price", "stop_loss", "take_profit",
         "size_eur", "conviction", "p_win", "thesis",
@@ -42,8 +41,7 @@ def gate_required_fields(entry: dict, ctx: GateContext) -> bool:
 
 def gate_already_open(entry: dict, ctx: GateContext) -> bool:
     """Block re-entries on tickers we already hold. Pyramiding goes through
-    recommend_add_to_position. Bug 2026-04-27: RWE.DE re-entry rec triggered
-    news+entry+blocked triple-msg."""
+    recommend_add_to_position. See research/2026-04-27-watch-self-sabotage.md."""
     open_tickers = {
         (tr.get("ticker") or "").upper()
         for tr in ctx.portfolio.get("open_trades", [])

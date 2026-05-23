@@ -59,8 +59,7 @@ def gate_sl_distance(entry: dict, ctx: GateContext) -> bool:
 
 def gate_edge(entry: dict, ctx: GateContext) -> bool:
     """Edge gate with Brier-haircut. p_adj = p_raw − capped(haircut, ±0.20).
-    Bug 2026-05-07: CON.DE +9% blocked by edge=-0.005 because haircut=-0.38
-    was ignored; gate saw p_adj=p_raw=0.58 instead of 0.78."""
+    See research/2026-05-07-haircut-cap-and-event-ttl.md for the cap rationale."""
     HAIRCUT_CAP = 0.20
     p_raw = entry.get("p_win")
     haircut = 0.0

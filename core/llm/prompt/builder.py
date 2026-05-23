@@ -60,11 +60,8 @@ _EVENT_SUFFIX = (
     "OUTPUT: AUSSCHLIESSLICH via tool_use, KEINE Prosa (spart Tokens)."
 )
 
-# Per-mode tool budget. Incident-driven empirics:
-# 2026-04-29 morning 400 → set_watch_levels({}) empty input.
-# 2026-05-07 opening 500/500 dropped recommend_entry twice same day.
-# 2026-05-20 morning 1200 → manifest-2 + zone_low/high schema overflow.
-# 2026-05-22 morning 2500→3500 for tool_choice=any + v7-required-fields.
+# Per-mode tool budget. See research/2026-04-29-watch-tool-truncation.md for
+# the bump history (400 → 3500 morning, 500 → 900 opening/event).
 MODE_CONFIG: dict[str, dict] = {
     "morning": {
         "base_prompt": MORNING_PREP_PROMPT,

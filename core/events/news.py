@@ -154,9 +154,8 @@ def _ticker_in_title(title: str, ticker: str, name: str | None) -> bool:
         name_lower = name.lower()
         if name_lower in title_lower:
             return True
-        # Match on ANY ≥4-char token. Bug 2026-05-02: premature break only
-        # checked the first token — "International Business Machines" matched
-        # on bare "international" → false-positives.
+        # Match on ANY ≥4-char token (premature break on first token had false-
+        # positives on "international" in "International Business Machines").
         for tok in re.findall(r"\w+", name_lower):
             if len(tok) >= 4 and re.search(r"\b" + re.escape(tok) + r"\b", title_lower):
                 return True
@@ -294,9 +293,9 @@ def check_news_events() -> list[dict]:
                     events.append(event)
 
         if new_hashes:
-            # Keep yesterday too so a news-cycle that spans midnight doesn't re-fire
-            # 24h-old articles still in the RSS feed. Bug 2026-05-02: prior code
-            # overwrote seen_news with {today: ...} → loss on next-day rollover.
+            # 2026-05-02: see research/2026-05-02-news-dedup-midnight.md
+            # Keep yesterday alongside today so midnight rollover doesn't
+            # re-fire 24h-old RSS articles.
             yesterday = str(date.today() - timedelta(days=1))
             existing = portfolio.get("seen_news", {}) or {}
             portfolio["seen_news"] = {

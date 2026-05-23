@@ -6,14 +6,9 @@ BUDGET_EUR = 1000.0
 # Risk management
 MAX_RISK_PER_TRADE_PERCENT = 3.0  # Max % of capital to risk per trade
 
-# Sanity-cap auf Position-Größe — bindet selten, real-Size kommt aus ATR-Risk +
-# Kelly-Fraction + Conviction (siehe core.portfolio.suggest_position_size).
-# 2026-05-07: 10→30 nach decouple (MAX_SHARE_PRICE_EUR ersetzte 10% als share-price
-# filter). Bot's adaptive Kelly + ATR-Sizing soll Position-Größe steuern, nicht
-# eine harte 10%-Wand die jede mid-cap-Position abwürgt.
-# 2026-05-12: 30→20 — bei R-Multiple 0.81 (Loser > Winner) und 1k Kapital sind
-# 30% pro Position emotional + finanziell zu groß. 20% erlaubt mehr parallele
-# Trades = schnellere Sample-Akkumulation + Diversifikation.
+# 2026-05-12: 30→20 — see research/2026-05-12-edge-floor-006.md
+# Sanity-cap; real size comes from ATR-risk × Kelly × Conviction in
+# core.portfolio.suggest_position_size. 20% allows parallel-trade diversification.
 MAX_POSITION_SIZE_PERCENT = 20.0  # Sanity ceiling — Kelly/ATR/Conviction drive real size
 
 # Share-Price-Filter: Aktien teurer als €100 sind un-traded weil TR-SL nur auf
@@ -33,16 +28,13 @@ DRAWDOWN_RECOVERY_PERCENT = 2.0   # Resume after equity gains 2% back from halt 
 DRAWDOWN_SOFT_PERCENT = 4.0       # ab 4% Drawdown: Size *= 0.5 bis Equity neues High
 MAX_PORTFOLIO_HEAT_PERCENT = 10.0 # Max summed open risk (entry-SL) across all positions
 
-# Edge gate — require positive expectancy before recommending entry
-# 2026-05-12: 0.04→0.06 — strenger Edge-Filter bei Fee-Drag von €2/Trade auf 1k.
-# Nur Trades mit dickem mathematischem Vorteil sollen durch — quality > quantity.
+# 2026-05-12: 0.04→0.06 — see research/2026-05-12-edge-floor-006.md
+# Edge floor must account for €2 fixed-fee drag on €80–100 positions.
 MIN_EXPECTED_EDGE = 0.06          # (p*b - (1-p)) ≥ 0.06 else force PASS
 KELLY_FRACTION = 0.25             # Quarter-Kelly cap on size_pct
 
-# 2026-05-13: Brier-Haircut auf p_win nur ab statistisch belastbarer Sample-Größe.
-# Bei n<10 ist bias = Noise — drunter würde haircut willkürlich p_win shiften.
-# Aktueller Bot-Stand n=1, bias=-0.38 → Bot würde ohne diesen Floor jedem p_win
-# +20% (gecapped) drauflegen basierend auf einem einzigen Brier-Sample.
+# 2026-05-13: see research/2026-05-13-brier-haircut-floor.md
+# Brier-Haircut activates only above N=10 scored trades (below = noise).
 MIN_CALIBRATION_N = 10            # Min scored Trades für Haircut-Aktivierung
 
 # Min sample size for any threshold-tuning. Policy from CLAUDE.md "no tuning on N=1".
