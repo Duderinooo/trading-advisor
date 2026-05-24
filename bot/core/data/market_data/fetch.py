@@ -150,6 +150,10 @@ def _fetch_ticker(ticker: str) -> dict:
 def _annotate_relative_strength(data: dict):
     """Add `rs_20d_vs_index_pct` to each snapshot (ticker_perf − index_perf, in pp).
     Index fetched on-demand if not present in batch (cached so cheap)."""
+    # Lazy import — cache.py imports from this module, so a top-level import
+    # would be circular. Function-scope keeps the cycle deferred.
+    from core.data.market_data.cache import _market_cache
+
     index_ticker = config.RS_INDEX_TICKER
     index_snap = data.get(index_ticker)
     if not isinstance(index_snap, dict) or index_snap.get("error"):

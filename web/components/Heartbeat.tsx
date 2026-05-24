@@ -6,7 +6,7 @@ import type { Heartbeat as HeartbeatT } from "@/lib/types";
 type RestartState =
   | { kind: "idle" }
   | { kind: "running" }
-  | { kind: "ok"; killed: number[]; pid: number }
+  | { kind: "ok" }
   | { kind: "err"; msg: string };
 
 export default function Heartbeat({
@@ -28,7 +28,7 @@ export default function Heartbeat({
   const onRestart = async () => {
     if (
       !window.confirm(
-        "Bot wirklich neustarten? Bestehende main.py-Prozesse werden gekillt und unter caffeinate -is neu gestartet.",
+        "Bot wirklich neustarten? launchctl unload+load — KeepAlive=true sorgt für sauberen Respawn.",
       )
     ) {
       return;
@@ -38,7 +38,7 @@ export default function Heartbeat({
       const res = await fetch("/api/bot/restart", { method: "POST" });
       const data = await res.json();
       if (res.ok && data.ok) {
-        setRestart({ kind: "ok", killed: data.killed ?? [], pid: data.pid });
+        setRestart({ kind: "ok" });
       } else {
         setRestart({ kind: "err", msg: data.error ?? `HTTP ${res.status}` });
       }
@@ -145,16 +145,12 @@ export default function Heartbeat({
           onClick={onRestart}
           disabled={restart.kind === "running"}
           className="text-xs px-2.5 py-1 rounded border border-zinc-700 hover:border-zinc-500 hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed"
-          title="Killt main.py und startet unter caffeinate -is neu"
+          title="Bot via launchctl neustarten (atomic, keine Race)"
         >
           {restart.kind === "running" ? "Neustart…" : "Bot neustarten"}
         </button>
         {restart.kind === "ok" && (
-          <div className="text-xs text-emerald-400">
-            Neu gestartet · pid {restart.pid}
-            {restart.killed.length > 0 &&
-              ` · alt killed: ${restart.killed.join(", ")}`}
-          </div>
+          <div className="text-xs text-emerald-400">Neu gestartet via launchctl</div>
         )}
         {restart.kind === "err" && (
           <div className="text-xs text-rose-400">Fehler: {restart.msg}</div>
