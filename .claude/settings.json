@@ -101,7 +101,10 @@
       "Bash(grep -rln \"incomplete_rec\\\\|recommend_entry DROPPED\" core/llm/)",
       "Bash(launchctl unload *)",
       "Bash(launchctl load *)",
-      "Bash(./../venv/bin/python -m unittest discover -s tests)"
+      "Bash(./../venv/bin/python -m unittest discover -s tests)",
+      "Bash(pmset -g)",
+      "Bash(kill -TERM 43203 43204)",
+      "Bash(kill -KILL 43203 43204)"
     ],
     "additionalDirectories": [
       "/Users/malteollmann/Library/LaunchAgents"
