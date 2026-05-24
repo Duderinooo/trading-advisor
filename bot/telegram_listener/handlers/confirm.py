@@ -202,10 +202,11 @@ async def _handle_add_confirm(
         return
 
     if shares_override is not None:
-        added_shares = float(shares_override)
+        added_shares = float(int(float(shares_override)))
         actual_added = round(added_shares * fill_price, 2)
     else:
-        added_shares = round(add_size_eur / fill_price, 4) if fill_price > 0 else 0.0
+        # User trades whole shares only on TR — floor to int.
+        added_shares = float(int(add_size_eur / fill_price)) if fill_price > 0 else 0.0
         if added_shares <= 0:
             added_shares = 1.0
         actual_added = round(added_shares * fill_price, 2)
@@ -223,7 +224,7 @@ async def _handle_add_confirm(
     old_shares = float(open_trade.get("shares", 0) or 0)
     old_size = float(open_trade.get("size_eur", 0) or 0)
     old_entry = float(open_trade.get("entry_price", 0) or 0)
-    new_shares = round(old_shares + added_shares, 4)
+    new_shares = float(int(old_shares + added_shares))
     new_size = round(old_size + actual_added, 2)
     new_entry = round(new_size / new_shares, 4) if new_shares > 0 else fill_price
 
@@ -433,10 +434,10 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         size_eur = float(rec.get("size_eur", 0) or 0)
         if shares_override is not None:
-            shares = float(shares_override)
+            shares = float(int(float(shares_override)))
         else:
-            # TR supports Bruchstücke — keep 4 decimals of precision
-            shares = round(size_eur / entry, 4) if entry > 0 else 0.0
+            # User trades whole shares only on TR — floor to int.
+            shares = float(int(size_eur / entry)) if entry > 0 else 0.0
             if shares <= 0:
                 shares = 1.0
 

@@ -292,7 +292,9 @@ def check_stop_loss_take_profit(paper: bool = False) -> list[dict]:
                     # remainder runs with BE-SL + trailing → locks ≥0.5R win
                     # even if runner stops out.
                     shares_total = float(trade.get("shares", 0) or 0)
-                    shares_to_sell = round(shares_total * config.PARTIAL_TP_FRACTION, 4)
+                    # User trades whole shares only on TR — floor to int so the
+                    # Telegram alert is actionable (no "verkauf 2.5 Stk").
+                    shares_to_sell = float(int(shares_total * config.PARTIAL_TP_FRACTION))
                     if shares_to_sell > 0 and shares_to_sell < shares_total:
                         _close_partial(trade, shares_to_sell, current_price,
                                        "TAKE_PROFIT_PARTIAL", portfolio)
