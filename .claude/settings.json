@@ -75,7 +75,36 @@
       "Bash(gh release list *)",
       "Bash(gh auth status *)",
       "Bash(git commit -m ' *)",
-      "Bash(git checkout *)"
+      "Bash(git checkout *)",
+      "Bash(grep -ln \"prompt_version\\\\|decision_version\\\\|entry_state\\\\|realized_r\\\\|primary_signal\\\\|max_r_open\" web/components/*.tsx)",
+      "Bash(grep -ln \"prompt_version\\\\|decision_version\\\\|entry_state\\\\|realized_r\\\\|primary_signal\" web/api/*.py)",
+      "Bash(../venv/bin/python -m unittest discover -s tests)",
+      "Bash(../venv/bin/python -c ' *)",
+      "Bash(../venv/bin/python -c \"import main, telegram_listener; from core import *; print\\('OK'\\)\")",
+      "Bash(npm install *)",
+      "Bash(kill 62606)",
+      "Bash(kill -TERM 56187 56188)",
+      "Bash(../venv/bin/python)",
+      "Bash(nohup ./run.sh)",
+      "Bash(../venv/bin/python -m unittest tests.test_sqlite_stores -v)",
+      "Bash(../venv/bin/python -m tools.backup_db)",
+      "Read(//etc/**)",
+      "Bash(crontab -l)",
+      "Bash(git check-ignore *)",
+      "Bash(../venv/bin/python -c \"from core.events.news import check_news_events; print\\('import OK'\\)\")",
+      "Bash(../venv/bin/python -m unittest tests.test_news_rss -v)",
+      "Bash(../venv/bin/python -m tools.rotate_jsonl)",
+      "Bash(../venv/bin/python -c \"import main, telegram_listener; print\\('OK'\\)\")",
+      "Bash(../venv/bin/python -c \"import main, telegram_listener; from services.morning_brief import _gap_pre_check; from services.summary import refresh_analytics, refresh_earnings_calendar; from core.portfolio.hit_stats import compute_hit_rate_trend, compute_shadow_what_if; from core.portfolio.risk import compute_drawdown_trajectory; print\\('OK'\\)\")",
+      "Bash(../venv/bin/python -c \"import main, telegram_listener; from telegram_listener.handlers.callbacks import rec_callback_handler; print\\('OK'\\)\")",
+      "Bash(grep -rln \"BAS\\\\.DE\\\\|incomplete_rec\\\\|recommend_entry DROPPED\" tests/test_decision_result.py tests/test_events.py tests/test_portfolio.py)",
+      "Bash(grep -rln \"incomplete_rec\\\\|recommend_entry DROPPED\" core/llm/)",
+      "Bash(launchctl unload *)",
+      "Bash(launchctl load *)",
+      "Bash(./../venv/bin/python -m unittest discover -s tests)"
+    ],
+    "additionalDirectories": [
+      "/Users/malteollmann/Library/LaunchAgents"
     ]
   }
 }
