@@ -146,6 +146,18 @@ def call_claude_agent(
     if timeout_seconds is None:
         timeout_seconds = _MODE_TIMEOUT_SECONDS.get(mode, 180)
 
+    # CLI lacks a --max-tokens flag → soft-cap via prompt appendix.
+    # Sonnet/Haiku reliably honor this. Avoids the 3-4× token overage
+    # health-inspector caught on 2026-05-25 (opening burning 3053 tok / 900
+    # budget with zero output). Saves subscription quota → less rate-limit
+    # pressure during burst windows.
+    if max_tokens and max_tokens > 0:
+        system_prompt = (
+            f"{system_prompt}\n\n"
+            f"[output budget: max {max_tokens} tokens. terse. tool_calls "
+            f"only when required. no extra prose.]"
+        )
+
     cmd = [
         claude_bin, "-p",
         "--model", cli_model,

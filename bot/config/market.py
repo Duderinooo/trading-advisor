@@ -41,8 +41,12 @@ MARKET_CLOSE_HOUR = 22
 MORNING_PREP_HOUR = 8  # Morgen-Analyse um 8:00
 
 # Börsen-Open Checkins (ultra knapp, nur bei Action)
+# 2026-05-25: XETRA_OPEN_MINUTE 5→10 — health-inspector found that at
+# 09:05 yfinance volume-feed still showed vol_ratio 0.01 for large-caps
+# IFX/DBK → liquidity gate dropped 5/10 tickers. 09:10 gives feed time
+# to populate intraday volume.
 XETRA_OPEN_HOUR = 9
-XETRA_OPEN_MINUTE = 5       # 5min nach Kassa-Open (Auktion settled)
+XETRA_OPEN_MINUTE = 10
 US_OPEN_HOUR = 15
 US_OPEN_MINUTE = 35         # 5min nach US-Open (15:30 CET)
 
