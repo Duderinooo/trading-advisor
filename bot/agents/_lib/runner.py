@@ -128,10 +128,10 @@ def call_claude_agent(
     requested tool subset, parses the JSON, returns a mock Anthropic-shaped
     response.
     """
-    if not tools:
-        raise AgentRunError(f"agent mode requires tools list (mode={mode})")
-
-    schema = _wrap_actions_schema(tools)
+    # tools=None is valid: text-only mode (e.g. legacy `standard` analysis).
+    # In that case we skip --json-schema and treat the entire `result` as a
+    # single text block.
+    schema = _wrap_actions_schema(tools) if tools else None
     claude_bin = _resolve_claude_bin()
     cli_model = _normalize_model(model)
 
@@ -139,12 +139,13 @@ def call_claude_agent(
         claude_bin, "-p",
         "--model", cli_model,
         "--output-format", "json",
-        "--json-schema", json.dumps(schema),
         "--no-session-persistence",
         "--append-system-prompt", system_prompt,
         "--disable-slash-commands",
-        user_message,
     ]
+    if schema is not None:
+        cmd.extend(["--json-schema", json.dumps(schema)])
+    cmd.append(user_message)
 
     t0 = time.time()
     error: str | None = None
@@ -179,6 +180,32 @@ def call_claude_agent(
         # Fall back: treat whole stdout as the structured response itself
         # (older CLI versions).
         envelope = {"result": raw}
+
+    # Tool-less (schema=None) text-only mode: result IS the full payload.
+    # Wrap it as a single text block, no actions.
+    if schema is None:
+        text = (envelope.get("result") if isinstance(envelope, dict) else "") or ""
+        text = text.strip()
+        usage_data = envelope.get("usage") if isinstance(envelope, dict) else None
+        if isinstance(usage_data, dict):
+            usage = _Usage(
+                input_tokens=int(usage_data.get("input_tokens") or 0),
+                output_tokens=int(usage_data.get("output_tokens") or 0),
+                cache_read_input_tokens=int(usage_data.get("cache_read_input_tokens") or 0),
+                cache_creation_input_tokens=int(usage_data.get("cache_creation_input_tokens") or 0),
+            )
+        else:
+            usage = _Usage()
+        log_run("call_claude_agent", mode=mode, model=cli_model,
+                duration_ms=duration_ms, exit_code=0, output_size=output_size,
+                meta={"text_chars": len(text),
+                      "input_tokens": usage.input_tokens,
+                      "output_tokens": usage.output_tokens,
+                      "tool_less": True})
+        return _Response(
+            content=[_Block(type="text", text=text)] if text else [],
+            usage=usage, model=cli_model, stop_reason="end_turn",
+        )
 
     # CLI envelope: `--json-schema` parsed result lives under `structured_output`.
     # `result` is the text-channel reply (usually empty when structured-output

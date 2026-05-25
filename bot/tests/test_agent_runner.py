@@ -165,14 +165,22 @@ class TestEnvelopeParsing(unittest.TestCase):
                 )
             self.assertIn("timed out", str(ctx.exception))
 
-    def test_requires_tools(self):
-        with self.assertRaises(AgentRunError) as ctx:
-            call_claude_agent(
-                mode="t", system_prompt="s", user_message="u",
+    def test_tool_less_mode_returns_text_block(self):
+        # tools=None → no --json-schema, result becomes single text block.
+        env = {"result": "free-form text response", "usage": {"input_tokens": 5}}
+        with patch("agents._lib.runner._resolve_claude_bin",
+                   return_value="/fake/claude"), \
+             patch("subprocess.run",
+                   return_value=_fake_proc(__import__("json").dumps(env))):
+            resp = call_claude_agent(
+                mode="standard", system_prompt="s", user_message="u",
                 tools=None, max_tokens=500, model="claude-haiku-4-5",
-                force_any_tool=True,
+                force_any_tool=False,
             )
-        self.assertIn("requires tools", str(ctx.exception))
+        self.assertEqual(len(resp.content), 1)
+        self.assertEqual(resp.content[0].type, "text")
+        self.assertEqual(resp.content[0].text, "free-form text response")
+        self.assertEqual(resp.stop_reason, "end_turn")
 
 
 class TestModelAliasing(unittest.TestCase):

@@ -56,10 +56,9 @@ def call_claude(
     extract_tool_use is unchanged.
     """
     import config
-    if getattr(config, "USE_AGENTS", False) and tools:
-        # Agent-CLI requires a structured-output schema, so only route
-        # mode-calls that have a tool subset. Tool-less text-only calls
-        # (older standard mode) keep the API path.
+    if getattr(config, "USE_AGENTS", False):
+        # 100% subscription routing: tools=None handled by runner via
+        # text-only mode (no --json-schema, single text block returned).
         from agents._lib.runner import call_claude_agent
         return call_claude_agent(
             mode=mode, system_prompt=system_prompt, user_message=user_message,

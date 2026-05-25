@@ -8,6 +8,8 @@ import logging
 
 from anthropic import Anthropic
 
+import config
+
 from core.llm.prompt.prompts import RED_TEAM_SYSTEM, RED_TEAM_TOOL
 from core.llm.serialization import dump
 from core.llm.telemetry.api_usage import increment_usage
@@ -64,22 +66,41 @@ def run_red_team(
         f"## Regime\n{regime}"
     )
 
-    try:
-        resp = _get_client().messages.create(
-            model=model,
-            max_tokens=400,
-            system=[{
-                "type": "text",
-                "text": RED_TEAM_SYSTEM,
-                "cache_control": {"type": "ephemeral"},
-            }],
-            tools=[RED_TEAM_TOOL],
-            tool_choice={"type": "tool", "name": "submit_critique"},
-            messages=[{"role": "user", "content": user_msg}],
-        )
-    except Exception as e:
-        logger.warning("Red-team call failed: %s", e)
-        return None
+    # USE_AGENTS=True → CLI only. API fallback removed per user-decision
+    # 2026-05-25: zero API spend, full subscription routing.
+    use_agents = bool(getattr(config, "USE_AGENTS", False))
+    if use_agents:
+        try:
+            from agents._lib.runner import call_claude_agent
+            resp = call_claude_agent(
+                mode="red_team",
+                system_prompt=RED_TEAM_SYSTEM,
+                user_message=user_msg,
+                tools=[RED_TEAM_TOOL],
+                max_tokens=400,
+                model=model,
+                force_any_tool=True,
+            )
+        except Exception as e:
+            logger.warning("Red-team CLI failed (no fallback): %s — skipping critique", e)
+            return None
+    else:
+        try:
+            resp = _get_client().messages.create(
+                model=model,
+                max_tokens=400,
+                system=[{
+                    "type": "text",
+                    "text": RED_TEAM_SYSTEM,
+                    "cache_control": {"type": "ephemeral"},
+                }],
+                tools=[RED_TEAM_TOOL],
+                tool_choice={"type": "tool", "name": "submit_critique"},
+                messages=[{"role": "user", "content": user_msg}],
+            )
+        except Exception as e:
+            logger.warning("Red-team call failed: %s", e)
+            return None
 
     increment_usage(forced=False)
 
