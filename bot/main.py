@@ -224,6 +224,25 @@ def _run_daily_windows() -> None:
         run_weekend_summary()
 
 
+def _run_monitoring_agents() -> None:
+    """Fire any scheduled observability agents (bug-watcher, health-inspector,
+    eod-postmortem, weekly-calibrator, backlog-keeper). Each is gated by an
+    individual feature flag in config.flags; no-op when flags are off.
+    Cheap when nothing's due (single time-window check)."""
+    try:
+        from agents._lib.dispatcher import tick as agents_tick
+
+        def _notify(msg: str):
+            try:
+                send_alert("🤖 Monitoring-Agent", msg)
+            except Exception:
+                logger.exception("agent-alert send failed")
+
+        agents_tick(notify=_notify)
+    except Exception:
+        logger.exception("monitoring-agents tick failed")
+
+
 def _run_poll_cycle(state: AppState) -> None:
     """Every-15-min poll: auto-kill, price/event/news monitors, exit reminders, DD alerts.
     Weekend window only runs news-check (markets closed)."""
@@ -315,6 +334,7 @@ def main() -> None:
 
         _persist_heartbeat(state, now)
         _run_daily_windows()
+        _run_monitoring_agents()
 
         if (now - last_check).total_seconds() >= check_interval:
             _run_poll_cycle(state)

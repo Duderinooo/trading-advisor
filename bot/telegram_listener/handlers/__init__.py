@@ -5,6 +5,10 @@ modules. Each handler still uses the same @telegram_handler decorator + shared
 parsers from telegram_listener._common.
 """
 
+from telegram_listener.handlers.agents import (
+    backlog_handler, bug_watcher_handler, calibrate_handler,
+    health_handler, postmortem_handler,
+)
 from telegram_listener.handlers.analytics import audit_handler, stats_handler
 from telegram_listener.handlers.callbacks import rec_callback_handler
 from telegram_listener.handlers.confirm import confirm_handler
@@ -20,10 +24,11 @@ from telegram_listener.handlers.watch import (
 )
 
 __all__ = [
-    "add_handler", "audit_handler", "cancel_handler", "close_handler",
-    "confirm_handler", "dividend_handler", "help_handler", "killstatus_handler",
-    "morning_handler", "panic_handler", "positions_handler",
-    "rec_callback_handler", "resume_handler",
+    "add_handler", "audit_handler", "backlog_handler", "bug_watcher_handler",
+    "calibrate_handler", "cancel_handler", "close_handler",
+    "confirm_handler", "dividend_handler", "health_handler", "help_handler",
+    "killstatus_handler", "morning_handler", "panic_handler", "positions_handler",
+    "postmortem_handler", "rec_callback_handler", "resume_handler",
     "stats_handler", "watch_handler", "watchclear_handler", "watchlist_handler",
     "watchremove_handler",
 ]

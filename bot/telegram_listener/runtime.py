@@ -18,6 +18,10 @@ from telegram_listener.commands import (
     stats_handler, watch_handler, watchclear_handler, watchlist_handler,
     watchremove_handler,
 )
+from telegram_listener.handlers.agents import (
+    backlog_handler, bug_watcher_handler, calibrate_handler,
+    health_handler, postmortem_handler,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +68,12 @@ async def _async_run():
     app.add_handler(CommandHandler("stats", stats_handler))
     app.add_handler(CommandHandler("help", help_handler))
     app.add_handler(CommandHandler("start", help_handler))
+    # Monitoring-agent manual triggers (Phase B observability).
+    app.add_handler(CommandHandler("bug_watcher", bug_watcher_handler))
+    app.add_handler(CommandHandler("health", health_handler))
+    app.add_handler(CommandHandler("postmortem", postmortem_handler))
+    app.add_handler(CommandHandler("calibrate", calibrate_handler))
+    app.add_handler(CommandHandler("backlog", backlog_handler))
     # Inline-keyboard buttons on entry-rec messages → rec_callback_handler.
     app.add_handler(CallbackQueryHandler(rec_callback_handler, pattern=r"^rec:"))
 

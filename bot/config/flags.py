@@ -55,6 +55,38 @@ FLAGS: dict[str, FeatureFlag] = {
         expires_on=None,
         rationale="Route LLM calls through `claude` CLI (subscription-billed) instead of Anthropic API. Saves per-call cost; CLI ~3-10s slower per call.",
     ),
+    # ---- Per-monitoring-agent flags (Phase B: observability skills). All
+    # default OFF; flip individually after manual /telegram trigger verification.
+    "agent_bug_watcher": FeatureFlag(
+        name="agent_bug_watcher",
+        enabled=False,
+        expires_on=None,
+        rationale="Hourly bug-watcher agent (log+pattern scan, writes docs/incidents/).",
+    ),
+    "agent_health_inspector": FeatureFlag(
+        name="agent_health_inspector",
+        enabled=False,
+        expires_on=None,
+        rationale="Twice-daily health-inspector agent (holistic state synth, writes docs/incidents/).",
+    ),
+    "agent_eod_postmortem": FeatureFlag(
+        name="agent_eod_postmortem",
+        enabled=False,
+        expires_on=None,
+        rationale="Daily 22:15 eod-postmortem agent (per-closed-trade research/ stubs).",
+    ),
+    "agent_weekly_calibrator": FeatureFlag(
+        name="agent_weekly_calibrator",
+        enabled=False,
+        expires_on=None,
+        rationale="Sunday weekly-calibrator agent (hit_stats + gate_FNR → docs/tuning-suggestions-*.md).",
+    ),
+    "agent_backlog_keeper": FeatureFlag(
+        name="agent_backlog_keeper",
+        enabled=False,
+        expires_on=None,
+        rationale="Sunday backlog-keeper agent (sync docs/backlog.md from incidents/ + research/ + git).",
+    ),
 }
 
 
