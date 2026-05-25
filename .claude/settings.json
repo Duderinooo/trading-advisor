@@ -111,7 +111,8 @@
       "Bash(time claude -p --model haiku \"Antworte mit JSON: {\\\\\"x\\\\\":1}\")",
       "Bash(claude -p --model haiku --output-format json --json-schema '{\"type\":\"object\",\"properties\":{\"narrative\":{\"type\":\"string\"},\"actions\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"tool\":{\"const\":\"submit_pass\"},\"input\":{\"type\":\"object\",\"properties\":{\"reason\":{\"type\":\"string\"}},\"required\":[\"reason\"]}},\"required\":[\"tool\",\"input\"]}}},\"required\":[\"actions\"]}' --no-session-persistence --append-system-prompt 'You emit submit_pass when no setup fits' --dangerously-skip-permissions 'Weekend market closed. No setup. Respond.')",
       "Bash(../venv/bin/python -m unittest tests.test_agent_runner -v)",
-      "Bash(claude -p --model haiku --output-format json --json-schema '{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"string\"}},\"required\":[\"x\"]}' --no-session-persistence 'Antworte mit x=hello')"
+      "Bash(claude -p --model haiku --output-format json --json-schema '{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"string\"}},\"required\":[\"x\"]}' --no-session-persistence 'Antworte mit x=hello')",
+      "Bash(kill -KILL 6134)"
     ],
     "additionalDirectories": [
       "/Users/malteollmann/Library/LaunchAgents"
