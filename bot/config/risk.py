@@ -7,9 +7,10 @@ BUDGET_EUR = 1000.0
 MAX_RISK_PER_TRADE_PERCENT = 3.0  # Max % of capital to risk per trade
 
 # 2026-05-12: 30→20 — see research/2026-05-12-edge-floor-006.md
-# Sanity-cap; real size comes from ATR-risk × Kelly × Conviction in
-# core.portfolio.suggest_position_size. 20% allows parallel-trade diversification.
-MAX_POSITION_SIZE_PERCENT = 20.0  # Sanity ceiling — Kelly/ATR/Conviction drive real size
+# 2026-05-25: 20→35 — at €1k capital, 20% caps trades at €200 = fee-drag 25-50%
+# on partial-TP. Bigger trades amortize TR's €1/side fixed fee better. Effective
+# max parallel-trades drops from 5 to ~3 — acceptable for single-user play-money bot.
+MAX_POSITION_SIZE_PERCENT = 35.0  # Sanity ceiling — Kelly/ATR/Conviction drive real size
 
 # Share-Price-Filter: Aktien teurer als €100 sind un-traded weil TR-SL nur auf
 # ganze Stücke geht. €100 Cap erlaubt ≥1 Stk auch bei kleinem Kapital. Entkoppelt
@@ -46,7 +47,9 @@ MIN_SAMPLE_SIZE_FOR_TUNING = 20
 # (€80–100) frisst Fee einen merklichen Anteil am 1R-Gewinn → Gate fordert Brutto-
 # Gewinn @ TP1 ≥ Fees + MIN_NET_PROFIT_EUR. Verhindert Null-Summen-Trades nach Kosten.
 FIXED_FEE_EUR_PER_SIDE = 1.0      # Trade Republic Order-Gebühr pro Seite
-MIN_NET_PROFIT_EUR = 2.0          # Mindest-Netto-Gewinn nach Fees am TP1
+# 2026-05-25: 2→4 — tighter fee-gate, ensures trades have meaningful net-profit
+# headroom. Combines with sizing-cap raise (20→35%) + partial-TP removal.
+MIN_NET_PROFIT_EUR = 4.0          # Mindest-Netto-Gewinn nach Fees am TP1
 
 # Red-Team-Pass threshold (flag toggle in config/flags.py)
 RED_TEAM_MIN_CONFIDENCE = 0.55    # confidence-of-thesis < 0.55 → block

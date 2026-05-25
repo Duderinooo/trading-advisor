@@ -288,13 +288,14 @@ def check_stop_loss_take_profit(paper: bool = False) -> list[dict]:
                 had_more_tps = isinstance(trade.get("take_profit"), list) and len(trade["take_profit"]) > 1
 
                 if had_more_tps:
-                    # Partial close at TP1. Locks PARTIAL_TP_FRACTION × shares;
-                    # remainder runs with BE-SL + trailing → locks ≥0.5R win
-                    # even if runner stops out.
+                    # TP1-Hit (multi-TP rec): always BE-shift + trail activation.
+                    # Optional partial-sell if PARTIAL_TP_FRACTION > 0 AND ≥1 whole
+                    # share to sell. 2026-05-25: default fraction = 0 → no sell,
+                    # full position runs to TP2 / trail-stop. Saves the extra
+                    # €1 partial-sell fee event.
                     shares_total = float(trade.get("shares", 0) or 0)
-                    # User trades whole shares only on TR — floor to int so the
-                    # Telegram alert is actionable (no "verkauf 2.5 Stk").
                     shares_to_sell = float(int(shares_total * config.PARTIAL_TP_FRACTION))
+                    did_partial = False
                     if shares_to_sell > 0 and shares_to_sell < shares_total:
                         _close_partial(trade, shares_to_sell, current_price,
                                        "TAKE_PROFIT_PARTIAL", portfolio)
@@ -308,60 +309,71 @@ def check_stop_loss_take_profit(paper: bool = False) -> list[dict]:
                             "shares_sold": shares_to_sell,
                             "shares_remaining": trade["shares"],
                         })
-                        _pop_first_take_profit(trade)
-                        portfolio_dirty = True
-
-                        # BE-Shift with fee-buffer: at €1k capital + €1 TR fee/side,
-                        # a nominal BE-exit (€0 gross PnL on remainder) would net to
-                        # a loss after sell-fee. Buffer = €1/remaining_shares lifts
-                        # SL enough to cover the sell-fee.
-                        shares_remaining = float(trade.get("shares", 0) or 0)
-                        be_buffer_per_share = (
-                            config.FIXED_FEE_EUR_PER_SIDE / shares_remaining
-                            if shares_remaining > 0 else 0.0
-                        )
-                        be_target = round(entry + be_buffer_per_share, 2) if entry else 0
-                        if entry and (trade.get("stop_loss") is None or trade["stop_loss"] < be_target):
-                            trade["stop_loss"] = be_target
-                            alerts.append({
-                                "type": EventType.BREAK_EVEN_SHIFT,
-                                "ticker": ticker,
-                                "new_stop": be_target,
-                                "fee_buffer_eur": round(be_buffer_per_share * shares_remaining, 2),
-                            })
-                        if not trade.get("trailing_stop_pct"):
-                            atr_pct = data.get("atr14_pct")
-                            if isinstance(atr_pct, (int, float)) and atr_pct > 0:
-                                trail_pct = round(atr_pct * 1.5, 2)
-                                trade["trailing_stop_pct"] = trail_pct
-                                alerts.append({
-                                    "type": EventType.TRAILING_ACTIVATED,
-                                    "ticker": ticker,
-                                    "trail_pct": trail_pct,
-                                    "atr_pct": atr_pct,
-                                })
-                        if trade.get("shares", 0) > 0:
-                            surviving_trades.append(trade)
-                    else:
-                        # Edge: fractional share too small to split. Close full
-                        # position rather than leave a phantom open trade.
-                        logger.warning(
-                            "Partial-TP fraction collapsed (shares_total=%s, "
-                            "shares_to_sell=%s); closing full position",
-                            shares_total, shares_to_sell,
-                        )
+                        did_partial = True
+                    elif shares_to_sell >= shares_total and shares_total > 0:
+                        # Edge: fraction round-up would close full position →
+                        # treat as full TP1 close + done.
                         alerts.append({
                             "type": EventType.TAKE_PROFIT_HIT,
-                            "ticker": ticker,
-                            "entry": entry,
+                            "ticker": ticker, "entry": entry,
                             "take_profit": take_profit,
                             "current_price": current_price,
-                            "pnl_pct": pnl_pct,
-                            "partial": False,
+                            "pnl_pct": pnl_pct, "partial": False,
                         })
                         _pop_first_take_profit(trade)
                         _close_trade(trade, current_price, "TAKE_PROFIT", portfolio)
                         portfolio_dirty = True
+                        continue
+
+                    _pop_first_take_profit(trade)
+                    portfolio_dirty = True
+
+                    # Emit lock-in alert when no partial sold (full position
+                    # continues with BE+trail), so user knows TP1 was hit + SL
+                    # is being ratcheted up.
+                    if not did_partial:
+                        alerts.append({
+                            "type": EventType.TAKE_PROFIT_HIT,
+                            "ticker": ticker, "entry": entry,
+                            "take_profit": take_profit,
+                            "current_price": current_price,
+                            "pnl_pct": pnl_pct,
+                            "partial": True,  # logical-partial (TP1 milestone)
+                            "shares_sold": 0,
+                            "shares_remaining": trade["shares"],
+                            "note": "TP1 hit — SL auf BE+, full position runs",
+                        })
+
+                    # BE-Shift with fee-buffer: even with no partial sell, the
+                    # remaining sell-fee on final exit must be covered by the BE
+                    # target. Buffer = €1/shares_remaining lifts SL above entry.
+                    shares_remaining = float(trade.get("shares", 0) or 0)
+                    be_buffer_per_share = (
+                        config.FIXED_FEE_EUR_PER_SIDE / shares_remaining
+                        if shares_remaining > 0 else 0.0
+                    )
+                    be_target = round(entry + be_buffer_per_share, 2) if entry else 0
+                    if entry and (trade.get("stop_loss") is None or trade["stop_loss"] < be_target):
+                        trade["stop_loss"] = be_target
+                        alerts.append({
+                            "type": EventType.BREAK_EVEN_SHIFT,
+                            "ticker": ticker,
+                            "new_stop": be_target,
+                            "fee_buffer_eur": round(be_buffer_per_share * shares_remaining, 2),
+                        })
+                    if not trade.get("trailing_stop_pct"):
+                        atr_pct = data.get("atr14_pct")
+                        if isinstance(atr_pct, (int, float)) and atr_pct > 0:
+                            trail_pct = round(atr_pct * 1.5, 2)
+                            trade["trailing_stop_pct"] = trail_pct
+                            alerts.append({
+                                "type": EventType.TRAILING_ACTIVATED,
+                                "ticker": ticker,
+                                "trail_pct": trail_pct,
+                                "atr_pct": atr_pct,
+                            })
+                    if trade.get("shares", 0) > 0:
+                        surviving_trades.append(trade)
                 else:
                     # Final TP — close full remainder.
                     alerts.append({

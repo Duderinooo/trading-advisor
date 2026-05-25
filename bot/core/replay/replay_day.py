@@ -141,27 +141,40 @@ def replay_sltp_step(
                 and len(trade["take_profit"]) > 1
             )
             if had_more_tps:
-                # Partial: sell PARTIAL_TP_FRACTION at TP1, remainder runs.
-                shares_to_sell = round(shares * config.PARTIAL_TP_FRACTION, 4)
-                pnl_eur = (tp - entry) * shares_to_sell if entry else 0
-                result.events.append({
-                    "type": "PARTIAL_TP_HIT",
-                    "ticker": ticker, "take_profit": tp,
-                    "exit_price": tp, "entry": entry,
-                    "shares_sold": shares_to_sell,
-                    "shares_remaining": round(shares - shares_to_sell, 4),
-                    "pnl_eur": round(pnl_eur, 2),
-                    "bar_date": bar["date"],
-                })
-                result.realized_pnl_eur += pnl_eur
-                result.closed_partial += 1
-                # Mutate trade: reduce shares, pop TP1, move SL to BE
-                trade["shares"] = round(shares - shares_to_sell, 4)
-                trade["size_eur"] = round(trade["shares"] * entry, 2) if entry else 0.0
+                # TP1-hit: always BE-shift, optional partial-sell.
+                # Mirrors live sltp.py post-2026-05-25 refactor (PARTIAL_TP_FRACTION
+                # default 0 → no sell, full position runs to TP2 / trail).
+                shares_to_sell = float(int(shares * config.PARTIAL_TP_FRACTION))
+                did_partial = shares_to_sell > 0 and shares_to_sell < shares
+                if did_partial:
+                    pnl_eur = (tp - entry) * shares_to_sell if entry else 0
+                    result.events.append({
+                        "type": "PARTIAL_TP_HIT",
+                        "ticker": ticker, "take_profit": tp,
+                        "exit_price": tp, "entry": entry,
+                        "shares_sold": shares_to_sell,
+                        "shares_remaining": round(shares - shares_to_sell, 4),
+                        "pnl_eur": round(pnl_eur, 2),
+                        "bar_date": bar["date"],
+                    })
+                    result.realized_pnl_eur += pnl_eur
+                    result.closed_partial += 1
+                    trade["shares"] = round(shares - shares_to_sell, 4)
+                    trade["size_eur"] = round(trade["shares"] * entry, 2) if entry else 0.0
+                else:
+                    # Lock-in only (no sell) — emit milestone event so caller
+                    # knows TP1 triggered the BE-shift even without realized PnL.
+                    result.events.append({
+                        "type": "TP1_LOCKIN",
+                        "ticker": ticker, "take_profit": tp,
+                        "entry": entry, "shares_remaining": shares,
+                        "pnl_eur": 0.0,
+                        "bar_date": bar["date"],
+                    })
                 trade["take_profit"].pop(0)
                 if not trade["take_profit"]:
                     trade["take_profit"] = None
-                # BE shift with fee-buffer (mirrors live sltp.py behavior)
+                # BE shift with fee-buffer
                 shares_remaining = trade["shares"]
                 be_buffer = (
                     config.FIXED_FEE_EUR_PER_SIDE / shares_remaining

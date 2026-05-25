@@ -111,6 +111,15 @@ def _normalize_model(model: str) -> str:
     return _MODEL_ALIASES.get(model, model)
 
 
+_MODE_TIMEOUT_SECONDS = {
+    "morning": 420,    # Sonnet + 5 tools + full portfolio context — needs headroom
+    "opening": 240,
+    "event": 180,
+    "standard": 180,
+    "red_team": 90,
+}
+
+
 def call_claude_agent(
     *,
     mode: str,
@@ -120,7 +129,7 @@ def call_claude_agent(
     max_tokens: int,
     model: str,
     force_any_tool: bool,
-    timeout_seconds: int = 180,
+    timeout_seconds: int | None = None,
 ) -> _Response:
     """Drop-in replacement for handlers.parser.call_claude.
 
@@ -134,6 +143,8 @@ def call_claude_agent(
     schema = _wrap_actions_schema(tools) if tools else None
     claude_bin = _resolve_claude_bin()
     cli_model = _normalize_model(model)
+    if timeout_seconds is None:
+        timeout_seconds = _MODE_TIMEOUT_SECONDS.get(mode, 180)
 
     cmd = [
         claude_bin, "-p",

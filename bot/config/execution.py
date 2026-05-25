@@ -70,9 +70,12 @@ MIN_BREAKOUT_VOLUME_RATIO = 1.0   # heute_volume / avg_volume
 MIN_RS_20D_VS_INDEX_PCT = 0.0     # ticker_perf_20d − spy_perf_20d ≥ 0pp
 RS_INDEX_TICKER = "SPY5.DE"
 
-# Partial-TP-Execution: bei TP1-Hit X% der Position schließen, Rest mit BE-SL + Trailing weiterlaufen.
-# Wandelt Loser in BE-Trades nach 1R-Gewinnsicherung → Win-Rate-Bias.
-PARTIAL_TP_FRACTION = 0.5         # 50% bei TP1 raus, 50% läuft weiter
+# 2026-05-25: 0.5→0 — partial-TP disabled. At €1k capital with TR's €1/side
+# fee, partial-sell at TP1 burned 25-50% of partial gross profit (extra fee
+# event). New behavior: TP1-hit triggers BE+trail ONLY, no sell. Full position
+# runs to TP2 or trail-stop. Risk-floor preserved (guaranteed ≥0 after BE-shift).
+# Set >0 again to re-enable partials.
+PARTIAL_TP_FRACTION = 0.0         # 0 = no partial, just BE+trail on TP1-hit
 
 # 2026-05-12: 5→6 — see research/2026-05-12-edge-floor-006.md
 # Deterministic setup-quality scoring; mean-reversion family relaxed -2 via SetupProfile.

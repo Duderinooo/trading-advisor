@@ -60,7 +60,9 @@ class TestReplaySltpStep(unittest.TestCase):
         self.assertEqual(result.events[0]["type"], "TAKE_PROFIT_HIT")
         self.assertAlmostEqual(result.realized_pnl_eur, (55.0 - 53.0) * 10, places=2)
 
-    def test_partial_tp_hit_keeps_remainder_open(self):
+    def test_tp1_hit_lockin_no_partial_sell_by_default(self):
+        """Post-2026-05-25: PARTIAL_TP_FRACTION=0 → no sell on TP1, full
+        position runs with BE-shifted SL + TP1 popped."""
         from core.replay.replay_day import replay_sltp_step
         trade = {"ticker": "BAS.DE", "entry_price": 53.0, "shares": 10.0,
                  "stop_loss": 52.0, "take_profit": [55.0, 57.0]}
@@ -70,13 +72,32 @@ class TestReplaySltpStep(unittest.TestCase):
             return_value=_bar("2026-05-23", 55.5, 52.5),
         ):
             out_pf, result = replay_sltp_step(pf, date(2026, 5, 23))
-        self.assertEqual(result.closed_partial, 1)
+        self.assertEqual(result.closed_partial, 0)
         self.assertEqual(result.still_open, 1)
-        # Remainder still open at half-size (50% partial)
         surviving = out_pf["open_trades"][0]
-        self.assertEqual(surviving["shares"], 5.0)
+        # Full position survives — no shares sold
+        self.assertEqual(surviving["shares"], 10.0)
         self.assertEqual(surviving["take_profit"], [57.0])  # TP1 popped
         # BE-shift applied (≥ entry)
+        self.assertGreaterEqual(surviving["stop_loss"], 53.0)
+        # Lock-in event emitted
+        self.assertTrue(any(e["type"] == "TP1_LOCKIN" for e in result.events))
+
+    def test_partial_tp_when_fraction_enabled(self):
+        """With PARTIAL_TP_FRACTION>0, original partial behavior still works."""
+        import config
+        from core.replay.replay_day import replay_sltp_step
+        trade = {"ticker": "BAS.DE", "entry_price": 53.0, "shares": 10.0,
+                 "stop_loss": 52.0, "take_profit": [55.0, 57.0]}
+        pf = self._portfolio(trade)
+        with patch.object(config, "PARTIAL_TP_FRACTION", 0.5), patch(
+            "core.replay.replay_day.get_daily_bar",
+            return_value=_bar("2026-05-23", 55.5, 52.5),
+        ):
+            out_pf, result = replay_sltp_step(pf, date(2026, 5, 23))
+        self.assertEqual(result.closed_partial, 1)
+        surviving = out_pf["open_trades"][0]
+        self.assertEqual(surviving["shares"], 5.0)
         self.assertGreaterEqual(surviving["stop_loss"], 53.0)
 
     def test_ambiguous_keeps_trade_open(self):
