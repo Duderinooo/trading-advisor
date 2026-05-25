@@ -170,12 +170,20 @@ def call_claude_agent(
         cmd.extend(["--json-schema", json.dumps(schema)])
     cmd.append(user_message)
 
+    # CRITICAL: strip ANTHROPIC_API_KEY before spawning `claude` CLI. Otherwise
+    # the CLI prefers API-key auth over OAuth/subscription, and every "via
+    # subscription" call gets billed against the API key instead.
+    # Incident 2026-05-25: €1+ API spend appeared in console despite
+    # USE_AGENTS=True flag. Root cause: inherited env var → CLI used API path.
+    subprocess_env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+
     t0 = time.time()
     error: str | None = None
     output_size = 0
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout_seconds,
+            env=subprocess_env,
         )
     except subprocess.TimeoutExpired as e:
         duration_ms = int((time.time() - t0) * 1000)

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import time
 from dataclasses import dataclass
@@ -102,11 +103,16 @@ def run_skill(name: str, user_input: str) -> str:
         user_input,
     ]
 
+    # Strip ANTHROPIC_API_KEY so CLI uses OAuth/subscription, NOT API key.
+    # See runner.py for incident 2026-05-25 root cause.
+    subprocess_env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+
     t0 = time.time()
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True,
             timeout=spec.timeout_seconds,
+            env=subprocess_env,
         )
     except subprocess.TimeoutExpired as e:
         duration_ms = int((time.time() - t0) * 1000)
