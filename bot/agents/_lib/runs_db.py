@@ -9,6 +9,7 @@ in bot.db (portfolio, traces, etc).
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -17,6 +18,14 @@ from pathlib import Path
 _DB_PATH = Path(__file__).resolve().parents[2] / "state" / "agent_runs.db"
 _LOCK = threading.RLock()
 _INIT = False
+_ENABLED_ENV = "TA_AGENT_RUNS_LOG_ENABLED"
+
+
+def _enabled() -> bool:
+    """Production bot sets TA_AGENT_RUNS_LOG_ENABLED=1 in main.py startup.
+    Tests don't set it → no DB writes from mocked runs (test-pollution fix
+    after incident 2026-05-25)."""
+    return os.environ.get(_ENABLED_ENV) == "1"
 
 
 def _connect() -> sqlite3.Connection:
@@ -60,6 +69,8 @@ def log_run(
     output_size: int | None = None, error: str | None = None,
     meta: dict | None = None,
 ) -> None:
+    if not _enabled():
+        return
     init_runs_db()
     with _LOCK, _connect() as conn:
         conn.execute(

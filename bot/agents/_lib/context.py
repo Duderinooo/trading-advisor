@@ -97,12 +97,22 @@ def _heartbeat_age() -> dict:
         if not row:
             return {"present": False}
         body = json.loads(row[0])
-        ts = body.get("ts") or body.get("last_tick_ts")
-        if ts is None:
-            return {"present": True, "ts": None}
-        age_s = (datetime.now(_CET).timestamp() - float(ts))
-        return {"present": True, "ts": ts, "age_seconds": int(age_s),
-                "iso": datetime.fromtimestamp(float(ts), _CET).isoformat(timespec="seconds")}
+        # heartbeat schema: {"last_tick": "<ISO-naive CET>", "market_hours": ...,
+        # "api_calls_today": N, ...}. Parse the string back to epoch.
+        last_tick_iso = body.get("last_tick")
+        if not last_tick_iso:
+            return {"present": True, "last_tick": None,
+                    "raw_keys": list(body.keys())}
+        try:
+            tick_dt = datetime.fromisoformat(last_tick_iso).replace(tzinfo=_CET)
+            age_s = (datetime.now(_CET).timestamp() - tick_dt.timestamp())
+        except Exception as e:
+            return {"present": True, "last_tick": last_tick_iso,
+                    "parse_error": str(e)}
+        return {"present": True, "last_tick": last_tick_iso,
+                "age_seconds": int(age_s),
+                "market_hours": body.get("market_hours"),
+                "api_calls_today": body.get("api_calls_today")}
     except Exception as e:
         return {"error": str(e)}
 

@@ -284,9 +284,40 @@ def graceful_shutdown(signum, frame):
 # Main loop
 # ---------------------------------------------------------------------------
 
+def _check_sibling_instance() -> None:
+    """Fail-fast if another `python main.py` is already running.
+
+    Telegram only allows one polling connection per token; two instances
+    cause `terminated by other getUpdates request` spam (incident 2026-05-25).
+    Compare against this PID to avoid self-matches. Caller may set
+    `TA_ALLOW_MULTI=1` to skip (used for dev runs).
+    """
+    if os.environ.get("TA_ALLOW_MULTI") == "1":
+        return
+    import subprocess
+    own = os.getpid()
+    try:
+        out = subprocess.run(
+            ["pgrep", "-f", "python.*main\\.py"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception as e:
+        logger.warning("sibling-check pgrep failed: %s — proceeding anyway", e)
+        return
+    pids = [int(p) for p in out.stdout.split() if p.strip().isdigit() and int(p) != own]
+    if pids:
+        logger.error(
+            "🛑 sibling main.py instances detected: %s — refusing to start (set TA_ALLOW_MULTI=1 to override)",
+            pids,
+        )
+        sys.exit(2)
+
+
 def main() -> None:
     signal.signal(signal.SIGINT, graceful_shutdown)
     signal.signal(signal.SIGTERM, graceful_shutdown)
+
+    _check_sibling_instance()
 
     logger.info("=" * 50)
     logger.info("💹 Event-Driven Trading Advisor")
@@ -308,6 +339,8 @@ def main() -> None:
     # production gate_blocks.jsonl with synthetic recs — incident
     # 2026-05-23). Must be set before any handler imports run_entry_gates.
     os.environ.setdefault("TA_GATE_LOG_ENABLED", "1")
+    # Same pattern for agent_runs.db (test-pollution fix 2026-05-25).
+    os.environ.setdefault("TA_AGENT_RUNS_LOG_ENABLED", "1")
 
     from core.db import init_schema
     init_schema()

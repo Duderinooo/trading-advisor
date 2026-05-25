@@ -47,6 +47,15 @@ export async function POST(request: Request) {
   // with launchd's own KeepAlive respawn.
   await new Promise((r) => setTimeout(r, 1500));
 
+  // Safety net: launchctl unload kills tracked PIDs, but if a previous
+  // unload created orphans (parent died, python child adopted by launchd
+  // via PPID=1), those orphans now hold the Telegram polling lock and
+  // would cause `terminated by other getUpdates request` after reload.
+  // pkill catches anything matching `python.*main.py` regardless of PPID.
+  // -KILL because SIGTERM sometimes hangs on Python with active loops.
+  sh(`pkill -KILL -f "python.*main\\.py"`);
+  await new Promise((r) => setTimeout(r, 500));
+
   const load = sh(`launchctl load "${PLIST_PATH}"`);
   if (!load.ok) {
     return Response.json(
