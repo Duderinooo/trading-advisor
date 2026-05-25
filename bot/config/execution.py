@@ -77,6 +77,20 @@ RS_INDEX_TICKER = "SPY5.DE"
 # Set >0 again to re-enable partials.
 PARTIAL_TP_FRACTION = 0.0         # 0 = no partial, just BE+trail on TP1-hit
 
+# Setup-types where final TP is a *trend-following signal* (let winners run via
+# tightened trail) rather than a *reversal-target* (close at TP, lock profit).
+# Swing-low family hits TP at resistance — typically reverses → close.
+# Trend-family TPs are conservative milestones — often continues → lock+trail.
+# 2026-05-25: introduced when removing partial-TP. Tightens trail to 1.0×ATR
+# on lock-in (vs 1.5×ATR for TP1) so reversal catches faster after target hit.
+TREND_FOLLOW_SETUPS = {
+    "breakout_resistance",
+    "flag_continuation",
+    "earnings_drift",
+    "pre_breakout_squeeze",
+}
+TRAIL_TIGHTEN_ATR_MULT_FINAL_TP = 1.0  # vs 1.5×ATR on TP1 lock-in
+
 # 2026-05-12: 5→6 — see research/2026-05-12-edge-floor-006.md
 # Deterministic setup-quality scoring; mean-reversion family relaxed -2 via SetupProfile.
 MIN_CONFLUENCE_SCORE = 6          # von 10 möglichen — darunter PASS

@@ -375,19 +375,72 @@ def check_stop_loss_take_profit(paper: bool = False) -> list[dict]:
                     if trade.get("shares", 0) > 0:
                         surviving_trades.append(trade)
                 else:
-                    # Final TP — close full remainder.
-                    alerts.append({
-                        "type": EventType.TAKE_PROFIT_HIT,
-                        "ticker": ticker,
-                        "entry": entry,
-                        "take_profit": take_profit,
-                        "current_price": current_price,
-                        "pnl_pct": pnl_pct,
-                        "partial": False,
-                    })
-                    _pop_first_take_profit(trade)
-                    _close_trade(trade, current_price, "TAKE_PROFIT", portfolio)
-                    portfolio_dirty = True
+                    # Final TP — setup-type-aware:
+                    # • Trend-family (breakout/flag/earnings_drift/squeeze) →
+                    #   lock-in with tightened trail (1.0×ATR), no sell, let
+                    #   winners run beyond analytical target.
+                    # • Swing-family (mean-rev/support_bounce/etc) → close,
+                    #   TPs at resistance typically reverse.
+                    setup_type = (trade.get("setup_type") or "").lower()
+                    is_trend = setup_type in config.TREND_FOLLOW_SETUPS
+                    if is_trend:
+                        # Ratchet SL up to current TP minus small buffer; tighten
+                        # trail. Pop TP so it doesn't re-trigger.
+                        new_sl_floor = round(
+                            take_profit - take_profit * 0.005, 2,
+                        )  # 0.5% below TP as new SL floor
+                        if trade.get("stop_loss") is None or trade["stop_loss"] < new_sl_floor:
+                            trade["stop_loss"] = new_sl_floor
+                            alerts.append({
+                                "type": EventType.BREAK_EVEN_SHIFT,
+                                "ticker": ticker,
+                                "new_stop": new_sl_floor,
+                                "note": "final TP lock-in (trend-setup)",
+                            })
+                        atr_pct = data.get("atr14_pct")
+                        if isinstance(atr_pct, (int, float)) and atr_pct > 0:
+                            tighter = round(
+                                atr_pct * config.TRAIL_TIGHTEN_ATR_MULT_FINAL_TP, 2,
+                            )
+                            old_trail = trade.get("trailing_stop_pct")
+                            if old_trail is None or tighter < float(old_trail):
+                                trade["trailing_stop_pct"] = tighter
+                                alerts.append({
+                                    "type": EventType.TRAILING_ACTIVATED,
+                                    "ticker": ticker,
+                                    "trail_pct": tighter,
+                                    "atr_pct": atr_pct,
+                                    "note": "tightened to 1.0×ATR after final TP",
+                                })
+                        alerts.append({
+                            "type": EventType.TAKE_PROFIT_HIT,
+                            "ticker": ticker, "entry": entry,
+                            "take_profit": take_profit,
+                            "current_price": current_price,
+                            "pnl_pct": pnl_pct,
+                            "partial": True,  # logical-partial (TP-milestone, no sell)
+                            "shares_sold": 0,
+                            "shares_remaining": trade["shares"],
+                            "note": f"final TP lock-in ({setup_type or 'trend'}) — running on tightened trail",
+                        })
+                        _pop_first_take_profit(trade)
+                        portfolio_dirty = True
+                        if trade.get("shares", 0) > 0:
+                            surviving_trades.append(trade)
+                    else:
+                        # Swing-family: close full at final TP.
+                        alerts.append({
+                            "type": EventType.TAKE_PROFIT_HIT,
+                            "ticker": ticker,
+                            "entry": entry,
+                            "take_profit": take_profit,
+                            "current_price": current_price,
+                            "pnl_pct": pnl_pct,
+                            "partial": False,
+                        })
+                        _pop_first_take_profit(trade)
+                        _close_trade(trade, current_price, "TAKE_PROFIT", portfolio)
+                        portfolio_dirty = True
                 continue
 
             # ---- Approaching-SL warning ----

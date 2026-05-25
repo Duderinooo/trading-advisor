@@ -187,17 +187,37 @@ def replay_sltp_step(
                 if trade["shares"] > 0:
                     surviving.append(trade)
             else:
-                # Final TP: close full
-                pnl_eur = (tp - entry) * shares if entry else 0
-                result.events.append({
-                    "type": "TAKE_PROFIT_HIT",
-                    "ticker": ticker, "take_profit": tp,
-                    "exit_price": tp, "entry": entry, "shares": shares,
-                    "pnl_eur": round(pnl_eur, 2),
-                    "bar_date": bar["date"],
-                })
-                result.realized_pnl_eur += pnl_eur
-                result.closed_full += 1
+                # Final TP: setup-type aware. Trend-family → lock-in (no sell),
+                # swing-family → close full. Mirrors live sltp.py 2026-05-25.
+                setup_type = (trade.get("setup_type") or "").lower()
+                is_trend = setup_type in getattr(config, "TREND_FOLLOW_SETUPS", set())
+                if is_trend:
+                    new_sl_floor = round(tp - tp * 0.005, 2)
+                    if trade.get("stop_loss") is None or trade["stop_loss"] < new_sl_floor:
+                        trade["stop_loss"] = new_sl_floor
+                    trade["take_profit"].pop(0)
+                    if not trade["take_profit"]:
+                        trade["take_profit"] = None
+                    result.events.append({
+                        "type": "FINAL_TP_LOCKIN",
+                        "ticker": ticker, "take_profit": tp,
+                        "entry": entry, "shares_remaining": shares,
+                        "pnl_eur": 0.0,
+                        "bar_date": bar["date"],
+                    })
+                    if trade["shares"] > 0:
+                        surviving.append(trade)
+                else:
+                    pnl_eur = (tp - entry) * shares if entry else 0
+                    result.events.append({
+                        "type": "TAKE_PROFIT_HIT",
+                        "ticker": ticker, "take_profit": tp,
+                        "exit_price": tp, "entry": entry, "shares": shares,
+                        "pnl_eur": round(pnl_eur, 2),
+                        "bar_date": bar["date"],
+                    })
+                    result.realized_pnl_eur += pnl_eur
+                    result.closed_full += 1
             continue
 
         # Neither hit → trade stays open
