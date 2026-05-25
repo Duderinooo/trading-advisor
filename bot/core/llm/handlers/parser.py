@@ -47,7 +47,26 @@ def call_claude(
     *, mode: str, system_prompt: str, user_message: str,
     tools: list | None, max_tokens: int, model: str, force_any_tool: bool,
 ):
-    """Issue the Claude request. Returns the raw Anthropic response object."""
+    """Issue the Claude request. Returns a response object with
+    .content[] (TextBlock/ToolUseBlock-shaped) and .usage.
+
+    Dispatches to the Claude Code CLI when `config.USE_AGENTS` is on
+    (subscription-billed, no API cost) — falls back to the Anthropic SDK
+    otherwise. Both paths emit the same response shape so downstream
+    extract_tool_use is unchanged.
+    """
+    import config
+    if getattr(config, "USE_AGENTS", False) and tools:
+        # Agent-CLI requires a structured-output schema, so only route
+        # mode-calls that have a tool subset. Tool-less text-only calls
+        # (older standard mode) keep the API path.
+        from agents._lib.runner import call_claude_agent
+        return call_claude_agent(
+            mode=mode, system_prompt=system_prompt, user_message=user_message,
+            tools=tools, max_tokens=max_tokens, model=model,
+            force_any_tool=force_any_tool,
+        )
+
     create_kwargs = {
         "model": model,
         "max_tokens": max_tokens,

@@ -49,6 +49,12 @@ FLAGS: dict[str, FeatureFlag] = {
         expires_on=None,
         rationale="Skip Claude call for stock-news on tickers without position/watch",
     ),
+    "use_agents": FeatureFlag(
+        name="use_agents",
+        enabled=True,
+        expires_on=None,
+        rationale="Route LLM calls through `claude` CLI (subscription-billed) instead of Anthropic API. Saves per-call cost; CLI ~3-10s slower per call.",
+    ),
 }
 
 
@@ -79,3 +85,4 @@ RED_TEAM_ENABLED = FLAGS["red_team"].enabled
 AUTO_SPLIT_SINGLE_TP_AT_1R = FLAGS["auto_split_tp"].enabled
 RISK_OFF_BLOCKS_LONGS = FLAGS["risk_off_blocks_longs"].enabled
 NEWS_REQUIRE_OPEN_OR_WATCH = FLAGS["news_require_open_or_watch"].enabled
+USE_AGENTS = FLAGS["use_agents"].enabled

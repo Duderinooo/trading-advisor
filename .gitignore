@@ -22,6 +22,7 @@ portfolio.json
 
 # Logs
 *.log
+*.log.*
 *.err
 trading.log
 
