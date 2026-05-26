@@ -57,10 +57,15 @@ def _recent_agent_runs(limit: int = 30) -> list[dict]:
 
 
 def build_bug_watcher_context() -> str:
-    """Hourly log scan: bot.log + bot.err + recent agent runs."""
-    log_tail = _tail(_LOG_PATH, 300)
-    err_tail = _tail(_ERR_PATH, 100)
-    runs = _recent_agent_runs(30)
+    """Hourly log scan: bot.log + bot.err + recent agent runs.
+
+    Context trimmed 2026-05-26 per audit: log 300→100, err 100→50,
+    agent_runs 30→15. Cache-hit reduces input cost but output reasoning
+    scales with input → less = cheaper response too.
+    """
+    log_tail = _tail(_LOG_PATH, 100)
+    err_tail = _tail(_ERR_PATH, 50)
+    runs = _recent_agent_runs(15)
     runs_summary = [
         {"ts": r.get("ts"), "agent": r.get("agent"), "mode": r.get("mode"),
          "duration_ms": r.get("duration_ms"), "exit_code": r.get("exit_code"),
@@ -187,8 +192,10 @@ def build_health_inspector_context() -> str:
         "gate_fnr": _gate_fnr_safe(),
         "agent_runs_recent": _recent_agent_runs(50),
     }
-    log_tail = _tail(_LOG_PATH, 200)
-    err_tail = _tail(_ERR_PATH, 100)
+    # Context-trim per 2026-05-26 audit: log 200→80, err 100→40,
+    # agent_runs 50→20. Less input → less output reasoning → cheaper.
+    log_tail = _tail(_LOG_PATH, 80)
+    err_tail = _tail(_ERR_PATH, 40)
     return (
         f"# Health snapshot (now={_now_iso()})\n\n"
         f"## ps -ax (filtered)\n```\n{sections['ps_snapshot']}\n```\n\n"
@@ -196,10 +203,10 @@ def build_health_inspector_context() -> str:
         f"## DB integrity\n```json\n{json.dumps(sections['db_integrity'], indent=2)}\n```\n\n"
         f"## Open trades\n```json\n{json.dumps(sections['open_trades'], indent=2, default=str)}\n```\n\n"
         f"## Recent brain traces\n```json\n{json.dumps(sections['recent_traces'], indent=2, default=str)}\n```\n\n"
-        f"## Gate-FNR (deterministic monitoring)\n```json\n{json.dumps(sections['gate_fnr'], indent=2, default=str)[:2000]}\n```\n\n"
-        f"## bot.log tail (200)\n```\n{log_tail}\n```\n\n"
-        f"## bot.err tail (100)\n```\n{err_tail}\n```\n\n"
-        f"## agent_runs.db recent (50)\n```json\n{json.dumps(sections['agent_runs_recent'], indent=2, default=str)[:3000]}\n```\n"
+        f"## Gate-FNR (deterministic monitoring)\n```json\n{json.dumps(sections['gate_fnr'], indent=2, default=str)[:1500]}\n```\n\n"
+        f"## bot.log tail (80)\n```\n{log_tail}\n```\n\n"
+        f"## bot.err tail (40)\n```\n{err_tail}\n```\n\n"
+        f"## agent_runs.db recent (20)\n```json\n{json.dumps(sections['agent_runs_recent'][:20], indent=2, default=str)[:2000]}\n```\n"
     )
 
 

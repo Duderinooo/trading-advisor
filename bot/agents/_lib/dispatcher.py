@@ -170,6 +170,48 @@ PERSISTERS = {
 }
 
 
+def _log_signature() -> int:
+    """Cheap fingerprint of bot.log + bot.err state — combines size + last-mtime.
+    Used to skip log-scanning agents when nothing changed since their last run."""
+    sig = 0
+    for p in (Path(__file__).resolve().parents[2] / "bot.log",
+              Path(__file__).resolve().parents[2] / "bot.err"):
+        if p.exists():
+            try:
+                st = p.stat()
+                sig = sig * 31 + int(st.st_size) + int(st.st_mtime)
+            except Exception:
+                pass
+    return sig
+
+
+def _should_skip_log_scan(name: str) -> bool:
+    """True if log+err state is byte-identical to what this agent saw last run.
+    Saves ~20-60s of LLM compute per skip. Cheap pre-fire optimization."""
+    from agents._lib.scheduler import last_run_ts, _kv_get
+    rec = _kv_get(name)
+    if not rec or not isinstance(rec, dict):
+        return False
+    last_sig = rec.get("meta", {}).get("log_sig") if isinstance(rec.get("meta"), dict) else None
+    if last_sig is None:
+        return False
+    return last_sig == _log_signature()
+
+
+def _unprocessed_incident_count() -> int:
+    """Count of bug-watcher incidents still needing worker attention."""
+    if not _INCIDENTS_DIR.exists():
+        return 0
+    n = 0
+    for p in _INCIDENTS_DIR.glob("*-bug-watcher.md"):
+        try:
+            if "<!-- bug-worker-status" not in p.read_text(encoding="utf-8", errors="replace"):
+                n += 1
+        except Exception:
+            pass
+    return n
+
+
 def _run_bug_worker() -> str | None:
     """Bug-worker has its own orchestration (branch+commit lifecycle) — bypasses
     the standard skill-runner pattern. Returns Telegram alert text or None."""
@@ -203,6 +245,19 @@ def run_agent(name: str, *, force: bool = False) -> tuple[bool, str | None]:
     if not force and not _flag_enabled(name):
         return False, f"agent {name} flag disabled"
 
+    # Cheap pre-checks (2026-05-26 audit): skip the LLM call entirely
+    # when nothing's changed since last run. Saves 20-60s per skip.
+    if not force:
+        if name in ("bug-watcher", "health-inspector") and _should_skip_log_scan(name):
+            logger.info("agent %s skipped — log state unchanged since last run", name)
+            mark_ran(name, ok=True, meta={"skipped": "log unchanged",
+                                          "log_sig": _log_signature()})
+            return True, None
+        if name == "bug-worker" and _unprocessed_incident_count() == 0:
+            logger.info("bug-worker skipped — no unprocessed incidents")
+            mark_ran(name, ok=True, meta={"skipped": "no incidents"})
+            return True, None
+
     # bug-worker has its own subprocess + git lifecycle; bypass standard
     # skill-runner path.
     if name == "bug-worker":
@@ -233,8 +288,11 @@ def run_agent(name: str, *, force: bool = False) -> tuple[bool, str | None]:
         return False, f"⚠️ {name} crashed: {str(e)[:120]}"
     duration_s = int(time.time() - t0)
     alert = persister(output)
-    mark_ran(name, ok=True, meta={"duration_s": duration_s,
-                                   "output_chars": len(output)})
+    meta = {"duration_s": duration_s, "output_chars": len(output)}
+    # Persist log signature so the pre-fire skip works next cycle.
+    if name in ("bug-watcher", "health-inspector"):
+        meta["log_sig"] = _log_signature()
+    mark_ran(name, ok=True, meta=meta)
     logger.info("agent %s ok in %ds (alert=%s)", name, duration_s, bool(alert))
     return True, alert
 

@@ -67,8 +67,8 @@ SCHEDULES: dict[str, AgentCadence] = {
     ),
     "health-inspector": AgentCadence(
         name="health-inspector",
-        interval_minutes=240,  # every 4h
-        only_during_market_hours=False,  # also catches overnight issues
+        interval_minutes=360,  # 2026-05-26: 240→360 (every 6h) per agent audit
+        only_during_market_hours=False,
     ),
     "eod-postmortem": AgentCadence(
         name="eod-postmortem",
