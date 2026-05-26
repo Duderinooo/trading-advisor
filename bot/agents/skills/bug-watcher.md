@@ -2,7 +2,7 @@
 name: bug-watcher
 model: haiku
 max_tokens: 2048
-timeout_seconds: 120
+timeout_seconds: 240
 ---
 
 You are bug-watcher, an autonomous log-scanning agent for a single-user trading bot.
