@@ -51,9 +51,18 @@ def _ts_compact() -> str:
     return datetime.now(_CET).strftime("%Y-%m-%d-%H%M")
 
 
+_TELEGRAM_LIMIT = 3800  # leave headroom under 4096 hard limit
+
+
+def _truncate_for_telegram(body: str, limit: int = _TELEGRAM_LIMIT) -> str:
+    if len(body) <= limit:
+        return body
+    return body[:limit - 80].rstrip() + f"\n\n… (+{len(body) - limit} chars cut, full report on Dashboard)"
+
+
 def _persist_bug_watcher(output: str) -> str | None:
-    """If output indicates real issues (not '✅ no new issues'), save to incidents
-    + return summary line for Telegram."""
+    """Save to incidents + return inline Telegram summary. User can't open
+    .md files from phone, so we embed the issue body directly."""
     output = output.strip()
     if not output:
         return None
@@ -62,11 +71,8 @@ def _persist_bug_watcher(output: str) -> str | None:
     _INCIDENTS_DIR.mkdir(parents=True, exist_ok=True)
     path = _INCIDENTS_DIR / f"{_ts_compact()}-bug-watcher.md"
     path.write_text(output, encoding="utf-8")
-    # First line of first ISSUE = summary
-    for line in output.splitlines():
-        if line.startswith("## ISSUE:"):
-            return f"🐛 bug-watcher: {line[10:].strip()} — {path.name}"
-    return f"🐛 bug-watcher: {path.name}"
+    # Top of report inline — typically 1-2 ISSUE blocks fit easily.
+    return _truncate_for_telegram(f"🐛 *bug-watcher*\n\n{output}")
 
 
 def _persist_health_inspector(output: str) -> str | None:
@@ -90,7 +96,8 @@ def _persist_health_inspector(output: str) -> str | None:
             break
     if verdict.startswith("🟢"):
         return None  # No alert when healthy
-    return f"❤️‍🩹 health-inspector: {verdict} — {path.name}"
+    # Send inline — user reads on phone, can't open .md files.
+    return _truncate_for_telegram(f"❤️‍🩹 *health-inspector* {verdict}\n\n{output}")
 
 
 def _persist_eod_postmortem(output: str) -> str | None:
@@ -99,7 +106,7 @@ def _persist_eod_postmortem(output: str) -> str | None:
     if not output or "NOTHING_TO_REVIEW" in output:
         return None
     _RESEARCH_DIR.mkdir(parents=True, exist_ok=True)
-    written = []
+    written: list[tuple[str, str]] = []  # (filename, body)
     skipped = []
     blocks = output.split("---FILE---")
     for block in blocks:
@@ -115,17 +122,25 @@ def _persist_eod_postmortem(output: str) -> str | None:
             skipped.append(target_path.name)
             continue
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        # Strip the first code fence if present
         body = rest.strip()
         if body.startswith("```"):
             body = body.strip("`").lstrip("\n")
             if body.endswith("```"):
                 body = body[:-3]
-        target_path.write_text(body.strip() + "\n", encoding="utf-8")
-        written.append(target_path.name)
+        body = body.strip()
+        target_path.write_text(body + "\n", encoding="utf-8")
+        written.append((target_path.name, body))
     if not written:
         return None
-    return f"📒 eod-postmortem: {len(written)} written, {len(skipped)} skipped"
+    # Inline summary: per-trade title + first ~400 chars each.
+    parts = [f"📒 *eod-postmortem* — {len(written)} written, {len(skipped)} skipped\n"]
+    for fname, body in written:
+        # Take first ~400 chars per postmortem so user sees lessons inline.
+        snippet = body[:400].rstrip()
+        if len(body) > 400:
+            snippet += "…"
+        parts.append(f"\n▸ `{fname}`\n{snippet}")
+    return _truncate_for_telegram("\n".join(parts))
 
 
 def _persist_weekly_calibrator(output: str) -> str | None:
@@ -135,7 +150,7 @@ def _persist_weekly_calibrator(output: str) -> str | None:
     iso_week = datetime.now(_CET).strftime("%Y-W%V")
     path = _TUNING_DIR / f"tuning-suggestions-{iso_week}.md"
     path.write_text(output, encoding="utf-8")
-    return f"🎚 weekly-calibrator: {path.name}"
+    return _truncate_for_telegram(f"🎚 *weekly-calibrator* ({iso_week})\n\n{output}")
 
 
 def _persist_backlog_keeper(output: str) -> str | None:
@@ -144,7 +159,7 @@ def _persist_backlog_keeper(output: str) -> str | None:
         return None
     _BACKLOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     _BACKLOG_PATH.write_text(output, encoding="utf-8")
-    return f"📋 backlog-keeper: updated docs/backlog.md"
+    return _truncate_for_telegram(f"📋 *backlog-keeper*\n\n{output}")
 
 
 PERSISTERS = {
