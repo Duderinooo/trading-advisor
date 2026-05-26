@@ -119,17 +119,17 @@ def _heartbeat_age() -> dict:
 
 def _db_integrity() -> dict:
     out = {}
+    import sqlite3
+    from contextlib import closing
     for label, db_file in [("bot.db", _BOT_DIR / "state/bot.db"),
                             ("agent_runs.db", _BOT_DIR / "state/agent_runs.db")]:
         if not db_file.exists():
             out[label] = "missing"
             continue
         try:
-            import sqlite3
-            conn = sqlite3.connect(db_file, timeout=5)
-            res = conn.execute("PRAGMA integrity_check").fetchone()
-            out[label] = res[0] if res else "no-result"
-            conn.close()
+            with closing(sqlite3.connect(db_file, timeout=5)) as conn:
+                res = conn.execute("PRAGMA integrity_check").fetchone()
+                out[label] = res[0] if res else "no-result"
         except Exception as e:
             out[label] = f"error: {e}"
     return out

@@ -87,6 +87,12 @@ FLAGS: dict[str, FeatureFlag] = {
         expires_on=None,
         rationale="Sunday backlog-keeper agent (sync docs/backlog.md from incidents/ + research/ + git).",
     ),
+    "agent_bug_worker": FeatureFlag(
+        name="agent_bug_worker",
+        enabled=True,
+        expires_on=None,
+        rationale="Autonomous bug-worker: picks bug-watcher incidents, claude -p with Edit/Bash tools, commits fix to fix/incident-<ts> branch, optional push via AGENT_BUG_WORKER_PUSH=1.",
+    ),
 }
 
 
@@ -118,3 +124,4 @@ AUTO_SPLIT_SINGLE_TP_AT_1R = FLAGS["auto_split_tp"].enabled
 RISK_OFF_BLOCKS_LONGS = FLAGS["risk_off_blocks_longs"].enabled
 NEWS_REQUIRE_OPEN_OR_WATCH = FLAGS["news_require_open_or_watch"].enabled
 USE_AGENTS = FLAGS["use_agents"].enabled
+AGENT_BUG_WORKER = FLAGS["agent_bug_worker"].enabled

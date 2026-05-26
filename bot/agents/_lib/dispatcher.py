@@ -61,8 +61,8 @@ def _truncate_for_telegram(body: str, limit: int = _TELEGRAM_LIMIT) -> str:
 
 
 def _persist_bug_watcher(output: str) -> str | None:
-    """Save to incidents + return inline Telegram summary. User can't open
-    .md files from phone, so we embed the issue body directly."""
+    """Save incident file. NO Telegram alert — bug-worker picks these up
+    autonomously (2026-05-26 change: user wants bugs auto-fixed, not paged)."""
     output = output.strip()
     if not output:
         return None
@@ -71,8 +71,7 @@ def _persist_bug_watcher(output: str) -> str | None:
     _INCIDENTS_DIR.mkdir(parents=True, exist_ok=True)
     path = _INCIDENTS_DIR / f"{_ts_compact()}-bug-watcher.md"
     path.write_text(output, encoding="utf-8")
-    # Top of report inline — typically 1-2 ISSUE blocks fit easily.
-    return _truncate_for_telegram(f"🐛 *bug-watcher*\n\n{output}")
+    return None  # No Telegram — handed off to bug-worker
 
 
 def _persist_health_inspector(output: str) -> str | None:
@@ -171,6 +170,29 @@ PERSISTERS = {
 }
 
 
+def _run_bug_worker() -> str | None:
+    """Bug-worker has its own orchestration (branch+commit lifecycle) — bypasses
+    the standard skill-runner pattern. Returns Telegram alert text or None."""
+    from agents._lib.bug_worker import run_once
+    res = run_once()
+    if res.status == "noop":
+        return None
+    if res.status == "fixed":
+        push_state = "pushed" if res.pushed else "local-only"
+        return (
+            f"🔧 *bug-worker* fix on `{res.branch}` ({push_state})\n"
+            f"commit `{res.commit_sha}`\n\n{res.summary}"
+        )
+    if res.status == "deferred":
+        return f"⏭ *bug-worker* skipped `{res.incident_name}` — {res.summary}"
+    if res.status == "failed":
+        return (
+            f"❌ *bug-worker* failed `{res.incident_name}`\n{res.summary[:1200]}"
+        )
+    # error
+    return f"⚠️ *bug-worker* error `{res.incident_name or '?'}` — {res.summary[:300]}"
+
+
 def run_agent(name: str, *, force: bool = False) -> tuple[bool, str | None]:
     """Run one agent now.
 
@@ -180,6 +202,19 @@ def run_agent(name: str, *, force: bool = False) -> tuple[bool, str | None]:
     """
     if not force and not _flag_enabled(name):
         return False, f"agent {name} flag disabled"
+
+    # bug-worker has its own subprocess + git lifecycle; bypass standard
+    # skill-runner path.
+    if name == "bug-worker":
+        try:
+            alert = _run_bug_worker()
+        except Exception as e:
+            mark_ran(name, ok=False, meta={"error": str(e)[:200]})
+            logger.exception("bug-worker crashed")
+            return False, f"⚠️ bug-worker crashed: {str(e)[:200]}"
+        mark_ran(name, ok=True)
+        return True, alert
+
     builder = CONTEXT_BUILDERS.get(name)
     persister = PERSISTERS.get(name)
     if builder is None or persister is None:

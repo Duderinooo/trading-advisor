@@ -28,12 +28,30 @@ def _enabled() -> bool:
     return os.environ.get(_ENABLED_ENV) == "1"
 
 
-def _connect() -> sqlite3.Connection:
+class _ConnCtx:
+    """Auto-close wrapper. sqlite3's __exit__ commits but does NOT close →
+    FD leak. Incident 2026-05-26."""
+    def __init__(self, conn: sqlite3.Connection):
+        self._conn = conn
+    def __enter__(self) -> sqlite3.Connection:
+        return self._conn
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            if exc_type is None:
+                self._conn.commit()
+            else:
+                self._conn.rollback()
+        finally:
+            self._conn.close()
+        return False
+
+
+def _connect() -> _ConnCtx:
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(_DB_PATH, timeout=10.0, isolation_level=None)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
-    return conn
+    return _ConnCtx(conn)
 
 
 def init_runs_db() -> None:

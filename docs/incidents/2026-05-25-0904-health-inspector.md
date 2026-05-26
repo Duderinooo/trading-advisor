@@ -59,3 +59,5 @@ Both `bot.db` and `agent_runs.db` pass `PRAGMA integrity_check`. Brain traces (m
 4. **Confirm no zombie Telegram instance**: `ps aux | grep python` — verify only PID 36841 is running. The Conflict error self-resolved (new instance won the poll slot), but confirm no stale process survived.
 
 5. **BAYN.DE + MBG.DE**: Check `hold_days_max` on both recs. If either is ≤4, stale-thesis alert should already have fired (once-per-day logic). If not seen on Telegram, stale-thesis check may have been skipped in today's chaotic restart cycle.
+
+<!-- bug-worker-status: processed ts=2026-05-26 reason=already-fixed-manually -->

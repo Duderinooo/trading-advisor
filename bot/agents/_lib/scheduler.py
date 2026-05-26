@@ -87,6 +87,11 @@ SCHEDULES: dict[str, AgentCadence] = {
         time_window=(18, 22),
         only_during_market_hours=False,
     ),
+    "bug-worker": AgentCadence(
+        name="bug-worker",
+        interval_minutes=30,  # check for unprocessed incidents twice/hour
+        only_during_market_hours=False,
+    ),
 }
 
 

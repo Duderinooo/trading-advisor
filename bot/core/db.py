@@ -30,13 +30,33 @@ def db_path() -> Path:
     return _DB_PATH
 
 
-def connect() -> sqlite3.Connection:
-    """Return a fresh connection with WAL + row factory + FK enforcement.
+class _ConnCtx:
+    """Wrap sqlite3.Connection to add CLOSE on __exit__.
 
-    Caller is responsible for closing. Use as `with connect() as conn:` —
-    that commits on success / rolls back on exception, but does NOT close.
-    Wrap in try/finally if you need a guaranteed close, or just let GC
-    handle it (sqlite3 closes on connection delete).
+    Default sqlite3 `with conn:` commits/rolls back but does NOT close.
+    At 256-FD limit (launchd default) this leaked us into EMFILE within
+    hours. See incident 2026-05-26 multi-occurrence bug-watcher reports.
+    """
+    def __init__(self, conn: sqlite3.Connection):
+        self._conn = conn
+    def __enter__(self) -> sqlite3.Connection:
+        return self._conn
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            if exc_type is None:
+                self._conn.commit()
+            else:
+                self._conn.rollback()
+        finally:
+            self._conn.close()
+        return False
+
+
+def connect() -> _ConnCtx:
+    """Return a fresh connection wrapped to auto-CLOSE on context-exit.
+
+    Use as `with connect() as conn:` — commits/rollbacks AND closes.
+    Calling .close() manually also works (delegates to underlying conn).
     """
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(
@@ -48,7 +68,7 @@ def connect() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+    return _ConnCtx(conn)
 
 
 def init_schema() -> None:
