@@ -22,6 +22,72 @@ from core.portfolio.sizing import compute_kelly_mult
 logger = logging.getLogger(__name__)
 
 
+def _aggregate_partials(closed_trades: list[dict]) -> list[dict]:
+    """Group rows by (ticker, entry_date) so multi-partial closes count as ONE
+    trade for stats purposes. Each group becomes a single synthetic row with
+    summed shares/PnL and weighted-avg exit_price. The final row's metadata
+    (setup_type, conviction, p_win, etc.) is preserved.
+
+    2026-05-27: introduced after user observed MBG split-sell was counted as
+    two trades by hit_stats — semantically wrong (one position, two fills).
+    """
+    if not closed_trades:
+        return []
+    groups: dict[tuple, list[dict]] = {}
+    order: list[tuple] = []
+    singletons: list[dict] = []  # trades missing ticker/entry_date keep as-is
+    for t in closed_trades:
+        ticker = t.get("ticker")
+        edate = t.get("entry_date")
+        if not ticker or not edate:
+            singletons.append(t)
+            continue
+        key = (ticker, edate)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(t)
+
+    out: list[dict] = list(singletons)
+    for key in order:
+        rows = groups[key]
+        if len(rows) == 1:
+            out.append(rows[0])
+            continue
+        # Multi-row: aggregate.
+        total_shares = sum(float(r.get("shares", 0) or 0) for r in rows)
+        total_pnl_eur = sum(float(r.get("pnl_eur", 0) or 0) for r in rows)
+        # Weighted-avg exit price (only if we have non-zero shares + prices).
+        wavg_exit = None
+        if total_shares > 0:
+            wavg_exit = sum(
+                float(r.get("exit_price", 0) or 0) * float(r.get("shares", 0) or 0)
+                for r in rows
+            ) / total_shares
+        entry = float(rows[-1].get("entry_price", 0) or 0)
+        pnl_pct = ((wavg_exit - entry) / entry * 100) if (entry and wavg_exit) else 0.0
+        merged = dict(rows[-1])  # final row carries the canonical metadata
+        merged.update({
+            "shares": round(total_shares, 4),
+            "pnl_eur": round(total_pnl_eur, 2),
+            "pnl_pct": round(pnl_pct, 2),
+            "partial": False,
+            "partial_close_count": len(rows),
+            "exit_reason": rows[-1].get("exit_reason"),
+        })
+        if wavg_exit is not None:
+            merged["exit_price"] = round(wavg_exit, 4)
+        # Take brier+outcome from the first partial (TP1) so calibration isn't
+        # double-counted. Already enforced at write-time, but be defensive.
+        for r in rows:
+            if r.get("brier") is not None:
+                merged["brier"] = r["brier"]
+                merged["outcome"] = r.get("outcome")
+                break
+        out.append(merged)
+    return out
+
+
 def compute_hit_stats(closed_trades: list[dict], cash_movements: list[dict] | None = None) -> dict | None:
     """Aggregate win-rate + R-multiple + conviction breakdown from closed trades.
     Returns None if not enough data (<3 closed trades).
@@ -29,7 +95,11 @@ def compute_hit_stats(closed_trades: list[dict], cash_movements: list[dict] | No
     `cash_movements` (optional): dividends linked to trades fold into stats so
     RWE.DE -€13.50 trade + €7.20 div = -€6.30 effective. Omit = price-only (legacy).
     """
-    if not closed_trades or len(closed_trades) < 3:
+    if not closed_trades:
+        return None
+    # Aggregate multi-partial closes into single rows before stats.
+    closed_trades = _aggregate_partials(closed_trades)
+    if len(closed_trades) < 3:
         return None
 
     movements = cash_movements or []

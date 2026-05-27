@@ -308,6 +308,30 @@ class TestComputeHitStats(unittest.TestCase):
         self.assertEqual(stats["total"], 4)
         self.assertEqual(stats["win_rate"], 50.0)
 
+    def test_partials_of_same_position_count_as_one_trade(self):
+        """MBG sold in 2 partial fills → aggregate to 1 trade for stats."""
+        trades = [
+            # Two partials of same MBG position (same entry_date)
+            {"ticker": "MBG.DE", "entry_date": "2026-05-21 14:32",
+             "entry_price": 49.49, "exit_price": 53.0, "shares": 3.0,
+             "pnl_eur": 10.53, "pnl_pct": 7.09, "partial": True},
+            {"ticker": "MBG.DE", "entry_date": "2026-05-21 14:32",
+             "entry_price": 49.49, "exit_price": 52.5, "shares": 2.0,
+             "pnl_eur": 6.02, "pnl_pct": 6.08, "partial": False},
+            # Single trades
+            {"ticker": "BAYN.DE", "entry_date": "2026-05-21 13:35",
+             "entry_price": 38.88, "exit_price": 37.71, "shares": 5.0,
+             "pnl_eur": -5.85, "pnl_pct": -3.01, "partial": False},
+            {"ticker": "DBK.DE", "entry_date": "2026-05-22 09:30",
+             "entry_price": 28.0, "exit_price": 29.0, "shares": 5.0,
+             "pnl_eur": 5.0, "pnl_pct": 3.57, "partial": False},
+        ]
+        stats = P.compute_hit_stats(trades)
+        # Aggregated: MBG (1 trade) + BAYN + DBK = 3 trades
+        self.assertEqual(stats["total"], 3)
+        # 2 wins (MBG aggregate, DBK), 1 loss (BAYN)
+        self.assertAlmostEqual(stats["win_rate"], 66.7, places=1)
+
     def test_calibration_haircut_active_at_min_n(self):
         # 10 trades, p_win 0.6, all won → bias = 0.6 - 1.0 = -0.4
         trades = [
