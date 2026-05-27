@@ -180,14 +180,16 @@ def run_once() -> WorkerResult:
     if not _SKILL_PATH.exists():
         return WorkerResult(False, None, "error",
                             summary="bug-worker.md skill missing")
+    # 2026-05-27: dirty-tree + not-on-main are EXPECTED dev-time states,
+    # not errors. Return noop (ok=True, no Telegram alert) so the scheduler
+    # silently skips. Was spamming user every 30min during interactive
+    # sessions when an unrelated uncommitted edit existed.
     if not _working_tree_clean():
-        return WorkerResult(False, None, "error",
-                            summary="working tree dirty — refusing to run")
+        return WorkerResult(True, None, "noop",
+                            summary="working tree dirty — skipping (silent)")
     if not _on_main():
-        # Worker only runs from main. If user has a feature branch checked out,
-        # leave it alone.
-        return WorkerResult(False, None, "noop",
-                            summary="not on main, skipping")
+        return WorkerResult(True, None, "noop",
+                            summary="not on main — skipping (silent)")
 
     incident_path = _next_incident()
     if incident_path is None:
