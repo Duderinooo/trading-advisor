@@ -12,7 +12,8 @@ EXCLUDED_TICKERS = [
 
 # Watchlist - XETRA Tickers (EUR prices for Trade Republic).
 #
-# 2026-05-23 reduction (27 → 8 tickers): focused list per user-spec — fewer,
+# 2026-05-23 reduction (27 → 8 tickers), 2026-05-27 expansion (+3 → 11):
+# focused list per user-spec — fewer,
 # liquid, clean-trend names beats 27 half-active tickers + huge trigger matrix.
 # Removed: too-noisy (BAYN, FRE, DTE, HEN3), redundant auto-cluster (BMW/MBG/
 # VOW3/P911/CON kept zero — auto-supplier exposure deferred), tech-US-clones
@@ -34,6 +35,15 @@ WATCHLIST = [
 
     # Consumer / Turnaround — opportunistic only, not blind mean-revert
     "PUM.DE",       # Puma (Sportswear, China/brand sentiment)
+
+    # Software / Cloud — SAP is DAX anchor, low correlation to semis+banks
+    "SAP.DE",       # SAP SE (Enterprise Software, cloud transition)
+
+    # Aerospace / Defense — Airbus, defense-budget cycle, unique sector
+    "AIR.DE",       # Airbus SE (Commercial Aviation + Defense)
+
+    # Healthcare — Fresenius, mean-reversion / support_bounce candidate
+    "FRE.DE",       # Fresenius SE (Hospital / Infusion / Dialysis)
 ]
 
 # 🛢️ ROHSTOFFE - macro hedge layer (event-driven only)
