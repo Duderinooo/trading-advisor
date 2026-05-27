@@ -278,11 +278,18 @@ def run_agent(name: str, *, force: bool = False) -> tuple[bool, str | None]:
     try:
         user_input = builder()
         output = run_skill(name, user_input)
-    except AgentRunError as e:
-        mark_ran(name, ok=False, meta={"error": str(e)[:200]})
-        logger.exception("agent %s failed", name)
-        return False, f"⚠️ {name} failed: {str(e)[:120]}"
     except Exception as e:
+        from agents._lib.runner import AgentRateLimitError
+        if isinstance(e, AgentRateLimitError):
+            # Push next-run timestamp forward so we don't hammer during reset.
+            # Use ok=True so the skip is silent (no failure-spam Telegram).
+            logger.warning("agent %s rate-limited — skipping retry until next cycle", name)
+            mark_ran(name, ok=True, meta={"skipped": "rate-limited"})
+            return True, None  # No Telegram alert
+        if isinstance(e, AgentRunError):
+            mark_ran(name, ok=False, meta={"error": str(e)[:200]})
+            logger.exception("agent %s failed", name)
+            return False, f"⚠️ {name} failed: {str(e)[:120]}"
         mark_ran(name, ok=False, meta={"error": str(e)[:200]})
         logger.exception("agent %s crashed", name)
         return False, f"⚠️ {name} crashed: {str(e)[:120]}"

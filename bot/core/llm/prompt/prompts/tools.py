@@ -59,8 +59,12 @@ UPDATE_TARGETS_TOOL = {
             "ticker": {"type": "string"},
             "new_stop_loss": {"type": "number"},
             "new_take_profit": {
-                "type": ["array", "number"],
-                "items": {"type": "number"},
+                # 2026-05-27: was {"type": ["array","number"]} — CLI strict-mode
+                # rejects union types. Use oneOf instead. API + CLI both accept.
+                "oneOf": [
+                    {"type": "array", "items": {"type": "number"}, "minItems": 1},
+                    {"type": "number"},
+                ],
             },
             "reason": {"type": "string", "maxLength": 120},
         },

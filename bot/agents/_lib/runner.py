@@ -29,6 +29,11 @@ class AgentRunError(RuntimeError):
     pass
 
 
+class AgentRateLimitError(AgentRunError):
+    """Subscription rate-limit hit. Caller should skip retry until reset."""
+    pass
+
+
 @dataclass
 class _Block:
     """Mimics anthropic SDK content block (TextBlock / ToolUseBlock)."""
@@ -202,6 +207,13 @@ def call_claude_agent(
         raise AgentRunError(f"claude CLI exit={proc.returncode}: {error}")
 
     raw = proc.stdout.strip()
+    # Rate-limit detection: CLI returns exit=0 + is_error=true + result text
+    # "You've hit your limit · resets X". Treat as recoverable skip, not crash.
+    if '"is_error":true' in raw and "hit your limit" in raw:
+        log_run("call_claude_agent", mode=mode, model=cli_model,
+                duration_ms=duration_ms, exit_code=0, output_size=output_size,
+                error="rate_limited")
+        raise AgentRateLimitError(f"Subscription rate-limit hit (mode={mode})")
     # CLI --output-format=json wraps the agent response in metadata. The
     # actual structured response is in .result (or .response — depends on
     # version). Probe both.

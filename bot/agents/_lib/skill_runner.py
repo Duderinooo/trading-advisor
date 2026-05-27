@@ -134,6 +134,14 @@ def run_skill(name: str, user_input: str) -> str:
     except json.JSONDecodeError:
         envelope = {"result": proc.stdout}
 
+    # Rate-limit detection: skip instead of crash.
+    if isinstance(envelope, dict) and envelope.get("is_error") and \
+       "hit your limit" in (envelope.get("result") or ""):
+        log_run(f"skill:{name}", model=cli_model, duration_ms=duration_ms,
+                exit_code=0, output_size=output_size, error="rate_limited")
+        from agents._lib.runner import AgentRateLimitError
+        raise AgentRateLimitError(f"Subscription rate-limit hit (skill={name})")
+
     result_md = (envelope.get("result") if isinstance(envelope, dict) else None) or ""
     result_md = result_md.strip()
 
