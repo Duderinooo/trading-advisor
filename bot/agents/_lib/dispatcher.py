@@ -75,28 +75,14 @@ def _persist_bug_watcher(output: str) -> str | None:
 
 
 def _persist_health_inspector(output: str) -> str | None:
+    """Save report file. NO Telegram alert — same pattern as bug-watcher."""
     output = output.strip()
     if not output:
         return None
     _INCIDENTS_DIR.mkdir(parents=True, exist_ok=True)
     path = _INCIDENTS_DIR / f"{_ts_compact()}-health-inspector.md"
     path.write_text(output, encoding="utf-8")
-    verdict = "unknown"
-    for line in output.splitlines():
-        ll = line.lower()
-        if "🔴" in line or "critical" in ll:
-            verdict = "🔴 critical"
-            break
-        if "🟡" in line or "degraded" in ll:
-            verdict = "🟡 degraded"
-            break
-        if "🟢" in line or "healthy" in ll:
-            verdict = "🟢 healthy"
-            break
-    if verdict.startswith("🟢"):
-        return None  # No alert when healthy
-    # Send inline — user reads on phone, can't open .md files.
-    return _truncate_for_telegram(f"❤️‍🩹 *health-inspector* {verdict}\n\n{output}")
+    return None
 
 
 def _persist_eod_postmortem(output: str) -> str | None:

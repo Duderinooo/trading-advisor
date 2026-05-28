@@ -63,6 +63,7 @@ def build_request_context(mode: str, event_context: str | None) -> RequestContex
         max_affordable_share_price_eur(portfolio),
     )
     _annotate_entry_cooldowns(market_data, portfolio)
+    _enrich_insider_signals(market_data)
 
     regime = market_regime(market_ctx)
     cash = portfolio.get("cash_eur", config.BUDGET_EUR)
@@ -146,3 +147,18 @@ def _annotate_entry_cooldowns(market_data: dict, portfolio: dict) -> None:
                 f"Gate würde ohnehin blocken (Cooldown bis "
                 f"{config.ENTRY_GATE_COOLDOWN_MIN}min nach Fail)"
             )
+
+
+def _enrich_insider_signals(market_data: dict) -> None:
+    """Attach BaFin director dealings (last 30d) to each ticker's market_data entry.
+
+    Sourced from tracefour.com/de, 1h cached. Graceful no-op on fetch failure."""
+    try:
+        from core.data.insider_data import insider_signals_for_tickers
+        tickers = [t for t, d in market_data.items() if isinstance(d, dict) and not d.get("error")]
+        signals = insider_signals_for_tickers(tickers)
+        for ticker, sig in signals.items():
+            if ticker in market_data:
+                market_data[ticker]["insider_signals_30d"] = sig
+    except Exception:
+        logger.warning("insider_data: enrichment failed", exc_info=True)

@@ -189,7 +189,8 @@ context_sections (user_message fields):
 - ## LAST-20 MISTAKES (prediction/timing/execution/external): dominant class → counter-steer.
 - ## PORTFOLIO HEAT: <0.30 budget → conv=5 only. <0.10 → PASS.
 - ## HEUTE: HIGH-IMPACT MACRO: pre-release no new entries (unless event-independent).
-- ## GAPS: tickers move>={config.GAP_FLAG_PERCENT}%."""
+- ## GAPS: tickers move>={config.GAP_FLAG_PERCENT}%.
+- insider_signals_30d (per ticker, BaFin director dealings last 30d): cluster_buy=True (3+ insiders bought) → +1 conv, max 5. Significant sell by Management_Board → note as red_flag. Single small buy (<€50k) = noise, ignore. Use as tie-breaker only — never primary signal."""
 
 STRATEGY_SYSTEM = STRATEGY_PROMPT + _EXCLUDED_SUFFIX + _SECTION_LEGEND
 

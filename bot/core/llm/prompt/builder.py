@@ -228,7 +228,7 @@ def build_user_message(ctx: RequestContext) -> str:
         f"{dump(pf.get('watch_levels', [])) if pf.get('watch_levels') else 'Keine definiert'}\n\n"
         f"## Markt-Kontext (Indizes + VIX)\n"
         f"{dump(_slim_market_ctx(ctx.market_ctx))}\n\n"
-        f"## Live Kurse (mit RSI, MACD, MA20/50, BB, VWAP, Intraday-OHLC, Analyst-Konsens)\n"
+        f"## Live Kurse (mit RSI, MACD, MA20/50, BB, VWAP, Intraday-OHLC, Analyst-Konsens, insider_signals_30d)\n"
         f"{dump(ctx.market_data)}\n\n"
         f"## Markt-Regime\n{ctx.regime}\n\n"
         f"## ATR-basierte Positionsgrößen (€{ctx.cash:.0f} Cash, {config.MAX_RISK_PER_TRADE_PERCENT}% Risiko/Trade)\n"
