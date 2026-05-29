@@ -40,8 +40,6 @@ export default function TopBar({
   heatPct,
   openCount,
   maxPositions,
-  apiCalls,
-  apiCap,
   staleSecs,
   refreshing,
   onRefresh,
@@ -57,8 +55,6 @@ export default function TopBar({
   heatPct: number;
   openCount: number;
   maxPositions: number;
-  apiCalls: number;
-  apiCap: number;
   staleSecs: number | null;
   refreshing: boolean;
   onRefresh: () => void;
@@ -132,12 +128,6 @@ export default function TopBar({
         </div>
 
         <div className="topbar-actions">
-          <span
-            className="pill mono neutral hide-mobile"
-            title={`API ${apiCalls}/${apiCap}`}
-          >
-            api {apiCalls}/{apiCap}
-          </span>
           <button
             type="button"
             className="icon-btn"

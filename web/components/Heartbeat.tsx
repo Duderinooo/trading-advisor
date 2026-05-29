@@ -85,14 +85,6 @@ export default function Heartbeat({
           ? `${Math.floor(ageSec / 60)}min`
           : `${Math.floor(ageSec / 3600)}h ${Math.floor((ageSec % 3600) / 60)}min`;
 
-  const apiPct = (heartbeat.api_calls_today / heartbeat.api_cap) * 100;
-  const apiTone =
-    apiPct > 80
-      ? "text-rose-400"
-      : apiPct > 50
-        ? "text-amber-400"
-        : "text-zinc-100";
-
   return (
     <div className="space-y-3 text-sm">
       <div className="flex items-center gap-3">
@@ -116,26 +108,6 @@ export default function Heartbeat({
           >
             {heartbeat.market_hours ? "OPEN" : "closed"}
           </div>
-        </div>
-      </div>
-
-      <div>
-        <div className="text-xs uppercase tracking-wider text-zinc-500 mb-1">
-          API Calls Today
-        </div>
-        <div className="flex items-baseline gap-2">
-          <span className={`text-lg font-semibold ${apiTone}`}>
-            {heartbeat.api_calls_today}
-          </span>
-          <span className="text-xs text-zinc-500">
-            / {heartbeat.api_cap} cap
-          </span>
-        </div>
-        <div className="mt-1 h-1.5 rounded bg-zinc-800 overflow-hidden">
-          <div
-            className={`h-full ${apiPct > 80 ? "bg-rose-500" : apiPct > 50 ? "bg-amber-500" : "bg-emerald-500"}`}
-            style={{ width: `${Math.min(100, apiPct)}%` }}
-          />
         </div>
       </div>
 

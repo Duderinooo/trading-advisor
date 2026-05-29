@@ -291,8 +291,6 @@ export default function Dashboard({
         heatPct={heat.pct}
         openCount={openCount}
         maxPositions={MAX_POSITIONS}
-        apiCalls={portfolio.heartbeat?.api_calls_today ?? 0}
-        apiCap={portfolio.heartbeat?.api_cap ?? 0}
         staleSecs={staleSecs}
         refreshing={refreshing}
         onRefresh={refresh}
