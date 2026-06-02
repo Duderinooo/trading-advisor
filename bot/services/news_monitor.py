@@ -57,7 +57,17 @@ def run_news_check(state: AppState) -> None:
             logger.info("📰 GEO NEWS → %s: %s", comms, headline)
 
             # Auto-watch deaktiviert 2026-05-21 (Late-Entry-Pattern, see commit 80d0e30).
-            ctx = f"GEO NEWS: {headline} | Commodity-Play: {comms}"
+            # Oil direction-routing (2026-06-02): both 3OIL (long) + 3OIS (short) fire
+            # on the same keywords. Tell Haiku to read the headline's direction and
+            # pick the matching instrument — escalation→3OIL, de-escalation/peace→3OIS.
+            direction_hint = ""
+            if any(c in ("3OIL.MI", "3OIS.MI") for c in event["triggered_commodities"]):
+                direction_hint = (
+                    " | ÖL-RICHTUNG: Eskalation/Angriff/Sanktion → Öl-hoch → 3OIL.MI (3x long). "
+                    "Frieden/Deeskalation/Waffenstillstand → Öl-runter → 3OIS.MI (3x short). "
+                    "Wähle das zur News-Richtung passende Instrument. Schon-gelaufen/neutral → PASS."
+                )
+            ctx = f"GEO NEWS: {headline} | Commodity-Play: {comms}{direction_hint}"
             analyze_portfolio(mode="event", event_context=ctx, force=True)
             _geo_seen[comm_key] = _now_iso
             _dirty = True
