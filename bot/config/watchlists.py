@@ -53,6 +53,14 @@ WATCHLIST = [
 
     # Consumer Staples — Henkel, defensive low-vol mean-reversion candidate
     "HEN3.DE",      # Henkel Vz (~€66, ATR ~1.5% — calmest name on the list)
+
+    # Auto — Mercedes, re-added 2026-06-04: last trade +2.76R win. User-Logik:
+    # Setup entscheidet, nicht Sektor-Cluster-Flags. Bot bewertet per Setup.
+    "MBG.DE",       # Mercedes-Benz (~€49, ATR ~2.4%)
+
+    # Pharma/Chemie — Bayer, re-added 2026-06-04: bounce vom 32.96-Tief läuft.
+    # War "noisy"-geflaggt; Ausschluss-Flag verworfen — Bot filtert per Setup.
+    "BAYN.DE",      # Bayer (~€36, ATR ~3.3%)
 ]
 
 # 🛢️ ROHSTOFFE - macro hedge layer (event-driven only)
