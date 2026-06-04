@@ -63,7 +63,13 @@ def build_request_context(mode: str, event_context: str | None) -> RequestContex
         max_affordable_share_price_eur(portfolio),
     )
     _annotate_entry_cooldowns(market_data, portfolio)
-    _enrich_insider_signals(market_data)
+    # Insider signals only for morning (Sonnet). 2026-06-04: Haiku (event/opening/
+    # price modes) choked on the nested insider_signals_30d dict + directive —
+    # 15-turn structured-output-retry loops, XETRA-open died (regression from the
+    # 2026-06-02 insider deploy). Sonnet handles the extra context fine; Haiku
+    # gets the pre-deploy market_data shape back.
+    if mode == "morning":
+        _enrich_insider_signals(market_data)
 
     regime = market_regime(market_ctx)
     cash = portfolio.get("cash_eur", config.BUDGET_EUR)

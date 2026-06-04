@@ -301,10 +301,40 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     rec, rec_idx = pending[i], i
                     break
 
+        # No ticker + no reply → the user is confirming "the recommendation".
+        # 2026-06-03: when exactly one entry-rec is pending (the normal case),
+        # take it. `/confirm 19 @26.82` should just work — the ticker is implied
+        # by there being a single open rec. Ambiguous only if >1 entry pending.
+        if rec is None and ticker_arg is None and reply_msg_id is None:
+            entry_recs = [
+                (i, r) for i, r in enumerate(pending)
+                if r.get("kind") not in ("add", "update", "exit")
+            ]
+            if len(entry_recs) == 1:
+                rec_idx, rec = entry_recs[0]
+            elif len(entry_recs) > 1:
+                tickers = ", ".join(r.get("ticker", "?") for _, r in entry_recs)
+                logger.warning(
+                    "confirm: %d entry recs pending (%s) — ambiguous, no ticker/reply",
+                    len(entry_recs), tickers,
+                )
+                await update.message.reply_text(
+                    f"⚠️ *{len(entry_recs)} offene Empfehlungen* ({tickers}) — nicht eindeutig.\n"
+                    f"Nutze `/confirm TICKER {shares_override or ''}` oder antworte auf die Rec.",
+                    parse_mode="Markdown",
+                )
+                return
+
         if rec is None:
+            logger.warning(
+                "confirm FAILED: no matching rec (reply=%s ticker=%s pending=%d shares=%s price=%s)",
+                reply_msg_id, ticker_arg, len(pending), shares_override, price_override,
+            )
             await update.message.reply_text(
-                "❓ Keine passende Empfehlung.\n"
-                "Reply auf die Empfehlung oder `/confirm TICKER [shares] [@preis]`.",
+                "❌ *Confirm fehlgeschlagen — keine offene Empfehlung.*\n"
+                f"Pending-Recs: {len(pending)}. "
+                f"Rec evtl. abgelaufen (>{config.PENDING_REC_TTL_HOURS}h) oder schon bestätigt.\n"
+                "Reply auf die Rec oder `/confirm TICKER [shares] [@preis]`.",
                 parse_mode="Markdown",
             )
             return
@@ -316,6 +346,11 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 rec_dt = datetime.strptime(rec_ts, "%Y-%m-%d %H:%M")
                 age = datetime.now() - rec_dt
                 if age > timedelta(hours=config.PENDING_REC_TTL_HOURS):
+                    logger.warning(
+                        "confirm REJECTED stale rec %s: age=%.1fh > TTL=%dh",
+                        rec.get("ticker"), age.total_seconds() / 3600,
+                        config.PENDING_REC_TTL_HOURS,
+                    )
                     pending.pop(rec_idx)
                     portfolio["pending_recommendations"] = pending
                     save_portfolio(portfolio)
