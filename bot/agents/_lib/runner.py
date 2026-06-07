@@ -34,6 +34,15 @@ class AgentRateLimitError(AgentRunError):
     pass
 
 
+class AgentTransientError(AgentRunError):
+    """Recoverable CLI failure (e.g. error_max_structured_output_retries — Haiku
+    failed to converge on a valid tool-call after N retries). Intermittent:
+    the next cycle usually succeeds. Caller should retry, not crash + alert.
+    2026-06-05: US-open + price-check died on this while XETRA-open same morning
+    ran clean — classic non-deterministic Haiku tool-call divergence."""
+    pass
+
+
 @dataclass
 class _Block:
     """Mimics anthropic SDK content block (TextBlock / ToolUseBlock)."""
@@ -204,6 +213,12 @@ def call_claude_agent(
         log_run("call_claude_agent", mode=mode, model=cli_model,
                 duration_ms=duration_ms, exit_code=proc.returncode,
                 output_size=output_size, error=error)
+        # Non-deterministic tool-call divergence: the CLI exhausted its
+        # structured-output retries. Intermittent — recoverable on next cycle.
+        if "error_max_structured_output_retries" in error:
+            raise AgentTransientError(
+                f"structured-output retries exhausted (mode={mode})"
+            )
         raise AgentRunError(f"claude CLI exit={proc.returncode}: {error}")
 
     raw = proc.stdout.strip()

@@ -199,5 +199,11 @@ _Watch closely_"""
                 logger.info("Price alert analysis skipped: %s", analysis)
             else:
                 logger.info("Price alert check done — tool handlers sent any Telegrams")
-    except Exception:
-        logger.exception("Price check failed")
+    except Exception as e:
+        from runtime.scheduler import is_transient_error
+        if is_transient_error(e):
+            # Recoverable (Haiku tool-call divergence / rate-limit). Next 15-min
+            # cycle retries automatically — no traceback noise, no alert.
+            logger.warning("Price check transient error (auto-retry next cycle): %s", e)
+        else:
+            logger.exception("Price check failed")

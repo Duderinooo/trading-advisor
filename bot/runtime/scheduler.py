@@ -142,6 +142,16 @@ def is_transient_error(exc: BaseException) -> bool:
     """True if exc worth retrying."""
     if isinstance(exc, anthropic.APIStatusError):
         return getattr(exc, "status_code", None) in _TRANSIENT_RETRY_STATUSES
+    # Recoverable claude-CLI failures (structured-output retry exhaustion,
+    # subscription rate-limit). Lazy import to avoid a circular dep with
+    # agents._lib.runner. 2026-06-05: US-open crashed on transient Haiku
+    # tool-call divergence — should retry next cycle, not alert + give up.
+    try:
+        from agents._lib.runner import AgentTransientError, AgentRateLimitError
+        if isinstance(exc, (AgentTransientError, AgentRateLimitError)):
+            return True
+    except Exception:
+        pass
     return isinstance(exc, (
         anthropic.APIConnectionError, anthropic.APITimeoutError,
         ConnectionError, TimeoutError, OSError,
