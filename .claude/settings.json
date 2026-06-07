@@ -113,7 +113,17 @@
       "Bash(../venv/bin/python -m unittest tests.test_agent_runner -v)",
       "Bash(claude -p --model haiku --output-format json --json-schema '{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"string\"}},\"required\":[\"x\"]}' --no-session-persistence 'Antworte mit x=hello')",
       "Bash(kill -KILL 6134)",
-      "Bash(pkill -KILL -f \"python.*main\\\\.py\")"
+      "Bash(pkill -KILL -f \"python.*main\\\\.py\")",
+      "Bash(env -u ANTHROPIC_API_KEY claude -p --model haiku --output-format json --no-session-persistence \"antworte mit ok\")",
+      "Bash(../venv/bin/python -c \"from core.llm.telemetry.api_usage import get_daily_usage; print\\(get_daily_usage\\(\\)\\)\")",
+      "Bash(../venv/bin/python -m unittest tests.test_portfolio.TestComputeHitStats.test_basic_win_rate_and_r_multiple)",
+      "Bash(../venv/bin/python -m unittest tests.test_portfolio.TestComputeHitStats.test_partials_of_same_position_count_as_one_trade)",
+      "Bash(kill 98366)",
+      "WebFetch(domain:tracefour.com)",
+      "Skill(ruflo-browser:browser-record)",
+      "Skill(ruflo-browser:browser-record:*)",
+      "Bash(launchctl stop *)",
+      "Bash(launchctl start *)"
     ],
     "additionalDirectories": [
       "/Users/malteollmann/Library/LaunchAgents"
