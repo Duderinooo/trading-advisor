@@ -133,6 +133,21 @@ _MODE_TIMEOUT_SECONDS = {
     "red_team": 90,
 }
 
+# Per-call USD hard-cap (--max-budget-usd, only works with -p/--print). The CLI
+# has no --max-tokens flag, so the output budget is a prompt soft-cap Haiku can
+# ignore (2026-06-05: event call burned 4809 tok / 900 budget across an 11-turn
+# tool-loop, $0.089). This caps runaway divergence loops at the cost layer:
+# generous over the legit max (morning Sonnet ~$0.16, Haiku modes ~$0.09) so a
+# normal call never trips it — only a stuck loop does. Trips → AgentTransientError
+# path (retries next cycle).
+_MODE_BUDGET_USD = {
+    "morning": 0.40,   # Sonnet, big context — legit ~$0.16
+    "opening": 0.20,
+    "event": 0.20,
+    "standard": 0.20,
+    "red_team": 0.15,
+}
+
 
 def call_claude_agent(
     *,
@@ -180,6 +195,9 @@ def call_claude_agent(
         "--append-system-prompt", system_prompt,
         "--disable-slash-commands",
     ]
+    budget_usd = _MODE_BUDGET_USD.get(mode)
+    if budget_usd:
+        cmd.extend(["--max-budget-usd", str(budget_usd)])
     if schema is not None:
         cmd.extend(["--json-schema", json.dumps(schema)])
     cmd.append(user_message)
@@ -213,11 +231,14 @@ def call_claude_agent(
         log_run("call_claude_agent", mode=mode, model=cli_model,
                 duration_ms=duration_ms, exit_code=proc.returncode,
                 output_size=output_size, error=error)
-        # Non-deterministic tool-call divergence: the CLI exhausted its
-        # structured-output retries. Intermittent — recoverable on next cycle.
-        if "error_max_structured_output_retries" in error:
+        # Recoverable CLI exits — retry next cycle, don't crash + alert:
+        #  - structured-output retry exhaustion (non-deterministic tool-call
+        #    divergence)
+        #  - per-call budget cap hit (runaway loop guard, --max-budget-usd)
+        if ("error_max_structured_output_retries" in error
+                or "budget" in error.lower()):
             raise AgentTransientError(
-                f"structured-output retries exhausted (mode={mode})"
+                f"recoverable CLI exit (mode={mode}): {error[:120]}"
             )
         raise AgentRunError(f"claude CLI exit={proc.returncode}: {error}")
 
