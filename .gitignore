@@ -54,3 +54,6 @@ backtest_report.json
 
 # macOS
 .DS_Store
+
+# Browser-agent session artifacts (ruflo-browser RVF containers)
+*.rvf
