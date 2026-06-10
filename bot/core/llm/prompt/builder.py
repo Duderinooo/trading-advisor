@@ -239,6 +239,21 @@ def build_user_message(ctx: RequestContext) -> str:
         f"{dump(ctx.atr_sizes)}"
     )
 
+    # No-entry-window awareness: the no_entry_zone gate (analyzer step 3) blocks
+    # every recommend_entry during auction/EOD chop windows. Telling Claude up
+    # front stops it burning output tokens on entries guaranteed to be rejected
+    # (2026-06-10 review: 80 no_entry_zone blocks — the US-open check at 15:35
+    # sits inside the 15:30–15:40 window, so its entries never pass the gate).
+    from core.events.dedup import in_no_entry_window
+    if in_no_entry_window(datetime.now()):
+        sections.append(
+            "## ⛔ NO-ENTRY-FENSTER AKTIV\n"
+            "Auktions-/EOD-Chop-Fenster — neue Entries werden deterministisch "
+            "geblockt (schlechte Fills). KEINE recommend_entry emittieren. Nur "
+            "Bestand verwalten: recommend_exit, update_position_targets, sonst "
+            "submit_pass."
+        )
+
     # Thesis-degradation (all modes if open trades exist).
     degr_lines = build_thesis_degradation_lines(
         pf.get("open_trades", []), ctx.market_data,

@@ -17,7 +17,9 @@ from core.portfolio.heat import (
     compute_equity_stats, compute_portfolio_heat, compute_sector_exposure,
     format_equity_stats, format_portfolio_heat, format_sector_exposure,
 )
-from core.portfolio.hit_stats import compute_hit_stats, format_hit_stats
+from core.portfolio.hit_stats import (
+    auto_mistake_class_from_alpha, compute_hit_stats, format_hit_stats,
+)
 from core.portfolio.io import (
     _PAPER_PORTFOLIO_PATH, _PORTFOLIO_PATH,
     load_paper_portfolio, load_portfolio,

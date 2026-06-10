@@ -21,6 +21,7 @@ from core import (
     get_market_data,
     risk_halt_status, set_kill_switch, kill_switch_active,
     maintain_drawdown_state, compute_slippage_budget, get_period_return,
+    auto_mistake_class_from_alpha,
 )
 from memory import log_trade, MEMPALACE_AVAILABLE
 
@@ -216,8 +217,15 @@ async def close_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             closed["mistake_tag"] = mistake_tag
             closed["mistake_class"] = _MISTAKE_CLASS_MAP.get(mistake_tag, "other")
         elif pnl_pct <= 0:
-            closed["mistake_tag"] = None
-            closed["mistake_class"] = "untagged"
+            # No user #tag → auto-derive class from alpha so the learning loop
+            # still gets a class (2026-06-10: all losses were untagged).
+            auto = auto_mistake_class_from_alpha(closed.get("alpha_pct"))
+            if auto:
+                closed["mistake_tag"], closed["mistake_class"] = auto
+                closed["mistake_class_auto"] = True
+            else:
+                closed["mistake_tag"] = None
+                closed["mistake_class"] = "untagged"
         p_win = trade.get("p_win")
         if isinstance(p_win, (int, float)) and 0.0 <= p_win <= 1.0:
             outcome = 1 if pnl_pct > 0 else 0

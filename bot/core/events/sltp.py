@@ -203,6 +203,16 @@ def _close_trade(
     except Exception:
         logger.exception("SPY-attribution failed for %s", trade.get("ticker", "?"))
 
+    # Untagged auto-close loss → derive mistake_class from alpha (slippage
+    # auto-tag above already set 'execution'; this only fills the rest). Keeps
+    # the learning loop fed without a user #tag (2026-06-10 review).
+    if pnl_pct <= 0 and closed.get("mistake_class") in (None, "untagged"):
+        from core.portfolio.hit_stats import auto_mistake_class_from_alpha
+        auto = auto_mistake_class_from_alpha(closed.get("alpha_pct"))
+        if auto:
+            closed["mistake_tag"], closed["mistake_class"] = auto
+            closed["mistake_class_auto"] = True
+
     fee = config.FIXED_FEE_EUR_PER_SIDE
     portfolio.setdefault("closed_trades", []).append(closed)
     portfolio["cash_eur"] = round(

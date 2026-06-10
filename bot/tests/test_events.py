@@ -218,6 +218,24 @@ class TestInNoEntryWindow(unittest.TestCase):
             before = sh * 60 + sm - 1
             self.assertFalse(E._in_no_entry_window(self._at(before // 60, before % 60)))
 
+    def test_opening_checks_never_inside_no_entry_window(self):
+        # Regression guard (2026-06-10): the US-open check at :35 sat inside the
+        # 15:30-15:40 window, so its entries were always gate-blocked. Every
+        # minute an opening check can fire ([OPEN_MINUTE, OPEN_MINUTE+10)) must
+        # be OUTSIDE all NO_ENTRY_WINDOWS, else opening entries can never pass.
+        opens = [
+            (config.XETRA_OPEN_HOUR, config.XETRA_OPEN_MINUTE),
+            (config.US_OPEN_HOUR, config.US_OPEN_MINUTE),
+        ]
+        for oh, om in opens:
+            for offset in range(10):  # detection window is 10 min wide
+                total = oh * 60 + om + offset
+                self.assertFalse(
+                    E._in_no_entry_window(self._at(total // 60, total % 60)),
+                    f"opening check at {total // 60:02d}:{total % 60:02d} "
+                    f"collides with a NO_ENTRY_WINDOW",
+                )
+
 
 class TestShouldAnalyzeEvents(unittest.TestCase):
     def test_no_events_skips(self):

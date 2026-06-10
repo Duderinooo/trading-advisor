@@ -48,7 +48,12 @@ MORNING_PREP_HOUR = 8  # Morgen-Analyse um 8:00
 XETRA_OPEN_HOUR = 9
 XETRA_OPEN_MINUTE = 10
 US_OPEN_HOUR = 15
-US_OPEN_MINUTE = 35         # 5min nach US-Open (15:30 CET)
+# 2026-06-10: US_OPEN_MINUTE 35→42 — at :35 the check fired inside the
+# NO_ENTRY_WINDOWS (15:30–15:40) US-open-spillover span, so every opening
+# entry was deterministically gate-blocked (review: 80 no_entry_zone blocks).
+# :42 lands just after the window → US-open entries can now pass. Detection
+# window is [42,52), still caught by the 15-min poll cadence.
+US_OPEN_MINUTE = 42
 
 # Event triggers für automatische Re-Analyse
 EVENT_TRIGGER_MOVE_PERCENT = 3.0  # (legacy - BIG_MOVE removed; kept for reference)

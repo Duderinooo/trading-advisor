@@ -22,6 +22,27 @@ from core.portfolio.sizing import compute_kelly_mult
 logger = logging.getLogger(__name__)
 
 
+def auto_mistake_class_from_alpha(alpha_pct: float | None) -> tuple[str, str] | None:
+    """Derive (mistake_tag, mistake_class) for an *untagged* loss from its alpha.
+
+    Mirrors the alpha/beta attribution buckets (see compute_hit_stats):
+    - loss + underperformed market (alpha ≤ 0) → setup/thesis failure → prediction
+    - loss + beat market (alpha > 0) → market drag, not our setup → external
+
+    Returns None when alpha is unknown (caller keeps 'untagged'). Keeps the
+    learning loop alive when the user closes without a #tag — 2026-06-10 review
+    found all 4 losses untagged, so class_suggestion never fired despite the
+    attribution engine already knowing setup-fail vs market-noise. Auto-derived
+    rows carry mistake_class_auto=True so provenance stays distinguishable from
+    user-confirmed tags.
+    """
+    if not isinstance(alpha_pct, (int, float)):
+        return None
+    if alpha_pct <= 0:
+        return ("auto_setup_fail", "prediction")
+    return ("auto_market_noise", "external")
+
+
 def _aggregate_partials(closed_trades: list[dict]) -> list[dict]:
     """Group rows by (ticker, entry_date) so multi-partial closes count as ONE
     trade for stats purposes. Each group becomes a single synthetic row with

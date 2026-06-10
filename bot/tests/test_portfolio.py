@@ -399,6 +399,33 @@ class TestComputeHitStats(unittest.TestCase):
         self.assertEqual(stats["by_base_quality"]["no_base"]["total"], 1)
 
 
+class TestAutoMistakeClassFromAlpha(unittest.TestCase):
+    def test_negative_alpha_is_prediction(self):
+        # Lost AND underperformed market → setup/thesis failure.
+        self.assertEqual(
+            P.auto_mistake_class_from_alpha(-3.5),
+            ("auto_setup_fail", "prediction"),
+        )
+
+    def test_zero_alpha_is_prediction(self):
+        # alpha == 0 counts as underperform (matches attribution's <= 0 bucket).
+        self.assertEqual(
+            P.auto_mistake_class_from_alpha(0.0),
+            ("auto_setup_fail", "prediction"),
+        )
+
+    def test_positive_alpha_is_external(self):
+        # Lost but beat market → market drag, not our setup.
+        self.assertEqual(
+            P.auto_mistake_class_from_alpha(2.1),
+            ("auto_market_noise", "external"),
+        )
+
+    def test_unknown_alpha_stays_untagged(self):
+        self.assertIsNone(P.auto_mistake_class_from_alpha(None))
+        self.assertIsNone(P.auto_mistake_class_from_alpha("n/a"))
+
+
 class TestRiskHaltStatus(unittest.TestCase):
     def _pf(self, **kw):
         base = {"open_trades": [], "closed_trades": [], "total_capital_eur": 1000.0}
