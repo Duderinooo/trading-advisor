@@ -80,5 +80,11 @@ def run_event_check() -> None:
         else:
             logger.info("Event check done — tool handlers sent any Telegrams directly")
 
-    except Exception:
-        logger.exception("Event check failed")
+    except Exception as e:
+        from runtime.scheduler import is_transient_error
+        if is_transient_error(e):
+            # Recoverable (Haiku tool-call divergence / rate-limit). Retry next
+            # cycle — no traceback noise.
+            logger.warning("Event check transient error (auto-retry next cycle): %s", e)
+        else:
+            logger.exception("Event check failed")

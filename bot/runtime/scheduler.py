@@ -6,6 +6,7 @@ Extracted from main.py (2026-05-22). Single place for time-window logic.
 import logging
 import time
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import anthropic
 
@@ -283,3 +284,31 @@ def startup_cleanup() -> None:
                     logger.info("Cleanup equity_history: %d → %d", len(eh), len(eh_pruned))
     except Exception:
         logger.exception("Portfolio cleanup failed (non-fatal)")
+
+    # ---- Monitoring incident reports (docs/incidents/*.md) ----
+    # bug-watcher / health-inspector agents drop one md per run; left unpruned
+    # they piled to 121 files and buried real state (2026-06-10). Prune by age
+    # (older than 7 days) AND by count (keep at most the newest 20) — the count
+    # cap catches burst-days where a single day emits a dozen reports. Sort key
+    # is the `YYYY-MM-DD-HHMM-` filename prefix; fall back to mtime if it doesn't
+    # parse. unlink() is the bot's own designed cleanup, not an ad-hoc delete.
+    try:
+        incidents_dir = Path(__file__).resolve().parents[2] / "docs" / "incidents"
+        if incidents_dir.is_dir():
+            cutoff = date.today() - timedelta(days=7)
+            INCIDENT_KEEP_MAX = 20  # newest-N retained regardless of age
+            mds = sorted(incidents_dir.glob("*.md"), key=lambda p: p.name, reverse=True)
+            removed = 0
+            for idx, md in enumerate(mds):
+                try:
+                    file_date = date.fromisoformat(md.name[:10])
+                except ValueError:
+                    file_date = date.fromtimestamp(md.stat().st_mtime)
+                if file_date < cutoff or idx >= INCIDENT_KEEP_MAX:
+                    md.unlink()
+                    removed += 1
+            if removed:
+                logger.info("Cleanup incident reports: removed %d (>7d or beyond newest %d)",
+                            removed, INCIDENT_KEEP_MAX)
+    except Exception:
+        logger.exception("Incident-report cleanup failed (non-fatal)")

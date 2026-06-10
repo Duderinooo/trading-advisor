@@ -197,8 +197,16 @@ _Watch closely_"""
 
             if analysis.startswith("⚠️ Analysis skipped"):
                 logger.info("Price alert analysis skipped: %s", analysis)
-            else:
-                logger.info("Price alert check done — tool handlers sent any Telegrams")
+
+        # Unconditional per-cycle heartbeat. The SL/TP loop above runs every
+        # cycle regardless of price-alerts; without this line, quiet cycles
+        # (no mover) emitted zero INFO logs and the bug-watcher heuristic
+        # mis-read the silence as "price monitor dark 5h" (false-positive
+        # critical, 2026-06-10). One guaranteed line proves liveness.
+        logger.info(
+            "Price check done — %d SL/TP alert(s), %d price alert(s)",
+            len(sl_tp_alerts), len(price_alerts),
+        )
     except Exception as e:
         from runtime.scheduler import is_transient_error
         if is_transient_error(e):
