@@ -31,7 +31,7 @@ from runtime.scheduler import (
 from runtime.state import AppState
 from services.event_monitor import run_event_check
 from services.morning_brief import run_morning_prep
-from services.news_monitor import run_news_check
+from services.news_monitor import run_news_check, run_berkshire_check
 from services.opening_check import run_opening_check
 from services.price_monitor import run_price_check, ratchet_open_trade_extremes
 from services.risk_guards import check_equity_alerts, check_exit_reminders
@@ -262,6 +262,7 @@ def _run_poll_cycle(state: AppState) -> None:
         run_price_check()
         run_event_check()
         run_news_check(state)
+        run_berkshire_check(state)
         try:
             check_exit_reminders()
         except Exception:
@@ -269,6 +270,7 @@ def _run_poll_cycle(state: AppState) -> None:
         check_equity_alerts()
     elif is_weekend_news_window():
         run_news_check(state)
+        run_berkshire_check(state)
 
 
 # ---------------------------------------------------------------------------

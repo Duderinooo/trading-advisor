@@ -3,6 +3,7 @@
 Carries module-level failure counter to alert after 3× consecutive failures.
 """
 
+import hashlib
 import logging
 from datetime import datetime, timedelta
 
@@ -12,13 +13,74 @@ from core import (
     load_portfolio, save_portfolio, portfolio_lock,
     kill_switch_active,
 )
-from notifier import send_alert
+from notifier import send_alert, send_notification
 
 from runtime.scheduler import is_market_hours, is_weekend_news_window
 from runtime.state import AppState
 
 
 logger = logging.getLogger("trading_advisor.news_monitor")
+
+# Berkshire / Sogo-Shosha classification → ping emoji.
+_BERKSHIRE_EMOJI = {
+    "AUFSTOCKUNG": "🟢",
+    "VERKAUF": "🔴",
+    "HALTEN": "🟡",
+    "INFO": "🔵",
+}
+
+
+def run_berkshire_check(state: AppState) -> None:
+    """Info-only tracker for Berkshire moves on the sogo-shosha thesis.
+
+    Pings headline + classification + link, deduped 7d by headline-hash. Not a
+    trade signal — own try/except so a failure never touches the news pipeline.
+    """
+    if not (is_market_hours() or is_weekend_news_window()):
+        return
+    try:
+        from core.data.berkshire_news import fetch_berkshire_news
+        from core.portfolio.runtime_store import load_runtime, update_runtime
+
+        items = fetch_berkshire_news()
+        if not items:
+            return
+
+        fired = load_runtime().get("berkshire_news_fired", {}) or {}
+        now_iso = datetime.now().isoformat()
+        prune_cutoff = (datetime.now() - timedelta(days=7)).isoformat()
+        dirty = False
+
+        for it in items:
+            h = hashlib.sha1(it["title"].encode("utf-8")).hexdigest()[:16]
+            if h in fired:
+                continue
+            cls = it.get("classification", "INFO")
+            emoji = _BERKSHIRE_EMOJI.get(cls, "🔵")
+            when = (it.get("published_at") or "")[:16].replace("T", " ")
+            snippet = (it.get("summary") or "")[:200]
+            msg = (
+                f"🇯🇵 *BERKSHIRE / SOGO SHOSHA*\n\n"
+                f"{emoji} *{cls}*\n"
+                f"{it['title']}\n"
+            )
+            if snippet:
+                msg += f"\n{snippet}\n"
+            msg += f"\nQuelle: {it.get('source', '?')}"
+            if when:
+                msg += f" · {when}"
+            if it.get("link"):
+                msg += f"\n🔗 {it['link']}"
+            send_notification(msg)
+            logger.info("📰 BERKSHIRE [%s]: %s", cls, it["title"][:80])
+            fired[h] = now_iso
+            dirty = True
+
+        if dirty:
+            fired = {k: v for k, v in fired.items() if v > prune_cutoff}
+            update_runtime({"berkshire_news_fired": fired})
+    except Exception:
+        logger.exception("Berkshire news check failed")
 
 
 def run_news_check(state: AppState) -> None:
@@ -108,7 +170,14 @@ def run_news_check(state: AppState) -> None:
 
         state.news_check_consec_failures = 0
         state.news_check_alert_sent = False
-    except Exception:
+    except Exception as e:
+        from runtime.scheduler import is_transient_error
+        if is_transient_error(e):
+            # Recoverable (Haiku tool-call divergence / rate-limit). Common in
+            # the evening geo-news burst. Neither success nor failure — don't
+            # count toward the "pipeline dead" alert, retry next cycle.
+            logger.warning("News check transient error (auto-retry next cycle): %s", e)
+            return
         logger.exception("News check failed")
         state.news_check_consec_failures += 1
         if state.news_check_consec_failures >= 3 and not state.news_check_alert_sent:

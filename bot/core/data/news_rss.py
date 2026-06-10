@@ -117,6 +117,55 @@ def fetch_rss_news(
             "title": title,
             "source": (entry.get("source") or {}).get("title", "?"),
             "published_at": pub_dt.isoformat() if pub_dt else None,
+            "link": entry.get("link") or "",
+            "summary": re.sub(r"<[^>]+>", "", entry.get("summary") or "").strip(),
+        })
+    return items
+
+
+def fetch_rss_for_query(
+    query: str,
+    *,
+    hl: str = "en",
+    gl: str = "US",
+    ceid: str = "US:en",
+    max_age_hours: int = 24,
+    limit: int = 25,
+) -> list[dict]:
+    """Fetch Google News RSS for an arbitrary query string (not ticker-derived).
+
+    Used by topic trackers (e.g. Berkshire / Sogo-Shosha) that need a custom
+    query instead of the per-ticker disambiguation in fetch_rss_news. Same
+    item shape: {title, source, published_at, link, summary}. Never raises.
+    """
+    url = _GOOGLE_NEWS_TPL.format(q=quote_plus(query), hl=hl, gl=gl, ceid=ceid)
+    try:
+        r = requests.get(url, timeout=_TIMEOUT_SECONDS, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return []
+        feed = feedparser.parse(r.content)
+    except (requests.RequestException, Exception) as e:
+        logger.warning("RSS fetch failed for query %r: %s", query, e)
+        return []
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+    items = []
+    for entry in feed.entries[:limit]:
+        title = entry.get("title", "")
+        if not title:
+            continue
+        pub_struct = entry.get("published_parsed")
+        pub_dt = None
+        if pub_struct:
+            pub_dt = datetime(*pub_struct[:6], tzinfo=timezone.utc)
+            if pub_dt < cutoff:
+                continue
+        items.append({
+            "title": title,
+            "source": (entry.get("source") or {}).get("title", "?"),
+            "published_at": pub_dt.isoformat() if pub_dt else None,
+            "link": entry.get("link") or "",
+            "summary": re.sub(r"<[^>]+>", "", entry.get("summary") or "").strip(),
         })
     return items
 
