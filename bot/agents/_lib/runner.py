@@ -142,7 +142,7 @@ _MODE_TIMEOUT_SECONDS = {
 # path (retries next cycle).
 _MODE_BUDGET_USD = {
     "morning": 0.40,   # Sonnet, big context — legit ~$0.16
-    "opening": 0.20,
+    "opening": 0.30,   # 2026-06-10: Sonnet now (was Haiku) — higher per-call cost
     "event": 0.20,
     "standard": 0.20,
     "red_team": 0.15,

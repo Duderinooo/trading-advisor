@@ -81,9 +81,13 @@ MODE_CONFIG: dict[str, dict] = {
             RECOMMEND_ENTRY_TOOL, RECOMMEND_ADD_TOOL,
             UPDATE_TARGETS_TOOL, RECOMMEND_EXIT_TOOL, SUBMIT_PASS_TOOL,
         ],
-        "max_tokens": 900,
+        # 2026-06-10: opening → Sonnet. Haiku diverged repeatedly on opening
+        # tool-calls (error_max_structured_output_retries, 3/3 retry-cap on
+        # US-open). Sonnet handles the 5-tool force-any reliably. Budget 900→1500
+        # for headroom (tight budget was a divergence suspect).
+        "max_tokens": 1500,
         "force_any_tool": True,
-        "model": config.CLAUDE_MODEL_EVENT,
+        "model": config.CLAUDE_MODEL_MORNING,
     },
     "event": {
         "base_prompt": EVENT_TRIGGER_PROMPT,
