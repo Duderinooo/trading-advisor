@@ -4,7 +4,7 @@ Pure deterministic checks. No LLM calls.
 """
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
 import config
 from core import (
@@ -225,38 +225,11 @@ def check_exit_reminders() -> None:
 
 
 # ============================================================================
-# Stale-thesis alerts
+# Stale-thesis handling
 # ============================================================================
-
-def check_stale_theses() -> None:
-    """Alert on positions held longer than hold_days_max. Once per day per trade."""
-    today = str(date.today())
-    with portfolio_lock:
-        portfolio = load_portfolio()
-        dirty = False
-        for trade in portfolio.get("open_trades", []):
-            hold_max = trade.get("hold_days_max")
-            entry_date = trade.get("entry_date")
-            if not isinstance(hold_max, (int, float)) or not entry_date:
-                continue
-            try:
-                entry_d = datetime.strptime(entry_date[:10], "%Y-%m-%d").date()
-            except ValueError:
-                continue
-            days_held = (date.today() - entry_d).days
-            if days_held < hold_max:
-                continue
-            if trade.get("stale_alerted_date") == today:
-                continue
-            ticker = trade.get("ticker", "?")
-            send_alert(
-                f"🕒 STALE THESIS: {ticker}",
-                f"Held {days_held}d > Thesis-Horizon {int(hold_max)}d.\n"
-                f"Thesis: _{trade.get('thesis','—')}_\n"
-                f"Entscheide: schließen, re-analyzen, oder Trailing-Stop straffen.",
-            )
-            logger.warning("Stale thesis alert: %s held %dd > %d", ticker, days_held, hold_max)
-            trade["stale_alerted_date"] = today
-            dirty = True
-        if dirty:
-            save_portfolio(portfolio)
+# The old mechanical 🕒 STALE-THESIS alert (alert-only, no auto-close) was
+# removed 2026-06-15. It only nagged the user to "go check" without judging the
+# thesis. Overdue positions are now handed to Claude in the morning/opening
+# prompt (build_stale_horizon_lines → ⏰ ZEIT-HORIZONT section) for an explicit
+# hold-vs-exit verdict — silent if the thesis still holds, recommend_exit on
+# decay. Still no auto-close (mechanical time-stop removed 2026-05-04).

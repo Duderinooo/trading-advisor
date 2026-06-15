@@ -6,6 +6,8 @@ pillars (analyst flip bearish, MA50 loss, wk_trend down, RS deterioration,
 upside collapse) instead of letting positions silently rot.
 """
 
+from datetime import date, datetime
+
 # Lower index = more bullish. analyst_rec_key downgrade = rank-increase ≥1.
 _REC_KEY_RANK = {
     "strong_buy": 0, "buy": 1, "outperform": 1,
@@ -62,4 +64,36 @@ def build_thesis_degradation_lines(open_trades: list, market_data: dict) -> list
 
         if flags:
             out.append(f"  {ticker}: " + " | ".join(flags))
+    return out
+
+
+def build_stale_horizon_lines(open_trades: list) -> list[str]:
+    """Positions held past their planned hold_days_max horizon.
+
+    Replaces the old mechanical 🕒 STALE-THESIS Telegram nag (alert-only, no
+    auto-close) — instead of pinging the user once/day to "go check", we hand
+    the overdue positions straight to Claude in the morning/opening prompt so it
+    explicitly re-judges hold-vs-exit. No-action (thesis intact) → silent;
+    decay → recommend_exit flows through the normal handler. Still no auto-close
+    (mechanical time-stop was removed 2026-05-04)."""
+    out: list[str] = []
+    today = date.today()
+    for tr in open_trades or []:
+        hold_max = tr.get("hold_days_max")
+        entry_date = tr.get("entry_date")
+        if not isinstance(hold_max, (int, float)) or not entry_date:
+            continue
+        try:
+            entry_d = datetime.strptime(entry_date[:10], "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        days_held = (today - entry_d).days
+        if days_held < hold_max:
+            continue
+        ticker = (tr.get("ticker") or "?").upper()
+        thesis = tr.get("thesis") or "—"
+        out.append(
+            f"  {ticker}: {days_held}d gehalten > Horizont {int(hold_max)}d. "
+            f"Thesis: {thesis}"
+        )
     return out

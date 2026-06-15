@@ -21,7 +21,6 @@ from runtime.scheduler import (
     is_transient_error, transient_retry_inc, transient_retry_reset,
     TRANSIENT_RETRY_CAP,
 )
-from services.risk_guards import check_stale_theses
 
 
 logger = logging.getLogger("trading_advisor.morning_brief")
@@ -328,11 +327,6 @@ def run_morning_prep(force: bool = False) -> None:
         return
 
     logger.info("☀️ Running morning prep%s...", " (forced)" if force else "")
-
-    try:
-        check_stale_theses()
-    except Exception:
-        logger.exception("Stale-thesis check failed")
 
     _gap_pre_check()
     _earnings_pre_check()

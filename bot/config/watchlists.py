@@ -61,6 +61,40 @@ WATCHLIST = [
     # Pharma/Chemie — Bayer, re-added 2026-06-04: bounce vom 32.96-Tief läuft.
     # War "noisy"-geflaggt; Ausschluss-Flag verworfen — Bot filtert per Setup.
     "BAYN.DE",      # Bayer (~€36, ATR ~3.3%)
+
+    # 2026-06-15 expansion (14 → 26): 12d kein neuer Trade seit DBK. Root-cause
+    # war u.a. dünnes bezahlbares Universum (107× whole-share-gate, 72× liquidity-
+    # gate Drops/14d). Live-Screen (Preis ≤€100-Cap, vol_ratio ≥0.3, spread ≤0.75%)
+    # → diese 12 sind sauber + erweitern Sektoren. User-Logik: Setup entscheidet,
+    # nicht Sektor-Cluster — Correlation-Gate (≥0.7/60d) + MAX_POSITIONS_PER_SECTOR=2
+    # regeln Konzentration deterministisch beim Entry, drum dürfen mehrere
+    # Auto-Namen in der Watchlist stehen (Selektion ≠ Holding).
+
+    # Telekom — neuer Sektor, low-ATR Blue-Chip, ultra-liquide
+    "DTE.DE",       # Deutsche Telekom (~€28, ATR ~2.5%) — re-added (war "noisy", Screen zeigt stabil)
+
+    # Travel/Airline — neuer Sektor, billig → beste Stück-Granularität bei €1k
+    "LHA.DE",       # Lufthansa (~€9, vol_ratio ~1.0, ATR ~3.4%)
+
+    # E-Commerce / Consumer-Discretionary — neuer Sektor
+    "ZAL.DE",       # Zalando (~€24, ATR ~3.7%)
+
+    # Immobilien — neuer Sektor, defensiver Diversifier
+    "VNA.DE",       # Vonovia (~€21, ATR ~2.5%)
+
+    # Auto / Industrie — Setup-getrieben, Correlation-Gate begrenzt Cluster
+    "DTG.DE",       # Daimler Truck (~€43, ATR ~2.8%)
+    "P911.DE",      # Porsche AG (~€50, vol_ratio ~1.0)
+    "PAH3.DE",      # Porsche Automobil Holding (~€32, ATR ~2.3%)
+
+    # Healthcare — defensiv, mean-reversion / support_bounce-Kandidaten
+    "SHL.DE",       # Siemens Healthineers (~€35, ATR ~2.3%)
+    "FME.DE",       # Fresenius Medical Care (~€41, Dialyse)
+
+    # Cheap / höhere ATR — beste Granularität, Chase-Risiko via Gates gefiltert
+    "TKA.DE",       # thyssenkrupp (~€12, Stahl/Industrie)
+    "EVT.DE",       # Evotec (~€5, Biotech, ATR ~3.7%)
+    "HFG.DE",       # HelloFresh (~€4, Food/E-Commerce, ATR ~4.4%)
 ]
 
 # 🛢️ ROHSTOFFE - macro hedge layer (event-driven only)

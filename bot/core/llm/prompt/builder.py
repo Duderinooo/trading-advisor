@@ -27,7 +27,10 @@ from core.llm.prompt.prompts import (
     UPDATE_TARGETS_TOOL, RECOMMEND_EXIT_TOOL, SUBMIT_PASS_TOOL,
 )
 from core.llm.prompt.context import RequestContext
-from core.llm.prompt.thesis_diff import build_thesis_degradation_lines
+from core.llm.prompt.thesis_diff import (
+    build_stale_horizon_lines,
+    build_thesis_degradation_lines,
+)
 from core.llm.serialization import dump
 
 
@@ -260,6 +263,23 @@ def build_user_message(ctx: RequestContext) -> str:
     )
     if degr_lines:
         sections.append("## THESIS-STATUS (Snapshot vs. Jetzt)\n" + "\n".join(degr_lines))
+
+    # Zeit-Horizont: positions past hold_days_max. Replaces the old mechanical
+    # 🕒 STALE-THESIS Telegram nag — hand overdue positions to Claude for an
+    # explicit hold-vs-exit verdict instead of pinging the user to go check.
+    # Scoped to the deliberate Sonnet passes (morning/opening); horizon is a
+    # daily-granularity concept, so re-judging on every Haiku event adds noise.
+    if ctx.mode in ("morning", "opening"):
+        stale_lines = build_stale_horizon_lines(pf.get("open_trades", []))
+        if stale_lines:
+            sections.append(
+                "## ⏰ ZEIT-HORIZONT ÜBERSCHRITTEN\n"
+                "Diese Positionen sind über ihrem geplanten Hold-Horizont. KEIN "
+                "Auto-Verkauf — beurteile JEDE explizit: Thesis intakt + "
+                "Momentum/Trail trägt → halten (submit_pass). Stagnation / "
+                "Thesis-Decay (vgl. THESIS-STATUS) → recommend_exit.\n"
+                + "\n".join(stale_lines)
+            )
 
     # Gaps (morning + opening).
     if ctx.mode in ("morning", "opening"):
