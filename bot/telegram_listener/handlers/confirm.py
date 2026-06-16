@@ -325,6 +325,33 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
+        # Phase 3b: no pending rec, but a standing proposed_trade for the ticker
+        # → fire it (same path as the web Fire button). `/confirm BAS.DE` just
+        # works; optional @price / shares override the proposal's plan.
+        if rec is None and ticker_arg:
+            props = portfolio.get("proposed_trades") or []
+            if any((p.get("ticker") or "").upper() == ticker_arg for p in props):
+                from core.proposals import apply_command
+                payload: dict = {}
+                if price_override:
+                    payload["entry_price"] = price_override
+                if shares_override:
+                    payload["shares"] = int(shares_override)
+                ok, msg = apply_command(
+                    portfolio,
+                    {"action": "fire", "ticker": ticker_arg, "payload": payload},
+                )
+                if ok:
+                    save_portfolio(portfolio)
+                    await update.message.reply_text(
+                        f"✅ {msg}\nAuf TR ausführen.", parse_mode="Markdown",
+                    )
+                else:
+                    await update.message.reply_text(
+                        f"❌ Confirm fehlgeschlagen: {msg}", parse_mode="Markdown",
+                    )
+                return
+
         if rec is None:
             logger.warning(
                 "confirm FAILED: no matching rec (reply=%s ticker=%s pending=%d shares=%s price=%s)",
