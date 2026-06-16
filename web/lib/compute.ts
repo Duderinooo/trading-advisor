@@ -93,13 +93,20 @@ export function computeEquityCurve(p: Portfolio): EquityPoint[] {
       recentFresh = Date.now() - recentMs < 5 * 60 * 1000;
     }
   }
-  if (liveCount > 0 && !recentFresh) {
+  // Append a live "now" point whenever the last heartbeat snapshot is stale
+  // (>5min) — including when 100% cash. Without this the curve froze on the
+  // last snapshot (e.g. 1043.87, marked while DBK was still open) even after the
+  // position closed, instead of showing current equity = cash (2026-06-16).
+  if (!recentFresh) {
     // Base on cash + cost-basis (currentEquity), NOT the last snapshot: that
     // snapshot's equity already bakes in the open positions' unrealized at
     // snapshot time, so `snapshot + unrealized` double-counted it (2026-06-16:
     // a >5min-stale snapshot + open DBK rendered 1043.87 + 58.52 = 1102.39).
-    const liveEquity = Math.round(currentEquity(p) + unrealized);
-    const livePeak = Math.max(peak, liveEquity);
+    // When flat, unrealized is 0 → liveEquity == cash exactly.
+    // 2-decimal rounding to match the historical points + headline (was
+    // Math.round → whole €, which made the live point's precision differ).
+    const liveEquity = Math.round((currentEquity(p) + unrealized) * 100) / 100;
+    const livePeak = Math.round(Math.max(peak, liveEquity) * 100) / 100;
     const dd_pct = livePeak > 0 ? ((livePeak - liveEquity) / livePeak) * 100 : 0;
     points.push({
       ts: "now",
