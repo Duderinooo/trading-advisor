@@ -27,12 +27,21 @@ export function computeEquityCurve(p: Portfolio): EquityPoint[] {
   // running peak + drawdown.
   type Event = { date: string; equity?: number; delta?: number };
   const events: Event[] = [];
+  // equity_history snapshots are absolute equity (cash + unrealized) sampled
+  // every tick — the authoritative source once it starts. Realized deltas
+  // (closed-trade pnl, cash movements) are only used to anchor the curve BEFORE
+  // the first snapshot. Applying a closed-trade delta inside the snapshot range
+  // double-counts: closing is equity-neutral (unrealized→realized), but the
+  // snapshot just before the close already baked that value in — that's what
+  // spiked the curve to 1043.87 + 58.52 = 1102.39 on the DBK close (2026-06-16).
+  const firstSnapTs = (p.equity_history ?? []).find((s) => s.ts)?.ts ?? null;
+  const beforeSnapshots = (d: string) => !firstSnapTs || d < firstSnapTs;
   for (const t of p.closed_trades) {
-    if (!t.exit_date) continue;
+    if (!t.exit_date || !beforeSnapshots(t.exit_date)) continue;
     events.push({ date: t.exit_date, delta: Number(t.pnl_eur ?? 0) });
   }
   for (const m of p.cash_movements ?? []) {
-    if (!m.date) continue;
+    if (!m.date || !beforeSnapshots(m.date)) continue;
     events.push({ date: m.date, delta: Number(m.amount ?? 0) });
   }
   for (const s of p.equity_history ?? []) {
