@@ -176,15 +176,19 @@ def call_claude_agent(
         timeout_seconds = _MODE_TIMEOUT_SECONDS.get(mode, 180)
 
     # CLI lacks a --max-tokens flag → soft-cap via prompt appendix.
-    # Sonnet/Haiku reliably honor this. Avoids the 3-4× token overage
-    # health-inspector caught on 2026-05-25 (opening burning 3053 tok / 900
-    # budget with zero output). Saves subscription quota → less rate-limit
-    # pressure during burst windows.
+    # 2026-06-16: the old polite wording was ignored — morning burned 10k tok /
+    # 3500 budget, screened only 4 of 26 names, emitted 0 watch-levels. Firmer
+    # framing + "finish the tool_calls before you run out" directive, since the
+    # real failure was prose-thrash that never reached set_watch_levels. (The
+    # candidate shortlist in context.py is the structural half of this fix.)
     if max_tokens and max_tokens > 0:
         system_prompt = (
             f"{system_prompt}\n\n"
-            f"[output budget: max {max_tokens} tokens. terse. tool_calls "
-            f"only when required. no extra prose.]"
+            f"[OUTPUT BUDGET — HARD {max_tokens} tokens. Terse: at most one short "
+            f"line of reasoning per candidate, no essays. Screen ALL candidates, "
+            f"but SPEND THE BUDGET ON COMPLETING THE REQUIRED tool_calls — never "
+            f"end with analysis and no tool_call. If the budget is tight, cut "
+            f"prose first, tool_calls last.]"
         )
 
     cmd = [

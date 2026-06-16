@@ -26,10 +26,12 @@ WATCHLIST = [
     # actually-tradable universe. 6 days flat was partly structural: half the list
     # was dead weight that could never clear the cap.
 
-    # Semis / AI Infra — best fit for current edge model
-    "IFX.DE",       # Infineon (Semis-EU, Auto-/IoT-Exposure)
-    "AIXA.DE",      # Aixtron (compound semis, SiC/GaN for AI/EV)
-    "SMHN.DE",      # Suss MicroTec (Wafer-Bonder, Fab-Equipment)
+    # 2026-06-16: Semi-Cluster (IFX/AIXA/SMHN) komplett entfernt — Sektor zu
+    # hype-getrieben. Weekly-RSI 81–87, +24%/+14%/+21% über MA50, +80–109% über
+    # MA200, RS +10–20 vs. Index = überhitzt auf dem Swing-Holding-Zeitrahmen.
+    # Daily-Pullbacks (RSI ~50) täuschen saubere Entries vor, aber Downside bei
+    # Sektor-Roll-over ist groß + schnell (atr ~6%). Alle drei korreliert →
+    # Correlation-Gate hätte eh max. 1 zugelassen. Bei Abkühlung re-evaluieren.
 
     # Banks — high-beta, rate-sensitive, clean trend structure
     "DBK.DE",       # Deutsche Bank

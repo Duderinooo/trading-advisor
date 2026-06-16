@@ -146,6 +146,20 @@ def _persist_watch_levels(
                 "Prompt requires ≥3. Check max_tokens / regime-defensiveness.",
                 len(existing),
             )
+            # 2026-06-16: this was a silent ERROR-log for months — a 0-level
+            # morning means zero new entry triggers armed all day, invisible to
+            # the user. Surface it so a thrash / over-defensive morning is caught
+            # same-day instead of via "why no trades?" a week later.
+            try:
+                from notifier import send_alert
+                send_alert(
+                    "⚠️ MORNING: 0 Watch-Levels gearmt",
+                    f"Sonnet hat keine neuen Entry-Trigger gesetzt (bestehende: "
+                    f"{len(existing)}). Heute feuern nur Alt-Level. Falls erwartet "
+                    f"(RISK_OFF / leere Pipeline) ok — sonst /morning erneut.",
+                )
+            except Exception:
+                logger.warning("0-level morning alert failed", exc_info=True)
         else:
             logger.info(
                 "Watch levels: Sonnet returned 0 new levels — keeping %d existing",

@@ -84,6 +84,15 @@ def build_request_context(mode: str, event_context: str | None) -> RequestContex
         if isinstance(_d, dict) and not _d.get("error"):
             _d["state"] = classify_state(_d, regime)
 
+    # Morning: cap the candidate set Sonnet must reason over (state-ranked).
+    # Without this it thrashed on the full 26-name watchlist (2026-06-16).
+    if mode == "morning":
+        protected = set(open_trade_tickers) | set(watch_level_tickers)
+        market_data = _shortlist_candidates(
+            market_data, protected, config.MORNING_CANDIDATE_SHORTLIST,
+        )
+        atr_sizes = {t: v for t, v in atr_sizes.items() if t in market_data}
+
     return RequestContext(
         mode=mode,
         event_context=event_context,
@@ -97,6 +106,41 @@ def build_request_context(mode: str, event_context: str | None) -> RequestContex
         excluded=excluded,
         atr_sizes=atr_sizes,
     )
+
+
+_SHORTLIST_TIER_SCORE = {"A": 3, "B": 2, "C": 1}
+_SHORTLIST_STATE_SCORE = {"EARLY": 2, "VALID": 2, "LATE": 1}
+
+
+def _shortlist_candidates(market_data: dict, protected: set[str], cap: int) -> dict:
+    """Keep protected tickers (open positions + existing watch-levels) plus the
+    top-`cap` non-position candidates ranked by precomputed state. Shrinks the
+    morning prompt so Sonnet can complete the screen within the soft token
+    budget instead of thrashing on the full watchlist (2026-06-16 incident:
+    258s / 10k-tok run, only 4 of 26 names screened, 0 watch-levels emitted).
+
+    Rank = quality_tier (A/B/C) − red_flags + entry_state (EARLY/VALID best).
+    Errors / protected always retained; ties broken by insertion order."""
+    def _score(d: dict) -> int:
+        st = d.get("state") or {}
+        s = _SHORTLIST_TIER_SCORE.get(st.get("quality_tier"), 0) * 10
+        s += _SHORTLIST_STATE_SCORE.get(st.get("entry_state"), 0) * 3
+        s -= len(st.get("red_flags") or []) * 2
+        return s
+
+    candidates = [
+        (_t, _d) for _t, _d in market_data.items()
+        if _t not in protected and isinstance(_d, dict) and not _d.get("error")
+    ]
+    candidates.sort(key=lambda kv: _score(kv[1]), reverse=True)
+    keep = set(protected) | {_t for _t, _ in candidates[:cap]}
+    dropped = [_t for _t, _ in candidates[cap:]]
+    if dropped:
+        logger.info(
+            "Morning shortlist: kept %d (protected=%d + top-%d), dropped %d: %s",
+            len(keep), len(protected), cap, len(dropped), ", ".join(dropped),
+        )
+    return {_t: _d for _t, _d in market_data.items() if _t in keep}
 
 
 def _apply_liquidity_filter(

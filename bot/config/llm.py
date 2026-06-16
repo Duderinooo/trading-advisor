@@ -8,6 +8,14 @@ MAX_ANALYSES_PER_DAY = 20          # Safety cap, but shouldn't hit it normally
 MIN_MINUTES_BETWEEN_ANALYSES = 45  # Swing braucht keine Hektik
 ANALYSIS_COST_EUR = 0.01           # ~cost per Haiku call (gemessen 2026-04, event/opening/news)
 
+# Morning candidate shortlist: max non-position tickers fed to the morning LLM.
+# 2026-06-16: after the watchlist grew 14→26, Sonnet thrashed on the full set
+# (258s / 10k-tok run, screened only 4 names, emitted 0 watch-levels). Engine
+# pre-ranks by precomputed state (tier + entry_state − red_flags) and hands
+# Sonnet only the top-N; open positions + existing watch-levels always stay on
+# top of this. Keeps the screen completable within the soft token budget.
+MORNING_CANDIDATE_SHORTLIST = 12
+
 # Models: Sonnet für Morning-Brief (Senior-Reasoning, 1x/Tag), Haiku für Event-Checks (günstig, schnell)
 CLAUDE_MODEL_MORNING = "claude-sonnet-4-6"
 CLAUDE_MODEL_EVENT = "claude-haiku-4-5"
