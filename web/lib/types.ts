@@ -223,16 +223,6 @@ export type Portfolio = {
   last_opening_trace_us?: AnalyzeTrace;
 };
 
-export type PaperPortfolio = {
-  open_trades: OpenTrade[];
-  closed_trades: ClosedTrade[];
-  cash_eur: number;
-  total_capital_eur: number;
-  started_at?: string;
-  paper: true;
-  last_updated?: string;
-};
-
 export type GateBlock = {
   ts: string;
   ticker: string;
@@ -261,7 +251,7 @@ export type ThesisDecayFlag = {
   held_days: number;
   hold_max: number;
   pnl_pct: number;
-  severity: "info" | "warn" | "stale";
+  severity: "info" | "warn";
 };
 
 export type MistakeTrendPoint = {

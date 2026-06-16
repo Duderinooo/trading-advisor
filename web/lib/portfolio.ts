@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { dbExists, getDb } from "./db";
-import type { ClaudeCall, GateBlock, PaperPortfolio, Portfolio } from "./types";
+import type { ClaudeCall, GateBlock, Portfolio } from "./types";
 
 /**
  * Paths follow the 2026-05-23 bot/ + web/ split: web is `<repo>/web`,
@@ -11,7 +11,6 @@ import type { ClaudeCall, GateBlock, PaperPortfolio, Portfolio } from "./types";
  */
 const BOT_DIR = path.join(process.cwd(), "..", "bot");
 const PORTFOLIO_PATH = path.join(BOT_DIR, "portfolio.json");
-const PAPER_PORTFOLIO_PATH = path.join(BOT_DIR, "training_portfolio.json");
 const GATE_LOG_PATH = path.join(BOT_DIR, "gate_blocks.jsonl");
 const BACKTEST_PATH = path.join(BOT_DIR, "backtest_report.json");
 const CALLS_LOG_PATH = path.join(BOT_DIR, "claude_calls.jsonl");
@@ -103,42 +102,6 @@ export async function readPortfolio(): Promise<Portfolio> {
     last_opening_trace_xetra: last_opening_trace_xetra as Portfolio["last_opening_trace_xetra"],
     last_opening_trace_us: last_opening_trace_us as Portfolio["last_opening_trace_us"],
   };
-}
-
-export async function readPaperPortfolio(): Promise<PaperPortfolio | null> {
-  // Phase E7 follow-up: paper portfolio migrated from
-  // training_portfolio.json to SQLite kv_state(namespace='paper').
-  // Falls back to the legacy file for pre-migration installs.
-  const fromDb = readKv("paper", "portfolio") as
-    | Partial<PaperPortfolio>
-    | undefined;
-  if (fromDb) {
-    return {
-      open_trades: fromDb.open_trades ?? [],
-      closed_trades: fromDb.closed_trades ?? [],
-      cash_eur: fromDb.cash_eur ?? 0,
-      total_capital_eur: fromDb.total_capital_eur ?? 0,
-      started_at: fromDb.started_at,
-      paper: true,
-      last_updated: fromDb.last_updated,
-    };
-  }
-  try {
-    const raw = await fs.readFile(PAPER_PORTFOLIO_PATH, "utf8");
-    const data = JSON.parse(raw);
-    return {
-      open_trades: data.open_trades ?? [],
-      closed_trades: data.closed_trades ?? [],
-      cash_eur: data.cash_eur ?? 0,
-      total_capital_eur: data.total_capital_eur ?? 0,
-      started_at: data.started_at,
-      paper: true,
-      last_updated: data.last_updated,
-    };
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw err;
-  }
 }
 
 export async function readGateBlocks(limit = 500): Promise<GateBlock[]> {

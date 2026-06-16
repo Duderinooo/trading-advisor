@@ -760,9 +760,11 @@ export function computeThesisDecay(
       ? ((refPrice - t.entry_price) / t.entry_price) * 100
       : 0;
 
+    // Stale-thesis tier removed 2026-06-16 (matches backend): holding past the
+    // planned horizon is no longer flagged as "stale" — calendar age alone is
+    // not thesis decay. Soft "warn" past 75% stays as a heads-up only.
     let severity: ThesisDecayFlag["severity"] = "info";
-    if (heldDays >= holdMax) severity = "stale";
-    else if (heldDays >= Math.floor(holdMax * 0.75)) severity = "warn";
+    if (heldDays >= Math.floor(holdMax * 0.75)) severity = "warn";
 
     out.push({
       ticker: t.ticker,

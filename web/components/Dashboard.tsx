@@ -25,7 +25,6 @@ import Stats from "@/components/Stats";
 import SubNav, { type NavItem } from "@/components/SubNav";
 import ThesisDecay from "@/components/ThesisDecay";
 import TopBar from "@/components/TopBar";
-import TrainingPortfolioCard from "@/components/TrainingPortfolioCard";
 import WatchLevels from "@/components/WatchLevels";
 import WhatIfShock from "@/components/WhatIfShock";
 import {
@@ -48,31 +47,18 @@ import {
   unrealizedPnl,
   winRateSpark,
 } from "@/lib/compute";
-import type { PaperPortfolio, Portfolio } from "@/lib/types";
+import type { Portfolio } from "@/lib/types";
 import { useCallback, useEffect, useMemo, useState } from "react";
-
-type PaperPayload =
-  | PaperPortfolio
-  | {
-      paper: false;
-      open_trades: [];
-      closed_trades: [];
-      cash_eur: number;
-      total_capital_eur: number;
-    };
 
 const REFRESH_MS = 10_000;
 const MAX_POSITIONS = 5;
 
 export default function Dashboard({
   initial,
-  initialPaper,
 }: {
   initial: Portfolio;
-  initialPaper: PaperPayload;
 }) {
   const [portfolio, setPortfolio] = useState<Portfolio>(initial);
-  const [paper, setPaper] = useState<PaperPayload>(initialPaper);
   const [refreshedAt, setRefreshedAt] = useState<Date | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -91,17 +77,10 @@ export default function Dashboard({
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      const [pRes, paperRes] = await Promise.all([
-        fetch("/api/portfolio", { cache: "no-store" }),
-        fetch("/api/training-portfolio", { cache: "no-store" }),
-      ]);
+      const pRes = await fetch("/api/portfolio", { cache: "no-store" });
       if (pRes.ok) {
         const data = (await pRes.json()) as Portfolio;
         setPortfolio(data);
-      }
-      if (paperRes.ok) {
-        const data = (await paperRes.json()) as PaperPayload;
-        setPaper(data);
       }
       setRefreshedAt(new Date());
     } finally {
@@ -395,20 +374,6 @@ export default function Dashboard({
               <Card title="Pending Recommendations" badge={`${pendingCount}`}>
                 <PendingRecommendations
                   recs={portfolio.pending_recommendations}
-                />
-              </Card>
-              <Card
-                title="Training Portfolio"
-                badge={
-                  paper.paper === true
-                    ? `${paper.open_trades.length} open · ${paper.closed_trades.filter((t) => !t.partial).length} closed`
-                    : "leer"
-                }
-                sub="Auto-Open jeder rec, lernt parallel ohne User-Action"
-              >
-                <TrainingPortfolioCard
-                  paper={paper}
-                  livePrices={portfolio.heartbeat?.prices}
                 />
               </Card>
               <Card title="Heartbeat">

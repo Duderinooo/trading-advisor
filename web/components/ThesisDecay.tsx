@@ -18,11 +18,9 @@ export default function ThesisDecay({ open }: { open: OpenTrade[] }) {
     <ul className="space-y-2 text-sm">
       {flags.map((f) => {
         const tone =
-          f.severity === "stale"
-            ? "border-rose-700 bg-rose-900/20 text-rose-200"
-            : f.severity === "warn"
-              ? "border-amber-700 bg-amber-900/20 text-amber-200"
-              : "border-zinc-700 bg-zinc-800/30 text-zinc-200";
+          f.severity === "warn"
+            ? "border-amber-700 bg-amber-900/20 text-amber-200"
+            : "border-zinc-700 bg-zinc-800/30 text-zinc-200";
         const pct = (f.held_days / f.hold_max) * 100;
         const pnlTone = f.pnl_pct > 0 ? "text-emerald-400" : f.pnl_pct < 0 ? "text-rose-400" : "text-zinc-400";
         return (
@@ -46,11 +44,7 @@ export default function ThesisDecay({ open }: { open: OpenTrade[] }) {
             <div className="mt-1.5 h-1 rounded bg-zinc-800 overflow-hidden">
               <div
                 className={`h-full ${
-                  f.severity === "stale"
-                    ? "bg-rose-500"
-                    : f.severity === "warn"
-                      ? "bg-amber-500"
-                      : "bg-zinc-500"
+                  f.severity === "warn" ? "bg-amber-500" : "bg-zinc-500"
                 }`}
                 style={{ width: `${Math.min(100, pct)}%` }}
               />
