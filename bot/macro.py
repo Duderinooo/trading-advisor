@@ -1,13 +1,15 @@
 """High-impact economic calendar (FOMC / CPI / NFP / ECB / etc.).
 
-Source: Finnhub free tier (https://finnhub.io). Set FINNHUB_API_KEY in .env.
-Without a key, fetch returns [] and the feature degrades silently.
+Source: ForexFactory's free weekly JSON feed (mirrored by faireconomy.media).
+No API key, no rate limit. 2026-06-16: switched off Finnhub — its
+`/calendar/economic` endpoint moved behind a paid tier (403 on free keys),
+which left the macro pre-release entry-block blind. Fetch returns [] on any
+failure and the feature degrades silently.
 
-We filter to high-impact events in major markets (US/DE/EU/GB). For a full-trust
+We filter to high-impact events in major markets (US/EU/GB). For a full-trust
 bot with €1000 capital, only these events are material enough to affect sizing.
 """
 
-import os
 import time as _time
 import logging
 from datetime import date, datetime, timedelta
@@ -20,9 +22,19 @@ _BERLIN = ZoneInfo("Europe/Berlin")
 
 logger = logging.getLogger(__name__)
 
-FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
 _CACHE_TTL_SECONDS = 6 * 3600
 _cache: dict[str, tuple[list[dict], float]] = {}
+
+# ForexFactory weekly feed. Only `thisweek` is published reliably (nextweek
+# 404s); day-ahead usage (days_ahead=1) stays within the current week anyway.
+_FF_URLS = (
+    "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+)
+_FF_UA = "Mozilla/5.0 (compatible; trading-advisor/1.0)"
+
+# ForexFactory tags events by currency, not country — map to our country codes.
+# German prints surface under EUR (ECB/EU-CPI cover the material ones).
+_CCY_TO_COUNTRY = {"USD": "US", "EUR": "EU", "GBP": "GB"}
 
 # Countries whose high-impact prints actually move XETRA blue-chips / tech.
 _MAJOR_COUNTRIES = {"US", "DE", "EU", "GB"}
@@ -43,13 +55,23 @@ def _is_critical(event_name: str) -> bool:
     return any(kw in low for kw in _CRITICAL_KEYWORDS)
 
 
+def _parse_ff_datetime(raw: str | None) -> tuple[str | None, str]:
+    """ForexFactory date is ISO-8601 with a UTC offset (e.g.
+    '2026-06-14T18:30:00-04:00'). Return (YYYY-MM-DD, HH:MM) in UTC to match the
+    shape _to_berlin expects. (None, '') if unparseable."""
+    if not raw:
+        return (None, "")
+    try:
+        dt = datetime.fromisoformat(raw).astimezone(_UTC)
+        return (dt.date().isoformat(), dt.strftime("%H:%M"))
+    except (ValueError, TypeError):
+        return (None, "")
+
+
 def fetch_economic_events(days_ahead: int = 1) -> list[dict]:
     """Return high-impact macro events from today through `days_ahead` days.
     Cached for 6h. Returns [] on any failure — caller should treat as best-effort.
     """
-    if not FINNHUB_API_KEY:
-        return []
-
     cache_key = f"events_{days_ahead}_{date.today().isoformat()}"
     cached = _cache.get(cache_key)
     if cached and (_time.time() - cached[1]) < _CACHE_TTL_SECONDS:
@@ -57,40 +79,44 @@ def fetch_economic_events(days_ahead: int = 1) -> list[dict]:
 
     today = date.today()
     end = today + timedelta(days=days_ahead)
+    today_iso, end_iso = today.isoformat(), end.isoformat()
 
-    try:
-        r = httpx.get(
-            "https://finnhub.io/api/v1/calendar/economic",
-            params={"from": str(today), "to": str(end), "token": FINNHUB_API_KEY},
-            timeout=10.0,
-        )
-        r.raise_for_status()
-        data = r.json()
-    except Exception as e:
-        logger.warning("Economic calendar fetch failed: %s", e)
-        return []
+    raw_events: list[dict] = []
+    for url in _FF_URLS:
+        try:
+            r = httpx.get(url, headers={"User-Agent": _FF_UA}, timeout=10.0)
+            r.raise_for_status()
+            raw_events.extend(r.json())
+        except Exception as e:
+            # nextweek can fail without breaking thisweek; log + continue.
+            logger.warning("Economic calendar fetch failed (%s): %s", url, e)
 
-    events = data.get("economicCalendar", [])
     out = []
-    for e in events:
-        impact = (e.get("impact") or "").lower()
-        country = e.get("country", "")
-        event_name = e.get("event", "")
-        if impact != "high" or country not in _MAJOR_COUNTRIES:
+    seen: set = set()
+    for e in raw_events:
+        if (e.get("impact") or "").lower() != "high":
             continue
+        country = _CCY_TO_COUNTRY.get((e.get("country") or "").upper())
+        if country not in _MAJOR_COUNTRIES:
+            continue
+        event_name = e.get("title") or ""
         if not _is_critical(event_name):
             continue
-        raw_time = e.get("time") or ""
-        ev_date = raw_time[:10] if len(raw_time) >= 10 else str(today)
-        ev_time = raw_time[11:16] if len(raw_time) >= 16 else ""
+        ev_date, ev_time = _parse_ff_datetime(e.get("date"))
+        if ev_date is None or not (today_iso <= ev_date <= end_iso):
+            continue
+        key = (ev_date, ev_time, event_name, country)
+        if key in seen:
+            continue
+        seen.add(key)
         out.append({
             "date": ev_date,
             "time": ev_time,
             "event": event_name,
             "country": country,
             "actual": e.get("actual"),
-            "estimate": e.get("estimate"),
-            "prev": e.get("prev"),
+            "estimate": e.get("forecast"),
+            "prev": e.get("previous"),
         })
 
     out.sort(key=lambda e: (e["date"], e["time"]))
