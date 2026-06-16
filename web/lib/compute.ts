@@ -94,7 +94,11 @@ export function computeEquityCurve(p: Portfolio): EquityPoint[] {
     }
   }
   if (liveCount > 0 && !recentFresh) {
-    const liveEquity = Math.round(equity + unrealized);
+    // Base on cash + cost-basis (currentEquity), NOT the last snapshot: that
+    // snapshot's equity already bakes in the open positions' unrealized at
+    // snapshot time, so `snapshot + unrealized` double-counted it (2026-06-16:
+    // a >5min-stale snapshot + open DBK rendered 1043.87 + 58.52 = 1102.39).
+    const liveEquity = Math.round(currentEquity(p) + unrealized);
     const livePeak = Math.max(peak, liveEquity);
     const dd_pct = livePeak > 0 ? ((livePeak - liveEquity) / livePeak) * 100 : 0;
     points.push({
