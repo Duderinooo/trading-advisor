@@ -71,6 +71,7 @@ class _Response:
 _MODEL_ALIASES = {
     "claude-sonnet-4-6": "sonnet",
     "claude-haiku-4-5": "haiku",
+    "claude-opus-4-8": "opus",
 }
 
 
