@@ -21,10 +21,10 @@ from core.portfolio.hit_stats import (
     auto_mistake_class_from_alpha, compute_hit_stats, format_hit_stats,
 )
 from core.portfolio.io import (
-    _PAPER_PORTFOLIO_PATH, _PORTFOLIO_PATH,
-    load_paper_portfolio, load_portfolio,
-    paper_lock, portfolio_lock,
-    save_paper_portfolio, save_portfolio,
+    _PORTFOLIO_PATH,
+    load_portfolio,
+    portfolio_lock,
+    save_portfolio,
 )
 from core.portfolio.risk import (
     _equity_curve, _today_realized_pnl_eur,
@@ -46,9 +46,8 @@ from core.portfolio.trades import (
 
 __all__ = [
     # io + locks
-    "portfolio_lock", "paper_lock",
+    "portfolio_lock",
     "load_portfolio", "save_portfolio",
-    "load_paper_portfolio", "save_paper_portfolio",
     # trades + cash
     "build_trade_dict", "add_cash_movement",
     "trade_dividends", "effective_pnl_eur", "effective_pnl_pct",

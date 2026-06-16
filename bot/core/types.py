@@ -109,9 +109,9 @@ class Recommendation(TypedDict, total=False):
 class Trade(TypedDict, total=False):
     """One entry in portfolio.open_trades.
 
-    Created by core.portfolio.build_trade_dict in /confirm flow (real) or
-    auto_paper_open (paper). Mutated over the lifetime of the position
-    (trailing-stop ratchet, partial-close, BE-shift, MAE/MFE).
+    Created by core.portfolio.build_trade_dict in the /confirm flow. Mutated
+    over the lifetime of the position (trailing-stop ratchet, partial-close,
+    BE-shift, MAE/MFE).
     """
     ticker: str
     entry_price: float
@@ -162,13 +162,10 @@ class Trade(TypedDict, total=False):
     # MAE/MFE (mutated by heartbeat tick)
     mae: float
     mfe: float
-    # Fees + paper flag
+    # Fees
     entry_fee_eur: float
-    paper: bool
     # Sonnet morning watch context (kept across confirm for thesis fidelity)
     watch_thesis: str
-    # Stale-thesis alert state
-    stale_alerted_date: str
     # Pending-exit cooldown state
     exit_dropped_at: str
     alerted_keys: list[str]

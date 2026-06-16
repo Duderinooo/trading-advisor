@@ -18,12 +18,9 @@ import config
 logger = logging.getLogger(__name__)
 
 _PORTFOLIO_PATH = Path(__file__).resolve().parent.parent.parent / "portfolio.json"
-_PAPER_PORTFOLIO_PATH = Path(__file__).resolve().parent.parent.parent / "training_portfolio.json"
 
 # Guards every load-modify-save sequence on portfolio.json.
 portfolio_lock = threading.RLock()
-# Separate lock + file for the paper/training portfolio. Real and paper never share state.
-paper_lock = threading.RLock()
 
 
 def _load_portfolio_raw() -> dict:
@@ -98,100 +95,3 @@ def save_portfolio(portfolio: dict):
         raise
 
 
-_PAPER_KV_NAMESPACE = "paper"
-_PAPER_KV_KEY = "portfolio"
-_PAPER_MIGRATED = False
-
-
-def _default_paper_portfolio() -> dict:
-    return {
-        "open_trades": [],
-        "closed_trades": [],
-        "cash_eur": config.BUDGET_EUR,
-        "total_capital_eur": config.BUDGET_EUR,
-        "started_at": datetime.now().strftime("%Y-%m-%d"),
-        "paper": True,
-    }
-
-
-def _migrate_paper_if_needed() -> None:
-    """One-shot: import existing training_portfolio.json into SQLite
-    (kv_state, namespace='paper'). After migration the source file is
-    renamed .migrated so subsequent startups skip the import."""
-    global _PAPER_MIGRATED
-    if _PAPER_MIGRATED:
-        return
-    from core.db import connect, init_schema
-    init_schema()
-    with connect() as conn:
-        row = conn.execute(
-            "SELECT COUNT(*) AS n FROM kv_state WHERE namespace=? AND key=?",
-            (_PAPER_KV_NAMESPACE, _PAPER_KV_KEY),
-        ).fetchone()
-        if row["n"] > 0:
-            _PAPER_MIGRATED = True
-            return
-
-        if _PAPER_PORTFOLIO_PATH.exists():
-            try:
-                with open(_PAPER_PORTFOLIO_PATH) as f:
-                    legacy = json.load(f)
-                conn.execute(
-                    "INSERT OR REPLACE INTO kv_state "
-                    "(namespace, key, body) VALUES (?, ?, ?)",
-                    (_PAPER_KV_NAMESPACE, _PAPER_KV_KEY, json.dumps(legacy)),
-                )
-                logger.info(
-                    "paper_portfolio migration: imported training_portfolio.json"
-                )
-                try:
-                    _PAPER_PORTFOLIO_PATH.rename(
-                        _PAPER_PORTFOLIO_PATH.with_suffix(".json.migrated")
-                    )
-                except Exception:
-                    logger.exception(
-                        "Renaming training_portfolio.json after migration failed"
-                    )
-            except Exception:
-                logger.exception("paper_portfolio migration read failed")
-    _PAPER_MIGRATED = True
-
-
-def load_paper_portfolio() -> dict:
-    """Load training/paper portfolio. Returns fresh default if missing.
-
-    Paper-Spur lernt ohne Ausführungs-Risiko: jeder rec_entry, der alle Gates passt,
-    wird automatisch geöffnet (mit €1/Seite Fee), via SL/TP-Loop geschlossen.
-    Strikt getrennt von Real-Portfolio (eigener Lock, eigene SQLite-Namespace
-    `kv_state[paper]`) damit Paper-Stats nie in Real-Brier-Haircut fließen.
-    """
-    _migrate_paper_if_needed()
-    from core.db import connect
-    with connect() as conn:
-        row = conn.execute(
-            "SELECT body FROM kv_state WHERE namespace=? AND key=?",
-            (_PAPER_KV_NAMESPACE, _PAPER_KV_KEY),
-        ).fetchone()
-    if not row:
-        return _default_paper_portfolio()
-    try:
-        return json.loads(row["body"])
-    except json.JSONDecodeError:
-        logger.exception("paper_portfolio row malformed; resetting to default")
-        return _default_paper_portfolio()
-
-
-def save_paper_portfolio(portfolio: dict):
-    """Atomic upsert into the paper kv_state row. Same crash-safety as
-    portfolio.json's tmp+rename — SQLite WAL gives us the transactional
-    guarantee."""
-    _migrate_paper_if_needed()
-    portfolio["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-    portfolio["paper"] = True
-    from core.db import connect
-    with connect() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO kv_state (namespace, key, body) "
-            "VALUES (?, ?, ?)",
-            (_PAPER_KV_NAMESPACE, _PAPER_KV_KEY, json.dumps(portfolio)),
-        )

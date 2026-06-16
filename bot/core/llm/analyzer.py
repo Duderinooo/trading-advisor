@@ -29,7 +29,6 @@ from core.llm.prompt.context import build_request_context
 from core.llm.handlers.parser import (
     call_claude, dispatch_tool_calls, extract_tool_use, format_analysis_text,
 )
-from core.llm.handlers.paper_open import auto_paper_open
 from core.llm.telemetry.trace import build_trace, log_trace_warnings, trace_key
 
 
@@ -128,12 +127,5 @@ def analyze_portfolio(
         trace=trace,
         trace_k=trace_k,
     )
-
-    # Paper-portfolio mirror outside the real-portfolio lock (own paper_lock).
-    if recs.entry is not None:
-        try:
-            auto_paper_open(recs.entry)
-        except Exception:
-            logger.exception("paper-portfolio auto-open failed")
 
     return analysis_text

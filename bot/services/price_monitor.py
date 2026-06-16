@@ -87,11 +87,7 @@ def run_price_check() -> None:
     logger.debug("Checking prices...")
 
     try:
-        sl_tp_alerts = check_stop_loss_take_profit(paper=False)
-        try:
-            check_stop_loss_take_profit(paper=True)
-        except Exception:
-            logger.exception("paper SL/TP loop failed")
+        sl_tp_alerts = check_stop_loss_take_profit()
 
         for alert in sl_tp_alerts:
             if alert["type"] == "STOP_LOSS_HIT":

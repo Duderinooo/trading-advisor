@@ -1,14 +1,14 @@
 """Stop-loss / take-profit / trailing-stop loop + close helpers.
 
-check_stop_loss_take_profit runs on real + paper portfolios. Handles:
+check_stop_loss_take_profit runs on the live portfolio. Handles:
 - trailing-stop ratchet
 - full SL hit → close + free cash
 - TP hit: partial close at TP1 (PARTIAL_TP_FRACTION × shares), BE-shift on
   remainder with fee-buffer, 1.5×ATR trailing activation; full close at final TP
 - approaching-SL warning (no state change, alert only)
 
-Fees: TR €1/side charged on every real + paper exit so bot-cash mirrors user's
-actual TR fees (2026-05-21 — without this, PnL was systematically overstated).
+Fees: TR €1/side charged on every exit so bot-cash mirrors user's actual TR
+fees (2026-05-21 — without this, PnL was systematically overstated).
 """
 
 import logging
@@ -225,21 +225,12 @@ def _close_trade(
 # Main SL/TP loop
 # ---------------------------------------------------------------------------
 
-def check_stop_loss_take_profit(paper: bool = False) -> list[dict]:
+def check_stop_loss_take_profit() -> list[dict]:
     """Check open trades for SL / TP triggers. On full exit (SL or final TP),
     moves trade to closed_trades + frees cash. Handles trailing stops + BE-shift
-    after TP1.
-
-    paper=True runs the same logic against training_portfolio.json (own lock,
-    own file). Both real + paper book €1/side TR fee on exit (2026-05-21 —
-    bot-cash now mirrors user's real TR fees; without this, overstated PnL)."""
-    if paper:
-        from core.portfolio import (
-            load_paper_portfolio, save_paper_portfolio, paper_lock,
-        )
-        loader, saver, lock = load_paper_portfolio, save_paper_portfolio, paper_lock
-    else:
-        loader, saver, lock = load_portfolio, save_portfolio, portfolio_lock
+    after TP1. Books €1/side TR fee on exit (2026-05-21 — bot-cash mirrors the
+    user's real TR fees; without this, overstated PnL)."""
+    loader, saver, lock = load_portfolio, save_portfolio, portfolio_lock
     with lock:
         portfolio = loader()
         open_trades = portfolio.get("open_trades", [])
@@ -468,8 +459,6 @@ def check_stop_loss_take_profit(paper: bool = False) -> list[dict]:
         if portfolio_dirty:
             portfolio["open_trades"] = surviving_trades
             # Recompute DD halt latch — SL/TP hits just changed realized equity.
-            # Paper has its own DD trail (for stats) but halt blocks nothing
-            # (auto-open runs through analyzer, ignores paper-DD).
             maintain_drawdown_state(portfolio)
             saver(portfolio)
 

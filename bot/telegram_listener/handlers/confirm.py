@@ -511,11 +511,11 @@ async def confirm_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "rs_20d_vs_index_pct": snapshot_data.get("rs_20d_vs_index_pct"),
         }
 
-        # Common base shape (shared with paper-portfolio auto-open) +
-        # confirm-only fields (slippage, watch_thesis, confluence-snapshot, etc.).
+        # Common base shape + confirm-only fields (slippage, watch_thesis,
+        # confluence-snapshot, etc.).
         trade = build_trade_dict(
             rec, entry, shares,
-            entry_snapshot=entry_snapshot, paper=False,
+            entry_snapshot=entry_snapshot,
         )
         trade.update({
             "watch_thesis": rec.get("watch_thesis"),

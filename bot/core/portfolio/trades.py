@@ -1,6 +1,6 @@
 """Trade dict construction + cash movements ledger.
 
-build_trade_dict = source of truth for the open_trade shape (real + paper).
+build_trade_dict = source of truth for the open_trade shape.
 add_cash_movement = dividend / deposit / withdrawal ledger entry.
 
 Version constants (STRATEGY_VERSION, PROMPT_VERSION, SNAPSHOT_SCHEMA_VERSION)
@@ -30,12 +30,10 @@ SNAPSHOT_SCHEMA_VERSION = "2026-05-22"  # Bump wenn market_data/entry_snapshot-F
 
 
 def build_trade_dict(rec: dict, filled_price: float, shares: float,
-                     entry_snapshot: dict | None = None,
-                     paper: bool = False) -> dict:
+                     entry_snapshot: dict | None = None) -> dict:
     """Source of truth for open_trade dict shape.
 
-    Used by /confirm (real) and _auto_paper_open (paper) so beide Spuren identisches
-    Schema haben. shares = float weil TR-Bruchstücke (rounded 4 decimals).
+    Used by the /confirm flow. shares = float weil TR-Bruchstücke (rounded 4 decimals).
     """
     size_eur = round(filled_price * shares, 2)
     snap = entry_snapshot or {}
@@ -119,7 +117,6 @@ def build_trade_dict(rec: dict, filled_price: float, shares: float,
         # MAE/MFE seeded at entry; main.py heartbeat ratchets each tick.
         "mae": round(filled_price, 4),
         "mfe": round(filled_price, 4),
-        "paper": paper,
     }
 
 

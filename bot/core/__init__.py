@@ -8,11 +8,8 @@ Internals are still accessible via their submodules (core.portfolio, ...).
 
 from core.portfolio import (
     portfolio_lock,
-    paper_lock,
     load_portfolio,
     save_portfolio,
-    load_paper_portfolio,
-    save_paper_portfolio,
     build_trade_dict,
     add_cash_movement,
     suggest_position_size,
@@ -70,8 +67,7 @@ from core.types import (
 
 __all__ = [
     # portfolio
-    "portfolio_lock", "paper_lock", "load_portfolio", "save_portfolio",
-    "load_paper_portfolio", "save_paper_portfolio", "build_trade_dict",
+    "portfolio_lock", "load_portfolio", "save_portfolio", "build_trade_dict",
     "add_cash_movement",
     "suggest_position_size", "compute_kelly_mult", "compute_slippage_budget",
     "compute_hit_stats", "format_hit_stats", "auto_mistake_class_from_alpha",
