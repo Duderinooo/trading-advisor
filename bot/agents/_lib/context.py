@@ -248,9 +248,12 @@ def build_weekly_calibrator_context() -> str:
         from core.llm.telemetry.outcomes import gate_false_negative_rates
 
         p = load_portfolio()
-        hit = compute_hit_stats(p)
-        fnr = gate_false_negative_rates()
         closed = p.get("closed_trades", [])
+        # 2026-06-16: was compute_hit_stats(p) — passed the portfolio dict where
+        # a closed_trades list is expected, crashing every weekly run for ~3
+        # weeks ('str' object has no attribute 'get') → zero tuning data.
+        hit = compute_hit_stats(closed, p.get("cash_movements"))
+        fnr = gate_false_negative_rates()
         recent_30d = closed[-50:] if closed else []
     except Exception as e:
         return f"# Weekly-Calibrator ({_now_iso()})\n\nContext-gather failed: {e}"
