@@ -25,7 +25,6 @@ import SetupTypeBreakdown from "@/components/SetupTypeBreakdown";
 import Stats from "@/components/Stats";
 import SubNav, { type NavItem } from "@/components/SubNav";
 import TopBar from "@/components/TopBar";
-import WatchLevels from "@/components/WatchLevels";
 import WhatIfShock from "@/components/WhatIfShock";
 import {
   computeEquityCurve,
@@ -358,22 +357,13 @@ export default function Dashboard({
                 />
               </Card>
               <Card
-                title="Watch Levels"
-                badge={`${portfolio.watch_levels.length}`}
-              >
-                <WatchLevels
-                  levels={portfolio.watch_levels}
-                  liveQuotes={portfolio.heartbeat?.live_quotes}
-                />
-              </Card>
-            </div>
-            <div className="stack">
-              <Card
                 title="Trade-Vorschläge"
                 badge={`${portfolio.proposed_trades?.length ?? 0}`}
               >
                 <ProposedTrades proposals={portfolio.proposed_trades ?? []} />
               </Card>
+            </div>
+            <div className="stack">
               <Card title="Pending Recommendations" badge={`${pendingCount}`}>
                 <PendingRecommendations
                   recs={portfolio.pending_recommendations}
