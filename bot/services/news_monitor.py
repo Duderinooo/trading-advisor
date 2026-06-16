@@ -130,7 +130,9 @@ def run_news_check(state: AppState) -> None:
                     "Wähle das zur News-Richtung passende Instrument. Schon-gelaufen/neutral → PASS."
                 )
             ctx = f"GEO NEWS: {headline} | Commodity-Play: {comms}{direction_hint}"
-            analyze_portfolio(mode="event", event_context=ctx, force=True)
+            # 2026-06-16: geo → Sonnet (mode="geo"). Haiku exhausted on multi-
+            # headline geo context (out_tok 9k+/900, ~57% no-tool-call failures).
+            analyze_portfolio(mode="geo", event_context=ctx, force=True)
             _geo_seen[comm_key] = _now_iso
             _dirty = True
             logger.info("GEO news event done — tool handlers sent any Telegrams")

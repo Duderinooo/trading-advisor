@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 _TRACE_KEY_BY_MODE = {
     "morning": "last_morning_trace",
     "event": "last_event_trace",
+    "geo": "last_event_trace",  # geo-news (Sonnet) shares the event trace bucket
     # opening uses event_context to pick xetra/us slot; resolved at call site.
 }
 

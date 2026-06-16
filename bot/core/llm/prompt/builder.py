@@ -104,6 +104,21 @@ MODE_CONFIG: dict[str, dict] = {
         "force_any_tool": True,
         "model": config.CLAUDE_MODEL_EVENT,
     },
+    "geo": {
+        # 2026-06-16: geo-news → Sonnet. Haiku exhausted on multi-headline geo
+        # context (out_tok 9k+/900, no tool_call, ~57% fail). Same move as
+        # opening (Haiku diverged). Geo fires rarely (heavy dedup) so the Sonnet
+        # cost is bounded, and the "buy oil now" call wants senior reasoning.
+        "base_prompt": EVENT_TRIGGER_PROMPT,
+        "suffix": _EVENT_SUFFIX,
+        "tools": [
+            RECOMMEND_ENTRY_TOOL, RECOMMEND_ADD_TOOL,
+            UPDATE_TARGETS_TOOL, RECOMMEND_EXIT_TOOL, SUBMIT_PASS_TOOL,
+        ],
+        "max_tokens": 1500,
+        "force_any_tool": True,
+        "model": config.CLAUDE_MODEL_MORNING,
+    },
     "standard": {
         "base_prompt": "",
         "suffix": "",
@@ -126,6 +141,8 @@ def _context_intro(mode: str, event_context: str | None) -> str:
         return f"OPEN-CHECK {event_context or ''}".strip()
     if mode == "event":
         return f"🚨 EVENT: {event_context}"
+    if mode == "geo":
+        return f"🛢️ GEO-EVENT: {event_context}"
     return "Standard-Analyse"
 
 
