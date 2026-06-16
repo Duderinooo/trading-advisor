@@ -536,9 +536,16 @@ export function maeMfeAnalysis(closed: ClosedTrade[]): MaeMfeStats | null {
 }
 
 export function currentEquity(p: Portfolio): number {
-  let eq = p.total_capital_eur;
-  for (const t of p.closed_trades) eq += Number(t.pnl_eur ?? 0);
-  for (const m of p.cash_movements ?? []) eq += Number(m.amount ?? 0);
+  // cash_eur is the source of truth — it integrates every real flow (entries,
+  // exits, fees, dividends). Equity excluding open-position unrealized = free
+  // cash + cost basis of open trades; currentEquityLive then adds unrealized to
+  // get cash + market value. With no open positions this equals cash exactly.
+  // (Was total_capital + Σrealized_pnl + Σcash_movements, which drifted from
+  // cash by the per-trade fees that reconstruction never subtracted — 2026-06-16.)
+  let eq = Number(p.cash_eur ?? 0);
+  for (const t of p.open_trades ?? []) {
+    eq += Number(t.entry_price ?? 0) * Number(t.shares ?? 0);
+  }
   return Math.round(eq * 100) / 100;
 }
 
