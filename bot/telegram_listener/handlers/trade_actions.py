@@ -201,6 +201,7 @@ async def close_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "pnl_eur": round(pnl_eur, 2),
             "pnl_pct": round(pnl_pct, 2),
             "status": "closed",
+            "exit_fee_eur": config.FIXED_FEE_EUR_PER_SIDE,
         }
         # Alpha vs Beta attribution: trade-return − SPY-return over same period.
         # >0 = real skill (beat market); <0 = lost vs market. Drives loss interpretation:
@@ -232,7 +233,15 @@ async def close_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             closed["brier"] = round((p_win - outcome) ** 2, 4)
             closed["outcome"] = outcome
         portfolio.setdefault("closed_trades", []).append(closed)
-        portfolio["cash_eur"] = round(float(portfolio.get("cash_eur", 0) or 0) + (exit_price * shares), 2)
+        # Credit proceeds minus the €1 TR exit fee (matches the SL/TP loop +
+        # partial-close path; manual /close previously skipped the exit fee, so
+        # cash ran €1 high per close — 2026-06-16).
+        portfolio["cash_eur"] = round(
+            float(portfolio.get("cash_eur", 0) or 0)
+            + (exit_price * shares)
+            - config.FIXED_FEE_EUR_PER_SIDE,
+            2,
+        )
         portfolio["open_trades"] = open_trades
 
         maintain_drawdown_state(portfolio)
