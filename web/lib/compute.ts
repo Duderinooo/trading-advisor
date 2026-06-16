@@ -11,7 +11,6 @@ import type {
   Portfolio,
   SetupTypeStats,
   ShockResult,
-  ThesisDecayFlag,
 } from "./types";
 
 // Min scored trades before the Brier-haircut activates. Mirrors
@@ -734,47 +733,6 @@ export function computeCalibrationBins(closed: ClosedTrade[]): CalibrationBin[] 
       n,
     };
   });
-}
-
-// ---------- Thesis-decay flags ----------
-
-export function computeThesisDecay(
-  open: OpenTrade[],
-  livePrices: Record<string, number> = {},
-): ThesisDecayFlag[] {
-  const today = new Date();
-  const out: ThesisDecayFlag[] = [];
-  for (const t of open) {
-    const holdMax = t.hold_days_max;
-    if (typeof holdMax !== "number" || holdMax <= 0) continue;
-    const entry = new Date(t.entry_date.slice(0, 10));
-    if (Number.isNaN(entry.getTime())) continue;
-    const heldDays = Math.floor(
-      (today.getTime() - entry.getTime()) / 86_400_000,
-    );
-    if (heldDays < Math.floor(holdMax * 0.5)) continue;
-
-    const live = livePrices[t.ticker];
-    const refPrice = typeof live === "number" ? live : t.entry_price;
-    const pnlPct = t.entry_price > 0
-      ? ((refPrice - t.entry_price) / t.entry_price) * 100
-      : 0;
-
-    // Stale-thesis tier removed 2026-06-16 (matches backend): holding past the
-    // planned horizon is no longer flagged as "stale" — calendar age alone is
-    // not thesis decay. Soft "warn" past 75% stays as a heads-up only.
-    let severity: ThesisDecayFlag["severity"] = "info";
-    if (heldDays >= Math.floor(holdMax * 0.75)) severity = "warn";
-
-    out.push({
-      ticker: t.ticker,
-      held_days: heldDays,
-      hold_max: holdMax,
-      pnl_pct: Math.round(pnlPct * 100) / 100,
-      severity,
-    });
-  }
-  return out.sort((a, b) => b.held_days - a.held_days);
 }
 
 // ---------- What-if shock ----------

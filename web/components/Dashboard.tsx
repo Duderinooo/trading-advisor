@@ -23,7 +23,6 @@ import RiskOfRuin from "@/components/RiskOfRuin";
 import SetupTypeBreakdown from "@/components/SetupTypeBreakdown";
 import Stats from "@/components/Stats";
 import SubNav, { type NavItem } from "@/components/SubNav";
-import ThesisDecay from "@/components/ThesisDecay";
 import TopBar from "@/components/TopBar";
 import WatchLevels from "@/components/WatchLevels";
 import WhatIfShock from "@/components/WhatIfShock";
@@ -365,9 +364,6 @@ export default function Dashboard({
                   levels={portfolio.watch_levels}
                   liveQuotes={portfolio.heartbeat?.live_quotes}
                 />
-              </Card>
-              <Card title="Thesis Decay">
-                <ThesisDecay open={portfolio.open_trades} />
               </Card>
             </div>
             <div className="stack">

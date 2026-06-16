@@ -246,14 +246,6 @@ export type CalibrationBin = {
   n: number;
 };
 
-export type ThesisDecayFlag = {
-  ticker: string;
-  held_days: number;
-  hold_max: number;
-  pnl_pct: number;
-  severity: "info" | "warn";
-};
-
 export type MistakeTrendPoint = {
   bucket: string;
   prediction: number;
