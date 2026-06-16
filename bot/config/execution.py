@@ -93,7 +93,12 @@ TRAIL_TIGHTEN_ATR_MULT_FINAL_TP = 1.0  # vs 1.5×ATR on TP1 lock-in
 
 # 2026-05-12: 5→6 — see research/2026-05-12-edge-floor-006.md
 # Deterministic setup-quality scoring; mean-reversion family relaxed -2 via SetupProfile.
-MIN_CONFLUENCE_SCORE = 6          # von 10 möglichen — darunter PASS
+MIN_CONFLUENCE_SCORE = 6          # von 10 möglichen — darunter PASS (nur Trend-Familie)
+# 2026-06-16: Swing-Low-Familie wird per base_quality beurteilt, NICHT confluence
+# (CLAUDE.md QUALITY_FAMILY_RULES: swing_low edge = structure_repair, nicht momentum).
+# Confluence (momentum-lastig) blockte sonst saubere Oversold-Basen (BAS bq7/conf3).
+# Floor 4 = CLAUDE.md "base_quality 4-6 building, <4 PASS".
+MIN_BASE_QUALITY_SCORE = 4
 
 # 2026-04-27: see research/2026-04-27-watch-self-sabotage.md
 # Only portfolio-wide safety pages user; individual gate-blocks go to dashboard only.

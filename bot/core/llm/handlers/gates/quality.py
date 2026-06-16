@@ -168,11 +168,30 @@ def gate_breakout_volume(entry: dict, ctx: GateContext) -> bool:
 
 
 def gate_confluence(entry: dict, ctx: GateContext) -> bool:
-    """Deterministic confluence score 0-10 ≥ floor. Floor adjusted per
-    SetupProfile.min_confluence_offset (mean-rev family relaxed -2).
-    Stamps score + items on rec."""
+    """Setup-quality gate. Swing-low family (min_confluence_offset < 0:
+    mean_reversion, reversal_oversold, gap_fill, pre_breakout_squeeze,
+    support_bounce) is judged by structural base_quality, NOT momentum
+    confluence — per CLAUDE.md QUALITY_FAMILY_RULES (swing-low edge =
+    structure_repair). Applying the momentum confluence floor to an oversold
+    base wrongly blocked clean setups (BAS bq7/confluence3). Trend family
+    keeps the confluence floor. Stamps the relevant score on the rec."""
     profile = get_profile(entry.get("setup_type"))
     snap = ctx.snap_md
+
+    if profile.min_confluence_offset < 0:
+        bq = (snap or {}).get("base_quality_score") or 0
+        if bq < config.MIN_BASE_QUALITY_SCORE:
+            logger.warning(
+                "Entry BLOCKED by base-quality gate: %s bq=%d < %d (swing-low setup=%s)",
+                ctx.ticker, bq, config.MIN_BASE_QUALITY_SCORE, profile.name,
+            )
+            log_gate(ctx.ticker, "base_quality", True,
+                     f"base_quality {bq} < {config.MIN_BASE_QUALITY_SCORE}",
+                     {"base_quality": bq, "min": config.MIN_BASE_QUALITY_SCORE})
+            return False
+        entry["base_quality_score"] = bq
+        return True
+
     conf = compute_confluence(snap, ctx.regime) if snap else {
         "score": 0, "items": {}, "missing": ["no_data"],
     }
