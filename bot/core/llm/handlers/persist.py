@@ -188,6 +188,41 @@ def _persist_watch_levels(
             trace["new_set"] = len(filtered)
             trace["final_tickers"] = [(lvl.get("ticker") or "?") for lvl in merged]
 
+    _sync_proposed_trades(fresh, market_data)
+
+
+# Watch-level fields carried over into a proposed_trade (Sonnet's set_watch_levels
+# output is exactly the shape enrich_proposed_trade consumes).
+_PROPOSAL_FIELDS = (
+    "ticker", "type", "trigger_price", "invalidate_below",
+    "zone_low", "zone_high", "thesis",
+)
+
+
+def _sync_proposed_trades(fresh: dict, market_data: dict) -> None:
+    """Mirror the current watch-levels into proposed_trades (the dashboard
+    cards + /confirm TICKER source), enriched with the full trade plan. Phase
+    3c-i: Sonnet's set_watch_levels IS the proposal feed now — every analysis
+    auto-populates the cards. Manual proposals (source='manual') for tickers
+    Sonnet didn't propose are preserved."""
+    levels = fresh.get("watch_levels") or []
+    sonnet = [
+        {**{k: lvl.get(k) for k in _PROPOSAL_FIELDS}, "source": "sonnet"}
+        for lvl in levels
+    ]
+    sonnet_tickers = {(p.get("ticker") or "").upper() for p in sonnet}
+    manual = [
+        p for p in (fresh.get("proposed_trades") or [])
+        if p.get("source") == "manual"
+        and (p.get("ticker") or "").upper() not in sonnet_tickers
+    ]
+    fresh["proposed_trades"] = sonnet + manual
+    try:
+        from core.proposals import refresh_proposed_trades
+        refresh_proposed_trades(fresh, market_data)
+    except Exception:
+        logger.exception("proposed_trades enrichment failed")
+
 
 def _persist_exit_with_cooldown_dedupe(fresh: dict, exit_persisted: dict) -> None:
     """Two-stage suppress for exit-recs:

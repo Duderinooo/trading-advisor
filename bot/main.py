@@ -29,7 +29,6 @@ from runtime.scheduler import (
     heartbeat_watchdog, startup_cleanup,
 )
 from runtime.state import AppState
-from services.event_monitor import run_event_check
 from services.morning_brief import run_morning_prep
 from services.news_monitor import run_news_check, run_berkshire_check
 from services.opening_check import run_opening_check
@@ -261,7 +260,11 @@ def _run_poll_cycle(state: AppState) -> None:
             logger.exception("auto-kill check failed")
 
         run_price_check()
-        run_event_check()
+        # 2026-06-16 (Phase 3c-ii): the watch-level → event → Haiku-entry chain
+        # is retired. watch_levels now only feed proposed_trades (cards +
+        # /confirm TICKER); entries are user-driven via the Fire button / Telegram,
+        # not auto-fired on proximity. SL/TP (run_price_check) + price-alerts +
+        # news still run. detect_events/event_monitor stay for replay/backtest.
         run_news_check(state)
         run_berkshire_check(state)
         try:
