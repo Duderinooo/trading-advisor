@@ -19,6 +19,7 @@ import ShadowDelta from "@/components/ShadowDelta";
 import TimeOfDay from "@/components/TimeOfDay";
 import OpenTrades from "@/components/OpenTrades";
 import PendingRecommendations from "@/components/PendingRecommendations";
+import ProposedTrades from "@/components/ProposedTrades";
 import RiskOfRuin from "@/components/RiskOfRuin";
 import SetupTypeBreakdown from "@/components/SetupTypeBreakdown";
 import Stats from "@/components/Stats";
@@ -367,6 +368,12 @@ export default function Dashboard({
               </Card>
             </div>
             <div className="stack">
+              <Card
+                title="Trade-Vorschläge"
+                badge={`${portfolio.proposed_trades?.length ?? 0}`}
+              >
+                <ProposedTrades proposals={portfolio.proposed_trades ?? []} />
+              </Card>
               <Card title="Pending Recommendations" badge={`${pendingCount}`}>
                 <PendingRecommendations
                   recs={portfolio.pending_recommendations}

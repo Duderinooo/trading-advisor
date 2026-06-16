@@ -198,10 +198,53 @@ export type EquitySnapshot = {
   market_hours?: boolean;
 };
 
+export type ProposedTradePlan = {
+  ticker: string;
+  setup_type: string | null;
+  thesis: string | null;
+  entry: number;
+  stop_loss: number;
+  sl_clamped: "widened" | "tightened" | null;
+  sl_dist_atr: number | null;
+  take_profit: number[];
+  tp_r: number[];
+  shares: number;
+  invest_eur: number;
+  cash_left_eur: number;
+  risk_eur: number;
+  risk_pct_capital: number | null;
+  fees_eur: number;
+  gross_tp1_eur: number;
+  net_tp1_eur: number;
+  gross_tp2_eur: number;
+  gates: { fee_ok: boolean; whole_share_ok: boolean; affordable: boolean };
+  signals: {
+    base_quality_score: number | null;
+    higher_lows_5d: number | null;
+    rsi14: number | null;
+    wk_trend: string | null;
+    rs_20d_vs_index_pct: number | null;
+    atr14_pct: number | null;
+  };
+};
+
+export type ProposedTrade = {
+  ticker: string;
+  type: string;
+  trigger_price: number;
+  invalidate_below?: number;
+  thesis: string;
+  created_at?: string;
+  source?: string;
+  plan?: ProposedTradePlan;
+  plan_updated?: string;
+};
+
 export type Portfolio = {
   open_trades: OpenTrade[];
   closed_trades: ClosedTrade[];
   watch_levels: WatchLevel[];
+  proposed_trades?: ProposedTrade[];
   pending_recommendations?: PendingRecommendation[];
   cash_eur: number;
   total_capital_eur: number;

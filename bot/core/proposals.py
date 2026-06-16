@@ -14,6 +14,8 @@ replaces the watch-level / event-entry chain. Three call sites: dashboard
 proposal API, `/confirm TICKER`, command-queue executor.
 """
 
+from datetime import datetime
+
 import config
 from core.portfolio.sizing import suggest_position_size
 
@@ -140,3 +142,31 @@ def enrich_proposed_trade(
             "atr14_pct": atr_pct,
         },
     }
+
+
+def refresh_proposed_trades(portfolio: dict, market_data: dict) -> bool:
+    """Recompute the enriched `plan` for every raw proposal in
+    portfolio['proposed_trades'], in place. Runs each price cycle so the cards
+    track live price (entry/risk/fees shift as the market moves). Source of
+    truth stays the raw proposal fields; `plan` is a derived cache the read-only
+    dashboard renders without needing its own market data.
+
+    Returns True if anything changed (caller decides whether to persist)."""
+    proposals = portfolio.get("proposed_trades") or []
+    if not proposals:
+        return False
+    cash = portfolio.get("cash_eur", config.BUDGET_EUR)
+    capital = portfolio.get("total_capital_eur", config.BUDGET_EUR)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    changed = False
+    for prop in proposals:
+        snap = market_data.get((prop.get("ticker") or "").upper())
+        if not isinstance(snap, dict) or snap.get("error"):
+            continue
+        plan = enrich_proposed_trade(prop, snap, cash, capital)
+        if plan is None:
+            continue
+        prop["plan"] = plan
+        prop["plan_updated"] = now
+        changed = True
+    return changed

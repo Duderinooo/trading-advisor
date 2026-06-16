@@ -82,6 +82,7 @@ export async function readPortfolio(): Promise<Portfolio> {
     open_trades: data.open_trades ?? [],
     closed_trades: closed as Portfolio["closed_trades"],
     watch_levels: data.watch_levels ?? [],
+    proposed_trades: data.proposed_trades ?? [],
     pending_recommendations: pending as Portfolio["pending_recommendations"],
     cash_movements: data.cash_movements ?? [],
     equity_history: data.equity_history ?? [],

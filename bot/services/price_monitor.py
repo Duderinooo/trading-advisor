@@ -79,6 +79,23 @@ def _maybe_send_sltp(alert: dict, message: str) -> None:
     send_notification(message)
 
 
+def _refresh_proposals() -> None:
+    """Recompute proposed-trade card plans against live snapshots so the
+    dashboard cards track price intraday. Source of truth = raw proposal fields;
+    `plan` is the derived cache the read-only web renders."""
+    from core.proposals import refresh_proposed_trades
+    from core.data.market_data import get_market_data
+    with portfolio_lock:
+        p = load_portfolio()
+        props = p.get("proposed_trades") or []
+        tickers = [pr.get("ticker") for pr in props if pr.get("ticker")]
+        if not tickers:
+            return
+        md = get_market_data(tickers)
+        if refresh_proposed_trades(p, md):
+            save_portfolio(p)
+
+
 def run_price_check() -> None:
     """SL/TP loop + price-alert event-analysis dispatch."""
     if not is_market_hours():
@@ -163,6 +180,12 @@ Distance: {alert['distance_pct']:.1f}%
 
 _Watch closely_"""
                 _maybe_send_sltp(alert, message)
+
+        # Keep proposed-trade card plans fresh against live prices.
+        try:
+            _refresh_proposals()
+        except Exception:
+            logger.exception("proposal refresh failed")
 
         # Price alerts → Claude analysis (skipped under kill-switch).
         price_alerts = [] if kill_switch_active(load_portfolio()) else check_price_alerts()
