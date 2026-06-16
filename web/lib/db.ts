@@ -34,6 +34,40 @@ export function closeDb(): void {
   }
 }
 
+/**
+ * THE one sanctioned write path. The dashboard never writes portfolio.json
+ * (lock race = corruption — invariant #1), but the Accept/Cancel/Fire buttons
+ * need a write channel: they enqueue a command into web_commands, which the
+ * bot drains under portfolio_lock. This connection is writable but only ever
+ * touches the web_commands table — never portfolio state. SQLite WAL covers
+ * the cross-process access with the Python bot.
+ */
+let _writeDb: Database.Database | null = null;
+
+function getWriteDb(): Database.Database {
+  if (_writeDb) return _writeDb;
+  _writeDb = new Database(DB_PATH, { fileMustExist: true });
+  _writeDb.pragma("journal_mode = WAL");
+  _writeDb.pragma("busy_timeout = 3000");
+  return _writeDb;
+}
+
+export function enqueueWebCommand(
+  action: "fire" | "cancel",
+  ticker: string,
+  payload: Record<string, number>,
+): number {
+  const db = getWriteDb();
+  const now = new Date().toISOString().slice(0, 19).replace("T", " ");
+  const info = db
+    .prepare(
+      "INSERT INTO web_commands (created_at, action, ticker, payload, status) " +
+        "VALUES (?, ?, ?, ?, 'pending')",
+    )
+    .run(now, action, ticker.toUpperCase(), JSON.stringify(payload));
+  return Number(info.lastInsertRowid);
+}
+
 /** Test whether the DB file exists yet — bot creates it lazily on first
  * write, so during fresh-clone / pre-first-run the file is missing. */
 export function dbExists(): boolean {

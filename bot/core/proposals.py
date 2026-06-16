@@ -144,6 +144,83 @@ def enrich_proposed_trade(
     }
 
 
+def apply_command(portfolio: dict, cmd: dict) -> tuple[bool, str]:
+    """Execute one web command against the portfolio dict, in place.
+
+    `fire`   — open the proposal as a real trade (entry/shares may be overridden
+               by the user via cmd['payload']), book it + the buy fee, drop it
+               from proposed_trades. Manual fire of a pre-vetted proposal, so it
+               skips the analyzer gates — but keeps the hard invariants: a stop
+               is mandatory, whole shares only, can't spend more cash than held.
+    `cancel` — just drop the proposal.
+
+    Returns (ok, message). Caller persists + marks the command. No I/O here."""
+    action = cmd.get("action")
+    ticker = (cmd.get("ticker") or "").upper()
+    payload = cmd.get("payload") or {}
+    props = portfolio.get("proposed_trades") or []
+    idx = next(
+        (i for i, p in enumerate(props) if (p.get("ticker") or "").upper() == ticker),
+        None,
+    )
+    if idx is None:
+        return False, f"kein Vorschlag für {ticker}"
+
+    if action == "cancel":
+        props.pop(idx)
+        portfolio["proposed_trades"] = props
+        return True, f"{ticker} verworfen"
+
+    if action != "fire":
+        return False, f"unbekannte action: {action}"
+
+    prop = props[idx]
+    plan = prop.get("plan") or {}
+    try:
+        entry = float(payload.get("entry_price") or plan.get("entry") or 0)
+        shares = int(payload.get("shares") or plan.get("shares") or 0)
+    except (TypeError, ValueError):
+        return False, "entry/shares ungültig"
+    sl = plan.get("stop_loss")
+    tp = plan.get("take_profit")
+
+    if entry <= 0:
+        return False, "kein Entry-Preis"
+    if not isinstance(sl, (int, float)) or sl <= 0:
+        return False, "kein Stop-Loss (Invariante)"
+    if shares < 1:
+        return False, "shares < 1 (ganze Stücke)"
+
+    fee = config.FIXED_FEE_EUR_PER_SIDE
+    cost = shares * entry + fee
+    cash = portfolio.get("cash_eur", 0) or 0
+    if cost > cash + 1e-6:
+        return False, f"zu wenig Cash (€{cost:.2f} > €{cash:.2f})"
+
+    from core.portfolio import build_trade_dict
+    rec = {
+        "ticker": ticker,
+        "entry_price": entry,
+        "stop_loss": float(sl),
+        "take_profit": tp,
+        "size_eur": round(shares * entry, 2),
+        "conviction": plan.get("conviction") or 3,
+        "p_win": plan.get("p_win") or 0.55,
+        "thesis": prop.get("thesis") or "",
+        "setup_type": prop.get("setup_type") or prop.get("type"),
+    }
+    trade = build_trade_dict(rec, entry, float(shares))
+    trade["entry_date"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    trade["entry_fee_eur"] = fee
+    trade["source"] = "web_fire"
+
+    portfolio.setdefault("open_trades", []).append(trade)
+    portfolio["cash_eur"] = round(cash - cost, 2)
+    props.pop(idx)
+    portfolio["proposed_trades"] = props
+    return True, f"{ticker} eröffnet: {shares}×€{entry:.2f}, SL €{float(sl):.2f}"
+
+
 def refresh_proposed_trades(portfolio: dict, market_data: dict) -> bool:
     """Recompute the enriched `plan` for every raw proposal in
     portfolio['proposed_trades'], in place. Runs each price cycle so the cards

@@ -34,6 +34,7 @@ from services.morning_brief import run_morning_prep
 from services.news_monitor import run_news_check, run_berkshire_check
 from services.opening_check import run_opening_check
 from services.price_monitor import run_price_check, ratchet_open_trade_extremes
+from services.web_commands import drain_web_commands
 from services.risk_guards import check_equity_alerts, check_exit_reminders
 from services.summary import run_eod_summary, run_weekend_summary
 
@@ -368,6 +369,10 @@ def main() -> None:
         now = datetime.now()
 
         _persist_heartbeat(state, now)
+        try:
+            drain_web_commands()
+        except Exception:
+            logger.exception("web command drain failed")
         _run_daily_windows()
         _run_monitoring_agents()
 

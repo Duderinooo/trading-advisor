@@ -150,4 +150,21 @@ CREATE TABLE IF NOT EXISTS kv_state (
     body TEXT NOT NULL,
     PRIMARY KEY (namespace, key)
 );
+
+-- web_commands: the dashboard's write channel. The read-only web app cannot
+-- touch portfolio.json (lock race = corruption), so the Accept/Cancel/Fire
+-- buttons enqueue a command here; the bot's main loop drains + executes it
+-- under portfolio_lock. action ∈ {fire, cancel}; payload is JSON overrides
+-- (entry_price, shares). status ∈ {pending, done, error}.
+CREATE TABLE IF NOT EXISTS web_commands (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    action TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    payload TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    result TEXT,
+    processed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_web_commands_status ON web_commands(status);
 """
