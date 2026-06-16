@@ -11,6 +11,13 @@ MAX_RISK_PER_TRADE_PERCENT = 3.0  # Max % of capital to risk per trade
 # on partial-TP. Bigger trades amortize TR's €1/side fixed fee better. Effective
 # max parallel-trades drops from 5 to ~3 — acceptable for single-user play-money bot.
 MAX_POSITION_SIZE_PERCENT = 35.0  # Sanity ceiling — Kelly/ATR/Conviction drive real size
+# 2026-06-16: min position floor for positive-edge setups. At €1k + €2 TR
+# round-trip fees, quarter-Kelly sized ~€26 → gross@TP1 ≪ fee floor → fee-gate
+# blocked EVERY trade. User chose full-send (floor == cap): a qualifying setup
+# always sizes to MAX_POSITION_SIZE_PERCENT so it clears the fee gate. Tight SLs
+# keep €-risk well under MAX_RISK_PER_TRADE_PERCENT even at 35%. Negative-edge
+# setups still size 0 (no trade).
+MIN_POSITION_SIZE_PERCENT = 35.0
 
 # Share-Price-Filter: Aktien teurer als €100 sind un-traded weil TR-SL nur auf
 # ganze Stücke geht. €100 Cap erlaubt ≥1 Stk auch bei kleinem Kapital. Entkoppelt

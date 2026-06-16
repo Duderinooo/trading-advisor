@@ -70,8 +70,13 @@ class TestComputeSlippageBudget(unittest.TestCase):
 class TestSuggestPositionSize(unittest.TestCase):
     CAP = 1000.0
 
-    def test_no_atr_uses_10pct_fallback(self):
-        self.assertEqual(P.suggest_position_size(None, self.CAP), 100.0)
+    def test_positive_edge_floored_to_min_position(self):
+        # 2026-06-16: positive-edge setups floor to MIN_POSITION_SIZE_PERCENT
+        # (full-send) so €1k positions clear the fee gate; the ATR/Kelly leg no
+        # longer modulates final size when floor == cap. No-ATR (10% fallback)
+        # is likewise lifted to the floor.
+        floor = self.CAP * config.MIN_POSITION_SIZE_PERCENT / 100
+        self.assertEqual(P.suggest_position_size(None, self.CAP), floor)
 
     def test_hard_cap_enforced(self):
         # tiny ATR → huge ATR-leg → must clip to MAX_POSITION_SIZE_PERCENT
@@ -82,12 +87,14 @@ class TestSuggestPositionSize(unittest.TestCase):
         size = P.suggest_position_size(2.0, self.CAP, p_win=0.3, reward_to_risk=1.0)
         self.assertEqual(size, 0.0)
 
-    def test_kelly_leg_caps_atr_leg(self):
-        # f* = (0.6*2 - 0.4)/2 = 0.4 ; kelly_eur = 1000*0.4*0.25 = 100
+    def test_positive_edge_floors_over_small_kelly(self):
+        # Kelly leg would size 1000*0.4*0.25 = 100, but the min-position floor
+        # (2026-06-16, full-send) lifts any positive-edge size to
+        # MIN_POSITION_SIZE_PERCENT so it clears the €2 fee gate at €1k.
         size = P.suggest_position_size(
             0.5, self.CAP, p_win=0.6, reward_to_risk=2.0, kelly_mult=0.25
         )
-        self.assertEqual(size, 100.0)
+        self.assertEqual(size, self.CAP * config.MIN_POSITION_SIZE_PERCENT / 100)
 
     def test_kelly_mult_defaults_to_config(self):
         explicit = P.suggest_position_size(

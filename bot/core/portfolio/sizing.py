@@ -116,7 +116,15 @@ def suggest_position_size(
         else:
             size = 0.0  # negative edge → no trade
 
-    return round(min(size, max_eur), 2)
+    size = min(size, max_eur)
+    # Min-position floor: a positive-edge setup is floored UP to
+    # MIN_POSITION_SIZE_PERCENT of capital so €1k positions clear the €2 fee
+    # gate (quarter-Kelly otherwise sized ~€26 → every trade fee-blocked).
+    # Negative-edge (size==0) stays 0 — no trade.
+    if size > 0:
+        floor_eur = capital_eur * config.MIN_POSITION_SIZE_PERCENT / 100
+        size = min(max(size, floor_eur), max_eur)
+    return round(size, 2)
 
 
 # ---------- Circuit breakers ----------
