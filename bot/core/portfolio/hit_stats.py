@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 import config
 from core.portfolio.cash_movements import effective_pnl_eur, effective_pnl_pct
 from core.portfolio.risk import _today_realized_pnl_eur
-from core.portfolio.sizing import compute_kelly_mult
+from core.portfolio.sizing import compute_kelly_mult, compute_slippage_budget
 
 
 logger = logging.getLogger(__name__)
