@@ -333,6 +333,21 @@ def main() -> None:
     logger.info("Kapital: €%s", config.BUDGET_EUR)
     logger.info("Watchlist: %s", ", ".join(config.WATCHLIST))
     logger.info("Rohstoffe: %s", ", ".join(config.COMMODITIES))
+    # Coupling guard (2026-06-17): WATCHLIST + TICKER_ISIN_MAP are separate
+    # sources. A watchlist ticker without an ISIN gets no ls-tc live quote
+    # (silent None → dashboard '—', no live SL/TP visibility) — exactly the TKA
+    # gap. Warn loudly at startup so the next watchlist add can't slip through.
+    try:
+        from core.data.livefeed import TICKER_ISIN_MAP
+        _no_isin = [t for t in config.WATCHLIST if t not in TICKER_ISIN_MAP]
+        if _no_isin:
+            logger.warning(
+                "⚠️ Watchlist-Ticker OHNE ISIN-Mapping (kein Live-Quote): %s "
+                "— in core/data/livefeed.TICKER_ISIN_MAP ergänzen.",
+                ", ".join(_no_isin),
+            )
+    except Exception:
+        logger.exception("ISIN-coverage check failed")
     logger.info("Price Check: Jede %d Min", config.PRICE_CHECK_INTERVAL_MINUTES)
     logger.info("Morning Prep: %d:00 Uhr", config.MORNING_PREP_HOUR)
     logger.info(
