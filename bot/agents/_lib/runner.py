@@ -248,6 +248,11 @@ def call_claude_agent(
         raise AgentRunError(f"claude CLI exit={proc.returncode}: {error}")
 
     raw = proc.stdout.strip()
+    if os.getenv("CLAUDE_DEBUG_RAW"):
+        try:
+            Path(f"/tmp/claude_raw_{mode}.json").write_text(raw)
+        except Exception:
+            pass
     # Rate-limit detection: CLI returns exit=0 + is_error=true + result text
     # "You've hit your limit · resets X". Treat as recoverable skip, not crash.
     if '"is_error":true' in raw and "hit your limit" in raw:

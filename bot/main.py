@@ -90,6 +90,8 @@ def _collect_live_quotes(pf: dict) -> tuple[dict[str, float], dict[str, dict]]:
     tickers = list({
         *(t["ticker"] for t in pf.get("open_trades", []) or [] if t.get("ticker")),
         *(w["ticker"] for w in pf.get("watch_levels", []) or [] if w.get("ticker")),
+        # proposed_trades too — the dashboard cards need a live price (2026-06-17).
+        *(x["ticker"] for x in pf.get("proposed_trades", []) or [] if x.get("ticker")),
     })
     for tk in tickers:
         q = live_quote_for_ticker(tk)
