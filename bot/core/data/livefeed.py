@@ -49,6 +49,17 @@ TICKER_ISIN_MAP: dict[str, str] = {
     "RWE.DE":  "DE0007037129",
     "ENR.DE":  "DE000ENER6Y0",  # Siemens Energy
     "AIR.DE":  "NL0000235190",  # Airbus
+    # 2026-06-16/17 watchlist expansion — were missing → no live quotes (TKA
+    # open position rendered no live price on the dashboard until added).
+    "TKA.DE":  "DE0007500001",  # thyssenkrupp
+    "LHA.DE":  "DE0008232125",  # Lufthansa
+    "VNA.DE":  "DE000A1ML7J1",  # Vonovia
+    "DTG.DE":  "DE000DTR0CK8",  # Daimler Truck
+    "PAH3.DE": "DE000PAH0038",  # Porsche Automobil Holding
+    "SHL.DE":  "DE000SHL1006",  # Siemens Healthineers
+    "FME.DE":  "DE0005785802",  # Fresenius Medical Care
+    "EVT.DE":  "DE0005664809",  # Evotec
+    "HFG.DE":  "DE000A161408",  # HelloFresh
     "HEI.DE":  "DE0006047004",  # Heidelberg Materials
     # Watchlist-Expansion 2026-05-04 (Whole-share <€100)
     "IFX.DE":  "DE0006231004",  # Infineon
