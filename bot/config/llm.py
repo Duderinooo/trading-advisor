@@ -16,12 +16,11 @@ ANALYSIS_COST_EUR = 0.01           # ~cost per Haiku call (gemessen 2026-04, eve
 # top of this. Keeps the screen completable within the soft token budget.
 MORNING_CANDIDATE_SHORTLIST = 12
 
-# Models: Opus für Morning-Brief, Haiku für Event-Checks (günstig, schnell).
-# 2026-06-16: Morning Sonnet→Opus. Sonnet beschrieb qualifizierte Entries (TKA
-# CONV_4/5) in Prosa, emittierte aber den recommend_entry-Tool-Call nicht (nur
-# den stärksten) + schwafelte 10k tok. User-Entscheid: Output-Qualität > Kosten,
-# stärkstes Modell für die 1×/Tag Morning-Analyse. (Hebt die alte "kein Opus"-
-# Regel gezielt für Morning auf; Event/Opening/Standard bleiben Haiku/Sonnet.)
-CLAUDE_MODEL_MORNING = "claude-opus-4-8"
+# Models: Sonnet für Morning-Brief, Haiku für Event-Checks (günstig, schnell).
+# 2026-06-16: Opus-Versuch zurückgerollt — Opus beendet im CLI-Structured-Output-
+# Harness mit stop=end_turn + 0 Tool-Calls (forced-tool greift nicht), liefert
+# also GAR keine Recs (schlechter als Sonnet). Stattdessen: Sonnet + verschärftes
+# Prompt-Mandat (emit EVERY qualifying setup als Tool-Call) gegen das Drop-Problem.
+CLAUDE_MODEL_MORNING = "claude-sonnet-4-6"
 CLAUDE_MODEL_EVENT = "claude-haiku-4-5"
 CLAUDE_MODEL = CLAUDE_MODEL_EVENT  # Default/Fallback für Standard-Mode

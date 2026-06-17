@@ -17,13 +17,10 @@ ONLY valid tool_calls."""
 MORNING_PREP_PROMPT = f"""morning:
 {_TOOL_ONLY_BANNER}
 
-MANDATORY: emit a recommend_entry tool_call for EVERY qualifying setup
-(conv>=3, rr>=2) — up to 5. One tool_call PER setup. NEVER describe a
-qualifying entry in prose instead of calling the tool — prose-only =
-dropped = not actioned. If you name a setup as buyable, you MUST emit its
-recommend_entry. Build each fully (entry/SL/TP/size/thesis/setup_type).
+per qualifying setup (conv>=3, rr>=2): recommend_entry — one call PER setup,
+up to 5. Emit ALL qualifying, not just the strongest.
 set_watch_levels: defense_only for open_positions.
-submit_pass only when literally 0 qualifying setups & 0 open."""
+submit_pass when 0 setups & 0 open."""
 
 
 OPENING_CHECK_PROMPT = f"""open_check:
