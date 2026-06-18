@@ -205,16 +205,24 @@ def _sync_proposed_trades(fresh: dict, market_data: dict) -> None:
     3c-i: Sonnet's set_watch_levels IS the proposal feed now — every analysis
     auto-populates the cards. Manual proposals (source='manual') for tickers
     Sonnet didn't propose are preserved."""
+    # Exclude tickers already held — their watch-levels are DEFENSE/exit lines,
+    # not new-entry proposals; surfacing them as fire-able entry cards would let
+    # the user double the position by mistake (2026-06-18).
+    open_tickers = {
+        (t.get("ticker") or "").upper() for t in fresh.get("open_trades", []) or []
+    }
     levels = fresh.get("watch_levels") or []
     sonnet = [
         {**{k: lvl.get(k) for k in _PROPOSAL_FIELDS}, "source": "sonnet"}
         for lvl in levels
+        if (lvl.get("ticker") or "").upper() not in open_tickers
     ]
     sonnet_tickers = {(p.get("ticker") or "").upper() for p in sonnet}
     manual = [
         p for p in (fresh.get("proposed_trades") or [])
         if p.get("source") == "manual"
         and (p.get("ticker") or "").upper() not in sonnet_tickers
+        and (p.get("ticker") or "").upper() not in open_tickers
     ]
     fresh["proposed_trades"] = sonnet + manual
     try:
