@@ -217,6 +217,33 @@ _Watch closely_"""
             if analysis.startswith("⚠️ Analysis skipped"):
                 logger.info("Price alert analysis skipped: %s", analysis)
 
+        # Coffee futures level-breaks (KC=F vs config levels) — info-only ping
+        # for the OD7B.DE ETC held outside the bot (2026-07-06). Runs under
+        # kill-switch too: no entry, pure position-info like SL monitoring.
+        try:
+            from core.events.price_alerts import check_coffee_futures_levels
+            for a in check_coffee_futures_levels():
+                if a["type"] == "COFFEE_BREAK_UP":
+                    msg = (
+                        f"☕📈 *KAFFEE FUTURES BREAK-UP*\n\n"
+                        f"Coffee C (KC=F): {a['price']:.2f} ¢/lb ≥ Widerstand "
+                        f"{a['level']:.0f}\n"
+                        f"→ Short-Squeeze-Zone, nächstes Ziel ~378 (52w-Hoch).\n"
+                        f"Gut für OD7B (long) — laufen lassen / Stop nachziehen."
+                    )
+                else:
+                    msg = (
+                        f"☕📉 *KAFFEE FUTURES BREAK-DOWN*\n\n"
+                        f"Coffee C (KC=F): {a['price']:.2f} ¢/lb ≤ Support "
+                        f"{a['level']:.0f}\n"
+                        f"→ Wetterprämie raus, Fokus Rekordernte, Richtung 240 möglich.\n"
+                        f"OD7B-Position prüfen — Exit/Teilverkauf erwägen."
+                    )
+                send_notification(msg)
+                logger.info("☕ Coffee level alert: %s @ %.2f", a["type"], a["price"])
+        except Exception:
+            logger.exception("Coffee futures level check failed")
+
         # Unconditional per-cycle heartbeat. The SL/TP loop above runs every
         # cycle regardless of price-alerts; without this line, quiet cycles
         # (no mover) emitted zero INFO logs and the bug-watcher heuristic

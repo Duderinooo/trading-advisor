@@ -111,7 +111,20 @@ COMMODITIES = [
     # Trump=Eskalation → oil up → 3OIL.MI long. Haiku picks direction from headline.
     "3OIS.MI",      # WisdomTree WTI 3x Daily Short ETN (~€1.51, EUR, Milano)
     "4GLD.DE",      # Xetra-Gold (safe haven, Fed/recession/bank-crisis)
+    # 2026-07-06: user holds WisdomTree Coffee ETC (WKN A3G8J3) — Brazil-frost
+    # thesis. %-move alerts + market data here; news via core/data/coffee_news.py,
+    # futures level-breaks via COFFEE_FUTURES_* below.
+    "OD7B.DE",      # WisdomTree Coffee ETC (JE00BN7KB557)
 ]
+
+# 2026-07-06: break levels on ICE Coffee C futures (US-cents/lb) for the OD7B
+# coffee-ETC position — July-2026 chart read: 325 = resistance (break → CTA
+# short-squeeze zone, next target ~378 52w-high), 280 = support (break → weather
+# premium unwound, focus back on USDA record-crop → 240 possible). Manual chart
+# levels, NOT auto-derived — go stale within weeks, retune with the regime.
+COFFEE_FUTURES_TICKER = "KC=F"
+COFFEE_FUTURES_RESISTANCE = 325.0
+COFFEE_FUTURES_SUPPORT = 280.0
 
 # Markt-Indikatoren (nur beobachten, nicht traden)
 MARKET_INDICATORS = [
@@ -127,6 +140,7 @@ TR_WKN_MAP = {
     # ⚠️ 2026-06-02: WKN/ISIN UNVERIFIED — confirm on Trade Republic before first
     # trade. Candidate: ISIN XS2819844387 / WKN A4AGV3 (WisdomTree WTI 3x Short).
     "3OIS.MI": "A4AGV3",  # WisdomTree WTI 3x Daily Short — VERIFY ON TR
+    "OD7B.DE": "A3G8J3",  # WisdomTree Coffee ETC (user-verified 2026-07-06)
 }
 
 # Mapping: Common names -> XETRA tickers (for convenience)

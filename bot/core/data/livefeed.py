@@ -89,6 +89,7 @@ TICKER_ISIN_MAP: dict[str, str] = {
     "3OIL.MI": "IE00BMTM6B32",  # WisdomTree WTI 3x Daily Long, 2062-vintage (TR-WKN A3GM4L)
     "3BRL.MI": "IE00BMTM6D55",  # WisdomTree Brent 3x Daily Long, 2062-vintage (TR-WKN A3GM4K)
     "3OIS.MI": "XS2819844387",  # WisdomTree WTI 3x Daily Short — UNVERIFIED, confirm on TR
+    "OD7B.DE": "JE00BN7KB557",  # WisdomTree Coffee ETC (TR-WKN A3G8J3, user-verified 2026-07-06)
 }
 
 

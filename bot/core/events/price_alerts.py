@@ -91,3 +91,49 @@ def check_price_alerts() -> list[dict]:
             save_dedup(dedup)
 
         return alerts
+
+
+def check_coffee_futures_levels() -> list[dict]:
+    """Level-break alerts on ICE Coffee C futures (KC=F) for the OD7B.DE
+    coffee-ETC thesis (2026-07-06). Deterministic rule, no LLM: price >=
+    resistance → COFFEE_BREAK_UP, price <= support → COFFEE_BREAK_DOWN.
+    Once per (level, day) via the triggered_price_alerts dedup. Info-only —
+    the ETC is held outside the bot's gate pipeline."""
+    today = str(date.today())
+    dedup = load_dedup()
+    triggered = [
+        t for t in dedup.get("triggered_price_alerts", [])
+        if t.get("date") == today
+    ]
+    triggered_keys = {t["key"] for t in triggered}
+
+    kc = config.COFFEE_FUTURES_TICKER
+    data = get_market_data([kc]).get(kc, {})
+    price = data.get("price")
+    if "error" in data or not isinstance(price, (int, float)):
+        return []
+
+    checks = [
+        ("COFFEE_BREAK_UP", price >= config.COFFEE_FUTURES_RESISTANCE,
+         config.COFFEE_FUTURES_RESISTANCE),
+        ("COFFEE_BREAK_DOWN", price <= config.COFFEE_FUTURES_SUPPORT,
+         config.COFFEE_FUTURES_SUPPORT),
+    ]
+    alerts: list[dict] = []
+    for key, hit, level in checks:
+        if not hit or key in triggered_keys:
+            continue
+        alerts.append({
+            "type": key,
+            "ticker": kc,
+            "price": price,
+            "level": level,
+            "change": data.get("change_pct"),
+        })
+        triggered.append({"key": key, "date": today})
+        triggered_keys.add(key)
+
+    if alerts:
+        dedup["triggered_price_alerts"] = triggered
+        save_dedup(dedup)
+    return alerts

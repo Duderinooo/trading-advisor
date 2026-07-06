@@ -83,6 +83,68 @@ def run_berkshire_check(state: AppState) -> None:
         logger.exception("Berkshire news check failed")
 
 
+# Coffee / Brazil-weather classification → ping emoji (long-holder view).
+_COFFEE_EMOJI = {
+    "PREIS_HOCH": "🟢",   # supply shock → price up → good for the ETC
+    "PREIS_RUNTER": "🔴",  # oversupply → price down → bad for the ETC
+    "INFO": "🔵",
+}
+
+
+def run_coffee_check(state: AppState) -> None:
+    """Info-only tracker for coffee-price news (WisdomTree coffee ETC thesis).
+
+    Pings headline + price-direction classification + link, deduped 7d by
+    headline-hash. Not an auto-trade signal — own try/except so a failure never
+    touches the news pipeline. Mirrors run_berkshire_check exactly.
+    """
+    if not (is_market_hours() or is_weekend_news_window()):
+        return
+    try:
+        from core.data.coffee_news import fetch_coffee_news
+        from core.portfolio.runtime_store import load_runtime, update_runtime
+
+        items = fetch_coffee_news()
+        if not items:
+            return
+
+        fired = load_runtime().get("coffee_news_fired", {}) or {}
+        now_iso = datetime.now().isoformat()
+        prune_cutoff = (datetime.now() - timedelta(days=7)).isoformat()
+        dirty = False
+
+        for it in items:
+            h = hashlib.sha1(it["title"].encode("utf-8")).hexdigest()[:16]
+            if h in fired:
+                continue
+            cls = it.get("classification", "INFO")
+            emoji = _COFFEE_EMOJI.get(cls, "🔵")
+            when = (it.get("published_at") or "")[:16].replace("T", " ")
+            snippet = (it.get("summary") or "")[:200]
+            msg = (
+                f"☕ *KAFFEE / BRASILIEN*\n\n"
+                f"{emoji} *{cls}*\n"
+                f"{it['title']}\n"
+            )
+            if snippet:
+                msg += f"\n{snippet}\n"
+            msg += f"\nQuelle: {it.get('source', '?')}"
+            if when:
+                msg += f" · {when}"
+            if it.get("link"):
+                msg += f"\n🔗 {it['link']}"
+            send_notification(msg)
+            logger.info("📰 KAFFEE [%s]: %s", cls, it["title"][:80])
+            fired[h] = now_iso
+            dirty = True
+
+        if dirty:
+            fired = {k: v for k, v in fired.items() if v > prune_cutoff}
+            update_runtime({"coffee_news_fired": fired})
+    except Exception:
+        logger.exception("Coffee news check failed")
+
+
 def run_news_check(state: AppState) -> None:
     """Scan for actionable headlines. Geo bypasses cooldown; stock respects."""
     if not (is_market_hours() or is_weekend_news_window()):

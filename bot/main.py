@@ -30,7 +30,7 @@ from runtime.scheduler import (
 )
 from runtime.state import AppState
 from services.morning_brief import run_morning_prep
-from services.news_monitor import run_news_check, run_berkshire_check
+from services.news_monitor import run_news_check, run_berkshire_check, run_coffee_check
 from services.opening_check import run_opening_check
 from services.price_monitor import run_price_check, ratchet_open_trade_extremes
 from services.web_commands import drain_web_commands
@@ -271,6 +271,7 @@ def _run_poll_cycle(state: AppState) -> None:
         # news still run. detect_events/event_monitor stay for replay/backtest.
         run_news_check(state)
         run_berkshire_check(state)
+        run_coffee_check(state)
         try:
             check_exit_reminders()
         except Exception:
@@ -279,6 +280,7 @@ def _run_poll_cycle(state: AppState) -> None:
     elif is_weekend_news_window():
         run_news_check(state)
         run_berkshire_check(state)
+        run_coffee_check(state)
 
 
 # ---------------------------------------------------------------------------
