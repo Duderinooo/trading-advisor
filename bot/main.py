@@ -133,8 +133,10 @@ def _append_equity_point(pf: dict, unrealized_eur: float, now: datetime) -> None
             "unrealized": round(unrealized_eur, 2),
             "market_hours": is_market_hours(),
         })
-    cutoff = (now - timedelta(days=14)).strftime("%Y-%m-%d %H:%M")
-    pf["equity_history"] = [p for p in hist if (p.get("ts") or "") >= cutoff]
+    # Retain 1-min for 14d, thin older to 1/hour — keeps the full track record
+    # without unbounded growth (2026-07-06: hard delete ate the curve's history).
+    from core.portfolio import downsample_equity_history
+    pf["equity_history"] = downsample_equity_history(hist, now)
 
 
 def _should_collect_heartbeat() -> bool:

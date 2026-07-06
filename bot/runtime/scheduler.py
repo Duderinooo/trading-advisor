@@ -276,12 +276,13 @@ def startup_cleanup() -> None:
             pf = load_portfolio()
             eh = pf.get("equity_history") or []
             if eh:
-                cutoff_eh = (datetime.now() - timedelta(days=14)).strftime("%Y-%m-%d %H:%M")
-                eh_pruned = [p for p in eh if (p.get("ts") or "") >= cutoff_eh]
-                if len(eh_pruned) != len(eh):
-                    pf["equity_history"] = eh_pruned
+                # Downsample >14d to 1/hour (keep full track record, bound size).
+                from core.portfolio import downsample_equity_history
+                eh_ds = downsample_equity_history(eh)
+                if len(eh_ds) != len(eh):
+                    pf["equity_history"] = eh_ds
                     save_portfolio(pf)
-                    logger.info("Cleanup equity_history: %d → %d", len(eh), len(eh_pruned))
+                    logger.info("Downsample equity_history: %d → %d", len(eh), len(eh_ds))
     except Exception:
         logger.exception("Portfolio cleanup failed (non-fatal)")
 

@@ -9,7 +9,7 @@ import json
 import tempfile
 import threading
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import config
@@ -93,5 +93,35 @@ def save_portfolio(portfolio: dict):
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
         raise
+
+
+def downsample_equity_history(
+    hist: list[dict], now: datetime | None = None, fine_days: int = 14,
+) -> list[dict]:
+    """Retain full 1-min resolution for the last `fine_days`; thin older points
+    to one-per-hour (keep the first in each hour bucket). Preserves the long-run
+    equity track record without unbounded growth.
+
+    Replaces the hard `>fine_days` delete that silently ate history (2026-07-06:
+    user saw the curve's left edge vanish daily). Shared by the heartbeat writer
+    (main._collect_heartbeat) and the boot cleanup (runtime.scheduler) so the two
+    retention paths can't drift. hist is chronological (append-order) → keeping
+    the first point per hour bucket keeps the earliest sample deterministically."""
+    if not hist:
+        return hist
+    now = now or datetime.now()
+    cutoff = (now - timedelta(days=fine_days)).strftime("%Y-%m-%d %H:%M")
+    recent = [p for p in hist if (p.get("ts") or "") >= cutoff]
+    kept_old: list[dict] = []
+    seen_hours: set[str] = set()
+    for p in hist:
+        ts = p.get("ts") or ""
+        if ts >= cutoff:
+            continue
+        hour = ts[:13]  # "YYYY-MM-DD HH"
+        if hour and hour not in seen_hours:
+            seen_hours.add(hour)
+            kept_old.append(p)
+    return kept_old + recent
 
 

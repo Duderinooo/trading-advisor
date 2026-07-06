@@ -22,6 +22,7 @@ from core.portfolio.hit_stats import (
 )
 from core.portfolio.io import (
     _PORTFOLIO_PATH,
+    downsample_equity_history,
     load_portfolio,
     portfolio_lock,
     save_portfolio,
@@ -47,7 +48,7 @@ from core.portfolio.trades import (
 __all__ = [
     # io + locks
     "portfolio_lock",
-    "load_portfolio", "save_portfolio",
+    "load_portfolio", "save_portfolio", "downsample_equity_history",
     # trades + cash
     "build_trade_dict", "add_cash_movement",
     "trade_dividends", "effective_pnl_eur", "effective_pnl_pct",
