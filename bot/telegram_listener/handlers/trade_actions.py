@@ -243,6 +243,17 @@ async def close_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             2,
         )
         portfolio["open_trades"] = open_trades
+        # Drop watch-levels + proposal-cards for the closed ticker — leftover
+        # defense-level would resurface as a fire-able entry card next analysis
+        # (orphan-card bug, 2026-06-19). Mirror in SL/TP loop (core/events/sltp).
+        portfolio["watch_levels"] = [
+            w for w in portfolio.get("watch_levels") or []
+            if (w.get("ticker") or "").upper() != ticker
+        ]
+        portfolio["proposed_trades"] = [
+            p for p in portfolio.get("proposed_trades") or []
+            if (p.get("ticker") or "").upper() != ticker
+        ]
 
         maintain_drawdown_state(portfolio)
         # Refresh correlation matrix: when this close drops below 2 open positions,

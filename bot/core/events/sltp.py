@@ -458,6 +458,24 @@ def check_stop_loss_take_profit() -> list[dict]:
 
         if portfolio_dirty:
             portfolio["open_trades"] = surviving_trades
+            # Drop watch-levels + proposal-cards for fully-closed tickers. A
+            # closed ticker's leftover defense watch-level is no longer excluded
+            # by _sync_proposed_trades (open-only filter) → resurfaces as a
+            # fire-able entry card. Set-diff: partial-closes stay in surviving →
+            # not pruned (orphan-card bug, 2026-06-19). Mirror in /close handler.
+            _closed_tickers = (
+                {(t.get("ticker") or "").upper() for t in open_trades}
+                - {(t.get("ticker") or "").upper() for t in surviving_trades}
+            )
+            if _closed_tickers:
+                portfolio["watch_levels"] = [
+                    w for w in portfolio.get("watch_levels") or []
+                    if (w.get("ticker") or "").upper() not in _closed_tickers
+                ]
+                portfolio["proposed_trades"] = [
+                    p for p in portfolio.get("proposed_trades") or []
+                    if (p.get("ticker") or "").upper() not in _closed_tickers
+                ]
             # Recompute DD halt latch — SL/TP hits just changed realized equity.
             maintain_drawdown_state(portfolio)
             saver(portfolio)
