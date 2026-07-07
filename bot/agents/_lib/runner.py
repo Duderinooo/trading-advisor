@@ -43,6 +43,34 @@ class AgentTransientError(AgentRunError):
     pass
 
 
+def _notify_rate_limit_once() -> None:
+    """One Telegram per quota window (6h dedup via runtime kv) so the user
+    knows the bot is LLM-blind until reset. 2026-07-07: quota exhausted for
+    hours (morning brief + news dark) with zero user-visible signal — the
+    transient-classification correctly silenced the log spam but also hid the
+    outage entirely. Deterministic loops (SL/TP, price) keep running."""
+    try:
+        from datetime import datetime, timedelta
+        from core.portfolio.runtime_store import load_runtime, update_runtime
+        last = load_runtime().get("quota_limit_alerted_at")
+        now = datetime.now()
+        if last:
+            try:
+                if now - datetime.fromisoformat(last) < timedelta(hours=6):
+                    return
+            except ValueError:
+                pass
+        from notifier import send_alert
+        send_alert(
+            "⏳ Claude-Quota erschöpft",
+            "Subscription-Limit erreicht — LLM-Calls (Morning/News/Events) "
+            "pausieren bis zum Reset. SL/TP-Überwachung läuft normal weiter.",
+        )
+        update_runtime({"quota_limit_alerted_at": now.isoformat()})
+    except Exception:
+        logger.warning("quota-limit notify failed", exc_info=True)
+
+
 @dataclass
 class _Block:
     """Mimics anthropic SDK content block (TextBlock / ToolUseBlock)."""
@@ -245,6 +273,22 @@ def call_claude_agent(
             raise AgentTransientError(
                 f"recoverable CLI exit (mode={mode}): {error[:120]}"
             )
+        # 2026-07-07: subscription quota now also surfaces as exit=1 (not just
+        # the exit=0 + is_error path below) — was raising plain AgentRunError →
+        # full ERROR-traceback spam every 15-min cycle until the limit reset.
+        if "hit your limit" in error:
+            _notify_rate_limit_once()
+            raise AgentRateLimitError(
+                f"Subscription rate-limit hit (mode={mode}, exit={proc.returncode})"
+            )
+        # 2026-07-07: CLI oauth-token blips (401 authentication_error) self-heal
+        # within minutes-to-an-hour (seen 2026-07-06 12:08→13:03). Transient →
+        # warning + retry next cycle. A permanently dead login still surfaces
+        # via the 3×-consecutive-failure pipeline alert in news_monitor.
+        if "authentication_error" in error:
+            raise AgentTransientError(
+                f"CLI auth blip (mode={mode}): {error[:120]}"
+            )
         raise AgentRunError(f"claude CLI exit={proc.returncode}: {error}")
 
     raw = proc.stdout.strip()
@@ -259,6 +303,7 @@ def call_claude_agent(
         log_run("call_claude_agent", mode=mode, model=cli_model,
                 duration_ms=duration_ms, exit_code=0, output_size=output_size,
                 error="rate_limited")
+        _notify_rate_limit_once()
         raise AgentRateLimitError(f"Subscription rate-limit hit (mode={mode})")
     # CLI --output-format=json wraps the agent response in metadata. The
     # actual structured response is in .result (or .response — depends on

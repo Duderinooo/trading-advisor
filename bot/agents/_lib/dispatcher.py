@@ -272,6 +272,14 @@ def run_agent(name: str, *, force: bool = False) -> tuple[bool, str | None]:
             logger.warning("agent %s rate-limited — skipping retry until next cycle", name)
             mark_ran(name, ok=True, meta={"skipped": "rate-limited"})
             return True, None  # No Telegram alert
+        from agents._lib.runner import AgentTransientError
+        if isinstance(e, AgentTransientError):
+            # 2026-07-07: auth-blip / recoverable CLI exit — same silent-skip as
+            # rate-limit (was falling into the AgentRunError branch → failure
+            # Telegram for a self-healing condition).
+            logger.warning("agent %s transient error — retry next cycle: %s", name, e)
+            mark_ran(name, ok=True, meta={"skipped": "transient"})
+            return True, None
         if isinstance(e, AgentRunError):
             mark_ran(name, ok=False, meta={"error": str(e)[:200]})
             logger.exception("agent %s failed", name)

@@ -127,6 +127,15 @@ def run_skill(name: str, user_input: str) -> str:
         err = (proc.stderr or proc.stdout or "")[:500]
         log_run(f"skill:{name}", model=cli_model, duration_ms=duration_ms,
                 exit_code=proc.returncode, output_size=output_size, error=err)
+        # 2026-07-07: quota + auth-blip now also surface as exit=1 (mirror of
+        # the same classification in runner.call_claude_agent).
+        if "hit your limit" in err:
+            from agents._lib.runner import AgentRateLimitError, _notify_rate_limit_once
+            _notify_rate_limit_once()
+            raise AgentRateLimitError(f"Subscription rate-limit hit (skill={name})")
+        if "authentication_error" in err:
+            from agents._lib.runner import AgentTransientError
+            raise AgentTransientError(f"CLI auth blip (skill={name}): {err[:120]}")
         raise AgentRunError(f"skill {name} CLI exit={proc.returncode}: {err}")
 
     try:
