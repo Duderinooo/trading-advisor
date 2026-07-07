@@ -111,19 +111,22 @@ def _collect_live_quotes(pf: dict) -> tuple[dict[str, float], dict[str, dict]]:
 
 
 def _append_equity_point(pf: dict, unrealized_eur: float, now: datetime) -> None:
-    """Append intraday equity snapshot. Prune to 14d rolling. No-op when no live data."""
-    starting = float(
-        pf.get("total_capital_eur", config.BUDGET_EUR) or config.BUDGET_EUR
+    """Append intraday equity snapshot. Prune to 14d rolling. No-op when no live data.
+
+    equity = cash_eur + open-position market value (cost basis + unrealized).
+    cash_eur is the authoritative ledger (every close deducts the real €1/side
+    TR fee) — deriving equity from it instead of reconstructing via
+    starting_capital + realized_pnl + movements avoided double-tracking fees
+    but the reconstruction path never subtracted them at all: `pnl_eur` on a
+    closed trade is fee-EXCLUSIVE, so the old formula silently overstated
+    equity by the cumulative fees paid, growing with every trade (2026-07-07:
+    diverged from cash-based truth by €9.20 after 12 closes)."""
+    cash = float(pf.get("cash_eur") or 0)
+    open_cost_basis = sum(
+        float(t.get("entry_price") or 0) * float(t.get("shares") or 0)
+        for t in pf.get("open_trades", []) or []
     )
-    realized = sum(
-        float(t.get("pnl_eur") or 0)
-        for t in pf.get("closed_trades", []) or []
-    )
-    movements = sum(
-        float(m.get("amount") or 0)
-        for m in pf.get("cash_movements", []) or []
-    )
-    equity_now = round(starting + realized + movements + unrealized_eur, 2)
+    equity_now = round(cash + open_cost_basis + unrealized_eur, 2)
     hist = pf.get("equity_history", []) or []
     ts = now.strftime("%Y-%m-%d %H:%M")
     if not hist or hist[-1].get("ts") != ts:
